@@ -360,7 +360,7 @@ Binder 由用户态 `libbinder` 与内核 Binder 驱动共同实现。`framework
 - 对大块二进制数据采用直接缓冲区（direct buffer）或共享原生内存表示，减少频繁构造托管对象；
 - 对满足严格约束的高频短方法，使用 `@FastNative` 或 `@CriticalNative`（两者互斥，同一方法只能选其一）。从 Android 14（API 34）起，这两个注解已成为经过 CTS 测试的公开 API。
 
-其中 `@CriticalNative` 仅适用于既没有托管对象参数或返回值、也没有隐式 `this` 的静态原生方法，并会改变原生函数签名（省去 `JNIEnv` 和 `jclass` 参数）。在这两个注解修饰的方法执行期间，ART 的 GC 无法按常规 JNI 路径挂起当前线程，因此方法体必须短小且耗时有界，应避开大量 I/O 或可能长时间持有的原生锁。若需兼容旧版本系统，还应注意版本差异：Android 8–13 虽然已有底层实现，但不具备 API 34 起的 CTS 保证；Android 8–11 要求通过 `RegisterNatives` 显式注册，Android 12 起才支持动态查找（官方仍建议显式注册）；Android 7 及更早版本会直接忽略这些注解，导致 `@CriticalNative` 因 ABI 不匹配而传递错误参数甚至崩溃，详细约束见 [JNI tips](https://developer.android.com/ndk/guides/jni-tips#fast_critical_native)。实际优化前，应在目标设备上用真实业务参数（包含字符串、数组或锁竞争）测量收益。
+其中 `@CriticalNative` 仅适用于既没有托管对象参数或返回值、也没有隐式 `this` 的静态原生方法，并会改变原生函数签名（省去 `JNIEnv` 和 `jclass` 参数）。在这两个注解修饰的方法执行期间，ART 的 GC 无法按常规 JNI 路径挂起当前线程，因此方法体必须短小且耗时有界，应避开大量 I/O 或可能长时间持有的原生锁。若需兼容旧版本系统，还应注意版本差异：Android 8–13 虽然已有底层实现，但不具备 API 34 起的 CTS 保证；Android 8–11 要求通过 `RegisterNatives` 显式注册，Android 12 起才支持动态查找（官方仍建议显式注册）；Android 7 及更早版本会忽略这些注解，`@CriticalNative` 的 ABI 不匹配可能导致参数传递错误或崩溃，详细约束见 [JNI tips](https://developer.android.com/ndk/guides/jni-tips#fast_critical_native)。实际优化前，应在目标设备上用真实业务参数（包含字符串、数组或锁竞争）测量收益。
 
 #### 系统调用与共享缓冲区：内核边界与大数据量通道
 
@@ -368,7 +368,7 @@ Binder 由用户态 `libbinder` 与内核 Binder 驱动共同实现。`framework
 
 对于高吞吐的图像、相机帧与音频数据，跨进程传递同样不宜反复序列化进 Binder `Parcel`。这类子系统普遍采用“控制面与数据面分离”的协作方式：用 Binder 传递控制命令与句柄，再通过 BufferQueue、DMA-BUF、共享内存、快速消息队列（FMQ）或硬件缓冲区传递大块数据与同步信息。
 
-排查图形或媒体延迟时，需要把控制往返、系统调用与缓冲区流转以及同步栅栏（fence）拆开观察。例如一次相机请求可以很快完成 Binder 控制往返，但真正耗时发生在等待传感器曝光、ISP 处理或缓冲区同步栅栏上；同样，一次显示提交在 SurfaceFlinger 侧耗时很短，实际等待往往落在 GPU 渲染或 HWC 合成完成的栅栏信号上。
+排查图形或媒体延迟时，需要把控制往返、系统调用与缓冲区流转以及同步栅栏（fence）拆开观察。例如一次相机请求可以很快完成 Binder 控制往返，却仍可能长时间等待传感器曝光、ISP 处理或缓冲区同步栅栏；同样，一次显示提交在 SurfaceFlinger 侧耗时很短，GPU 渲染或 HWC 合成完成的时间也可能更晚。
 
 ### Treble、HIDL 与 Stable AIDL
 
@@ -517,7 +517,7 @@ Zygote 监听的端点是在系统启动阶段由 `init` 托管的 Unix domain s
 
 图：以常规 Zygote 创建路径为主线。USAP 满足条件时可复用预先 fork 的进程；返回 PID、attach、应用绑定和首帧完成是不同边界。
 
-拆分多进程需要谨慎权衡额外开销。配置一个 `android:process=":remote"` 至少会额外引入一套进程地址空间、ART 运行时状态、Java 与原生堆、线程栈、主线程消息循环以及 `Application` 初始化过程，原先的进程内方法调用也会变成跨进程 Binder 事务。同时，普通 `:remote` 进程默认仍继承应用自身的 UID 与权限，它能隔离开内存地址空间和部分崩溃、内存峰值，适合隔离崩溃风险高或需要随进程销毁一次性释放大块原生/图形内存的独立模块；如果模块之间存在高频同步调用或共享大量可变状态，拆进程往往会推高序列化、Binder 线程池和状态同步成本。若业务需要隔离不可信代码（使其不继承宿主权限），则应使用 `<service android:isolatedProcess="true">` 等系统级隔离进程模型，并严格限制传入的数据、文件描述符与 Binder 接口，防止宿主权限经由接口外泄。
+拆分多进程需要谨慎权衡额外开销。配置一个 `android:process=":remote"` 至少会额外引入一套进程地址空间、ART 运行时状态、Java 与原生堆、线程栈、主线程消息循环以及 `Application` 初始化过程，原先的进程内方法调用也可能变成跨进程 Binder 事务。同时，普通 `:remote` 进程默认仍继承应用自身的 UID 与权限，它能隔离开内存地址空间和部分崩溃、内存峰值，适合隔离崩溃风险高或需要随进程销毁一次性释放大块原生/图形内存的独立模块；如果模块之间存在高频同步调用或共享大量可变状态，拆进程往往会推高序列化、Binder 线程池和状态同步成本。若业务需要隔离不可信代码（使其不继承宿主权限），则应使用 `<service android:isolatedProcess="true">` 等系统级隔离进程模型，并严格限制传入的数据、文件描述符与 Binder 接口，防止宿主权限经由接口外泄。
 
 ### 组件状态决定进程重要性
 
@@ -819,7 +819,7 @@ fun updateUiLater() {
 - 进程处于冻结状态、受省电策略限制或系统整体负载较高；
 - `SystemClock.uptimeMillis()` 作为时间基准时，设备深度睡眠时间不计入该时钟，导致实际挂钟时间延后。
 
-此外，`postDelayed()` 返回 `true` 仅代表消息成功入队；如果所属 `Looper` 在分发之前退出，队列中的消息依然会被丢弃。对于需要持久化、进程重建后继续执行或按系统条件约束调度的任务，应选用 `AlarmManager`、`JobScheduler` 或 `WorkManager`。[已验证: frameworks/base/core/java/android/os/Handler.java 的 postDelayed()、sendMessageDelayed() 与 sendMessageAtTime() @ android-17.0.0_r1]
+此外，`postDelayed()` 返回 `true` 仅代表消息成功入队；如果所属 `Looper` 在分发之前退出，消息仍可能被丢弃。对于需要持久化、进程重建后继续执行或按系统条件约束调度的任务，应选用 `AlarmManager`、`JobScheduler` 或 `WorkManager`。[已验证: frameworks/base/core/java/android/os/Handler.java 的 postDelayed()、sendMessageDelayed() 与 sendMessageAtTime() @ android-17.0.0_r1]
 
 #### IdleHandler 的适用范围
 
@@ -864,7 +864,7 @@ void DrawFrameTask::postAndWait() {
 
 图：这里画出允许提前唤醒主线程的一种路径。真实唤醒位置取决于帧状态和纹理准备；主线程解除等待不代表 GPU 已完成。横条仅表示阶段关系。
 
-对照 Perfetto 跟踪数据时，渲染瓶颈通常呈现为三种形态：主线程时间片过长，问题多集中在输入处理、业务逻辑、布局或显示列表录制；`RenderThread` 过长，则重点排查渲染准备、图形驱动或 GPU 负载；若主线程长时间卡在同步交接点等待 `RenderThread`，则应顺着唤醒链检查 `RenderThread` 当时是在执行、排队等 CPU、等锁还是等待图形资源。此外，软件渲染窗口走的是 `ThreadedRenderer` 之外的路径，不过只要同一进程里还存在其他硬件加速窗口，`RenderThread` 依然会被创建。
+对照 Perfetto 跟踪数据时，渲染瓶颈通常呈现为三种形态：主线程时间片过长，问题多集中在输入处理、业务逻辑、布局或显示列表录制；`RenderThread` 过长，则重点排查渲染准备、图形驱动或 GPU 负载；若主线程长时间卡在同步交接点等待 `RenderThread`，则应顺着唤醒链检查 `RenderThread` 当时是在执行、排队等 CPU、等锁还是等待图形资源。软件渲染窗口走 `ThreadedRenderer` 之外的路径，同一进程中的其他硬件加速窗口仍可能创建 `RenderThread`，具体取决于窗口构成。
 
 ### 如何选择后台执行机制
 

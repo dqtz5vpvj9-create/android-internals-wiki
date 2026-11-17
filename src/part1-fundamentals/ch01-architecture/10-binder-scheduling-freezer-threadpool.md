@@ -418,7 +418,7 @@ ORDER BY client_dur DESC
 LIMIT 50;
 ```
 
-`client_dur` 是同步调用方看到的实际经过时间（wall duration），`server_dur` 是服务端对应 Binder reply slice 的实际经过时间。两者之差里混杂了驱动排队、调度、传输和其他开销，因此不能直接等同于纯排队时间。
+`client_dur` 是同步调用方看到的实际经过时间（wall duration），`server_dur` 是服务端对应 Binder reply slice 的实际经过时间。两者之差可能包含驱动排队、调度、传输和其他开销，因此不能直接等同于纯排队时间。
 
 若 `aidl_name` 为空，可能是 AIDL trace 没启用、接口没有生成相应的 trace 名称，或这笔事务缺少可关联的时间片。原生服务端的入口位于 `frameworks/native/libs/binder/Binder.cpp`：`BBinder::transact()` 检查 `ATRACE_TAG_AIDL`，再调用 `BBinder::startTrace()` 生成接口/方法 slice。这里确认的是 Android 17 基线中的实现，首次引入版本仍需查提交历史。
 

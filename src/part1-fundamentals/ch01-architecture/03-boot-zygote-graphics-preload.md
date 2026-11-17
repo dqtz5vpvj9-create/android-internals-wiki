@@ -423,10 +423,9 @@ Launcher 首帧慢时，按应用启动问题处理：应用绑定（bind）、�
 
 OTA 后首次启动变慢时，应记录快照合并状态、`snapuserd` 的 CPU/I/O、`odsign`/ART 工作和存储带宽。A/B 能缩短设备因更新而不可用的时间并支持回滚，由于更新后的首次启动包含快照合并等额外 I/O，应与常规启动分开建立基线。
 
-### 边界澄清：dm-verity 与 Android 17 SecureFS
+### Verified Boot 与启动期 I/O
 
-- **不要以关闭 dm-verity 作为优化方案**：Verified Boot 是平台安全边界，且 dm-verity 在读取存储块时执行逐块验证。性能评估应在保持产品安全配置的前提下分析 I/O、硬件加速和缓存，不应以关闭完整性保护作为量产优化手段。
-- **Android 17 不存在 SecureFS 与 Zygote lazy preload 的启动交互**：AOSP `android-17.0.0_r1` 的公开平台源码中未找到名为 `SecureFSService`、`SecureFsService`、`system/security/securefs` 或 `frameworks/native/cmds/sfs` 的实现；`system/core/rootdir/init.rc` 中的 `/mnt/secure` 目录与 Zygote lazy preload 链路没有源码级调用关系。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md]
+Verified Boot 维护设备启动的完整性，dm-verity 在读取存储块时执行逐块验证。评估启动性能时，应保持产品的安全配置，并结合存储 I/O、硬件加速和缓存分析读取开销。
 
 ## Zygote 预加载、fork 与进程特化
 
