@@ -85,7 +85,7 @@ related_chapters:
 - 各显示的 screen-on、doze（低功耗显示）与亮度档位时长；
 - UID 的 top activity（最前台 Activity）时长。
 
-HAL 的 `EnergyConsumerResult.energyUWs` 报告开机以来累计的 µWs（即 µJ）。采集器的 `ConsumedEnergyHelper` 先取能量增量，再用本次与上次电压的平均值换算成 µC；`ScreenPowerStatsProcessor` 再把 µC 换算为 mAh。处理器读取的是当前布局中的第 0 个显示 energy consumer，因此不能由此认为所有显示计量项都已被自动汇总。描述符中的 consumer 数量为 0 时，处理器才使用 `PowerProfile` 模型；单次 HAL 读数失败，也仍按计量路径走。[来源：采集与换算实现](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/PowerStatsCollector.java)、[显示处理器](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/processor/ScreenPowerStatsProcessor.java)。
+HAL 的 `EnergyConsumerResult.energyUWs` 报告开机以来累计的 µWs（即 µJ）。采集器的 `ConsumedEnergyHelper` 先取能量增量，再用本次与上次电压的平均值换算成 µC；`ScreenPowerStatsProcessor` 再把 µC 换算为 mAh。处理器读取的是当前布局中的第 0 个显示 energy consumer，因此不能由此认为所有显示计量项都已被自动汇总。描述符中的 consumer 数量为 0 时，处理器才使用 `PowerProfile` 模型；单次 HAL 读数失败，也仍按计量路径走。[^source-audit-note-1]、[显示处理器](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/processor/ScreenPowerStatsProcessor.java)。
 
 走到模型这条路径时，估算按显示设备使用 `ambient.on.displayN`、`screen.on.displayN` 和 `screen.full.displayN`（N 为序号）：亮屏估算包含基础亮屏电流×时长，以及各亮度档位的附加电流×时长，doze 成本单独计算。这套档位模型只看档位和时长，页面像素颜色不在输入里，相同亮度下 OLED 页面配色的成本变化也就刻画不了。旧的 `ambient.on`、`screen.on`、`screen.full` 在缺少新显示配置时仍可能被迁移为 display0 参数，并未完全失效。
 
@@ -118,8 +118,8 @@ UID 归因是另一条路径：处理器在亮屏状态中，以各 UID 的 top 
 
 还有三项复现限制必须保留：
 
-1. **标签不自洽**：在 12,960 条非手电筒记录中，`Config_Theme` 与 `Experiment_ID` 路径的 theme 标签有 10,800 条不一致，refresh 有 1,440 条不一致，airplane 有 2,160 条不一致；brightness 与 saving 的相应标签一致。由于仓库未发布原始设备日志和设置实现，仅凭现有数据无法判断哪一侧对应设备真实设置，真值仍有待原始日志或新实验确认。[来源：固定版本 CSV](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/master_energy_data.csv)。
-2. **归因范围混合**：notebook 对 IG/WPP/LIGHT 使用 `t_total`，对 YT/TT 使用组件合计减 `r_total`，各应用的整机测量口径并不统一。Overall 先求各应用的均值，再等权汇总；因此 Overall 数值应按“各应用均值的等权平均”来理解，不能等同于全部记录直接加总的结果或跨设备的平均续航收益。[来源：notebook](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/script.ipynb)。
+1. **标签不自洽**：在 12,960 条非手电筒记录中，`Config_Theme` 与 `Experiment_ID` 路径的 theme 标签有 10,800 条不一致，refresh 有 1,440 条不一致，airplane 有 2,160 条不一致；brightness 与 saving 的相应标签一致。由于仓库未发布原始设备日志和设置实现，仅凭现有数据无法判断哪一侧对应设备真实设置，真值仍有待原始日志或新实验确认。[^source-audit-note-2]。
+2. **归因范围混合**：notebook 对 IG/WPP/LIGHT 使用 `t_total`，对 YT/TT 使用组件合计减 `r_total`，各应用的整机测量口径并不统一。Overall 先求各应用的均值，再等权汇总；因此 Overall 数值应按“各应用均值的等权平均”来理解，不能等同于全部记录直接加总的结果或跨设备的平均续航收益。[^source-audit-note-3]。
 3. **绝对单位错误**：时长/消息分支用已经是 W 的 `Smart_Metric_W` 除以 1000 后再乘秒数，却把结果命名为 `Energy_Joules`，这些数值实际是 kJ。共同缩放动不了百分比和秩检验，但引用绝对能量前必须校正单位。后文只保留明确标注来源的相对结果。
 
 <!-- gracker-diagram: ch11-05-06-label-conflict -->
@@ -507,3 +507,7 @@ BatteryStats 的显示归因可能使用硬件 consumed energy，也可能回退
 - [Android：网络访问与无线状态机](https://developer.android.com/develop/connectivity/network-ops/network-access-optimization)
 - [Google：飞行模式中保留 Wi-Fi/蓝牙（Pixel 示例）](https://support.google.com/pixelphone/answer/12639358?hl=en)
 - [Android：热状态与可持续性能](https://developer.android.com/games/optimize/adpf/thermal)
+
+[^source-audit-note-1]: [来源：采集与换算实现](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/PowerStatsCollector.java)
+[^source-audit-note-2]: [来源：固定版本 CSV](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/master_energy_data.csv)
+[^source-audit-note-3]: [来源：notebook](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/script.ipynb)
