@@ -1,5 +1,7 @@
 # Android 技术内幕：系统机制、性能优化与工具实战
 
+> 本仓库的 `reading-edition` 分支为个人阅读润色版，基于高建武（Gracker）的 [Android 技术内幕](https://github.com/Gracker/android-internals-wiki) 进行文字修订。原作者署名及 [CC BY-NC-SA 4.0 许可](LICENSE)继续适用。
+
 [English navigation summary](README.en.md)
 
 > *Android Internals: System Architecture, Performance & Tooling in Practice*

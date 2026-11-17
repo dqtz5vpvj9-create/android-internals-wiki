@@ -1,9 +1,9 @@
 name: GitHub Pages
 
 on:
-  schedule:
-    # 每天 02:00 Asia/Shanghai（UTC 18:00）。不跟 master 每次 push。
-    - cron: "0 18 * * *"
+  push:
+    branches:
+      - reading-edition
   workflow_dispatch:
 
 permissions:
@@ -39,8 +39,6 @@ jobs:
       - name: Build
         working-directory: src_filtered
         run: mdbook build -d ../book
-      - name: Add Pages CNAME
-        run: cp static/CNAME book/CNAME
       - uses: actions/upload-pages-artifact@v3
         with:
           path: book

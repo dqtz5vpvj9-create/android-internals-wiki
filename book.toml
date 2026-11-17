@@ -12,9 +12,9 @@ create-missing = false
 [output.html]
 default-theme = "latte"
 preferred-dark-theme = "mocha"
-git-repository-url = "https://github.com/Gracker/android-internals-wiki"
-edit-url-template = "https://github.com/Gracker/android-internals-wiki/edit/master/{path}"
-site-url = "/"
+git-repository-url = "https://github.com/dqtz5vpvj9-create/android-internals-wiki"
+edit-url-template = "https://github.com/dqtz5vpvj9-create/android-internals-wiki/edit/reading-edition/{path}"
+site-url = "/android-internals-wiki/"
 additional-css = ["theme/catppuccin.css", "theme/book-parchment.css"]
 additional-js = ["theme/book-enhance.js"]
 no-section-label = true
