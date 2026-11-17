@@ -246,7 +246,7 @@ Android 10+ 设备的启动链需要 bootloader、ramdisk 和用户空间多阶�
 
 ext4 和 f2fs 都是 Android 17 GKI（Generic Kernel Image，通用内核镜像）支持的文件系统，量产设备可以选择其中之一作为 `userdata`。ext4 在 Android 上仍是现役方案，分析它的延迟时，需要把日志策略、一致性保证和同步写时机放进应用的事务模型里一起看。
 
-应用的普通 buffered I/O（缓冲 I/O）会先写入 page cache（页缓存），真正落盘的时机则常由 SQLite、`SharedPreferences`、文件下载器或系统服务调用 `fsync()` / `fdatasync()` 触发。移动设备同时面临进程频繁启停、后台脏页回写、掉电保护、热节流以及共享闪存队列竞争，这些因素都会放大单次同步写的尾延迟。
+应用的普通 buffered I/O（缓冲 I/O）会先写入 page cache（页缓存），真正落盘的时机则常由 SQLite、`SharedPreferences`、文件下载器或系统服务调用 `fsync()` / `fdatasync()` 触发。移动设备同时面临进程频繁启停、后台脏页回写、掉电保护、热节流以及共享闪存队列竞争，这些因素都可能放大单次同步写的尾延迟。
 
 <!-- gracker-diagram: ch06-01-buffered-cache-and-writeback -->
 ![缓存命中、脏页与实际块 I/O](../../assets/diagrams/ch06/ch06-01-buffered-cache-and-writeback.png)
@@ -457,7 +457,7 @@ Android 13+(userspace merge):
 | `snapuserd` | Android 12 compressed snapshots 的 COW 处理；Android 13+ 的 userspace merge | 按 snapshot 读视图与 merge 阶段产生 CPU、COW 和 base device I/O；r1 后端可能为 dm-user 或 ublk |
 | 前台 App | 受影响方 | 主线程 `fsync()` / `read()` 延迟明显增加，时间与 `snapuserd` / `update_engine` 活动对齐 |
 
-Android 13+ 的 userspace merge 大多在后台执行；Android 12 设备则仍需单独留意 `dm-snapshot` 的 merge 路径。当可用空间紧张或后台写入密集时，`snapuserd` 产生的 COW/base I/O 与应用数据 I/O 最终会落到同一块物理存储器件上，共同争用带宽、设备队列与 CPU——哪怕它们分属不同的逻辑分区也会相互牵连。前台等待是否被它拉长，仍要对照实际 trace 与对照组负载才能确认。
+Android 13+ 的 userspace merge 大多在后台执行；Android 12 设备则仍需单独留意 `dm-snapshot` 的 merge 路径。当可用空间紧张或后台写入密集时，`snapuserd` 产生的 COW/base I/O 与应用数据 I/O 可能落到同一块物理存储器件上，争用带宽、设备队列与 CPU；即使它们分属不同的逻辑分区，也可能相互影响。前台等待是否被它拉长，仍要对照实际 trace 与对照组负载才能确认。
 
 <!-- gracker-diagram: ch06-01-snapshot-view-and-merge -->
 ![快照读取视图与后续 merge 阶段](../../assets/diagrams/ch06/ch06-01-snapshot-view-and-merge.png)
@@ -481,7 +481,7 @@ Android 13+ 的 userspace merge 大多在后台执行；Android 12 设备则仍�
 - **磨损均衡（Wear Leveling）**：控制器会尽量拉平各个 block 的擦写次数，防止局部热点过早损毁，数据重分布同样会产生搬移写入。
 - **文件系统与应用写入模式**：小事务、频繁 checkpoint、临时文件反复重写以及文件系统 GC 会重塑主机提交的请求形态，FTL 再把这些逻辑写入映射到物理 NAND 上。
 
-随着可用空间下降，文件系统与 FTL 可调度的空闲区域同步收窄，GC 更容易被迫挤进前台路径，导致尾延迟与 WAF 双双上升。同时，设备使用时长本身只是一个伴随变量，应用数据膨胀、机身温度、后台任务、OTA merge、器件固件以及电池策略都会改变表现。遇到“手机用久了变慢”，需要把这些因素逐项过一遍，再下判断。
+随着可用空间下降，文件系统与 FTL 可调度的空闲区域同步收窄，GC 更容易进入前台路径，尾延迟与 WAF 都可能上升。同时，设备使用时长本身只是一个伴随变量，应用数据膨胀、机身温度、后台任务、OTA merge、器件固件以及电池策略都会改变表现。遇到“手机用久了变慢”，需要把这些因素逐项过一遍，再下判断。
 
 在应用层，开发者可以通过合并状态更新、避免无实质变化的重写、控制日志与缓存体积，把持久化移出关键交互路径。以 `SharedPreferences.apply()` 为例，它先更新内存再排队写盘，并不保证每次调用都对应一次完整的 XML 写盘：r1 的 `writeToFile()` 会跳过磁盘上已有的代次，也会略过已被更新状态覆盖的异步中间代次；不过最新状态真正持久化时，依然需要执行 XML 序列化和同步落盘，组件生命周期切换时也可能反过来等待 queued work（排队写入）。如果优化目标是压低总写入量与闪存磨损，应当先减少逻辑层的无效重写，再分别测量主机侧写入量与器件 WAF——异步 API 本身并不自动带来更少的写入量。
 

@@ -242,7 +242,7 @@ F2FS 以 segment 作为基本空间分配单位（默认包含 512 个 block）�
 
 #### `fsync`、roll-forward 与 checkpoint
 
-在一次普通的 `fsync()` 中，F2FS 会先写回目标文件的数据页，再决定后续的恢复信息策略：对于普通且可 roll-forward（通过重放 fsync node 恢复）的文件，只需写出带 fsync 标记的 node 链并发出必要的 flush；如果涉及非普通文件、压缩文件、硬链接或超级块明确要求同步，则会退回到完整 checkpoint。
+在一次普通的 `fsync()` 中，F2FS 会先写回目标文件的数据页，再决定后续的恢复信息策略：对于普通且可 roll-forward（通过重放 fsync node 恢复）的文件，只需写出带 fsync 标记的 node 链并发出必要的 flush；如果涉及非普通文件、压缩文件、硬链接或超级块明确要求 checkpoint，则可能转入完整 checkpoint。
 
 <!-- gracker-diagram: ch06-02-f2fs-fsync-recovery -->
 ![F2FS fsync 的恢复分支](../../assets/diagrams/ch06/ch06-02-f2fs-fsync-recovery.png)
@@ -443,7 +443,7 @@ AOSP 与 GKI 在底层同时维护了多套能力：`/data` 既可以用 ext4 �
 
 ext4 与 F2FS 都会随着长期使用出现物理布局不连续，只是成因与治理机制有所不同。
 
-在 ext4 上，随着文件频繁创建、追加、截断与删除，空闲空间会逐渐分散。虽然 extent 与 delayed allocation 能缓解碎片，但长时间使用后文件是否还能维持连续，仍取决于设备的实际写入历史。闪存虽然没有机械磁头寻道延迟，布局碎片依然会增加 `bio` 数量，削弱 readahead（预读）与请求合并的效果。
+在 ext4 上，随着文件频繁创建、追加、截断与删除，空闲空间会逐渐分散。虽然 extent 与 delayed allocation 能缓解碎片，但长时间使用后文件是否还能维持连续，仍取决于设备的实际写入历史。闪存虽然没有机械磁头寻道延迟，布局碎片仍可能增加 `bio` 数量，削弱 readahead（预读）与请求合并的效果。
 
 而在 F2FS 上，更新操作会不断制造失效旧块，再靠 GC 搬移 victim segment 中仍然有效的块。一旦冷热数据混放、空闲 section 偏少或后台 GC 缺少执行窗口，需要搬移的有效块就会增多，前台分配也更容易被迫等待。F2FS 同样可能把单个文件的逻辑块映射到分散的物理位置，异地更新并不会消除文件碎片。
 
@@ -605,7 +605,7 @@ Linux 通用 I/O priority 文档列出的支持者是 BFQ 与 `mq-deadline`；�
 
 #### `none`：不挂 elevator
 
-选择 `none` 仅表示跳过可选 scheduler 的排序与 QoS（服务质量）策略；`blk-mq` 框架、plugging（暂存请求以便批量提交）、request 构造、硬件 tag（队列槽位标识）以及驱动队列依然照常工作，部分请求合并也会继续发生。
+选择 `none` 仅表示跳过可选 scheduler 的排序与 QoS（服务质量）策略；`blk-mq` 框架、plugging（暂存请求以便批量提交）、request 构造、硬件 tag（队列槽位标识）以及驱动队列依然照常工作，部分请求合并也可能发生。
 
 #### 平台提供什么，设备选择什么
 
