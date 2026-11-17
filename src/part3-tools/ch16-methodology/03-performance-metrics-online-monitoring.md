@@ -138,7 +138,7 @@ consolidated_from:
 
 ## 指标定义、分位数与场景基线
 
-一个数字要能跟另一个数字比较，前提是两个指标的定义对得上。这一节先把量什么对象、怎么算、跟谁比定下来，再谈分位数与场景基线。
+两个数字要能放在一起比较，前提是背后的指标定义对齐。我们先明确测量对象、计算方式和比较基准，再展开分位数与场景基线。
 
 ### 指标合同
 
@@ -160,7 +160,7 @@ consolidated_from:
 | 数据源版本 | Android、SDK、Benchmark/Perfetto、schema（字段结构）与采集配置 |
 | 负责人 | 谁解释异常、谁维护埋点、谁批准口径变化 |
 
-这里的“合同”指一份可审查、可复现的指标定义。合同一旦改变，我们就新建 schema/version（字段结构及口径版本） 版本，让新旧两套定义分开累计，避免拼进同一条趋势线。
+这里的“合同”指一份可审查、可复现的指标定义。合同一旦改变，就应新建 `schema/version`（字段结构及口径版本），让新旧两套定义分开累计，避免拼进同一条趋势线。
 
 
 ### 指标的四种职责
@@ -231,11 +231,11 @@ FPS 表示单位时间内实际呈现或生成的帧数。我们定义这个指�
 <!-- gracker-diagram: ch16-03-04-benchmark-frame-interval -->
 ![Macrobenchmark帧指标的固定实现](../../assets/diagrams/ch16/ch16-03-04-benchmark-frame-interval.png)
 
-图：固定1.4.1用UI/RT匹配区间计算生产时间，并结合expected/actual判断overrun。 frameDurationCpuMs是经过时间，不是sched Running之和；frameCount只计通过该版匹配条件的帧。
+图：固定 1.4.1 版本以 UI/RT 匹配区间计算生产时间，并结合 expected/actual 判断 overrun。`frameDurationCpuMs` 衡量的是经过时间，并不等于 `sched` Running 之和；`frameCount` 也只计入符合该版本匹配条件的帧。
 
 #### Frame Time 分位数与 jank rate
 
-P50、P90、P99 分别表示 50%、90%、99% 的样本不高于该值，P50 即中位数。用分位数之前，我们先确认样本来自同一份合同：
+P50、P90、P99 分别表示 50%、90%、99% 的样本不高于该值，P50 即中位数。使用分位数之前，先确认样本来自同一份合同：
 
 - 同一 CUJ 与页面状态；
 - 相同刷新率或按刷新率分桶，也就是分组后分别统计；
@@ -243,7 +243,7 @@ P50、P90、P99 分别表示 50%、90%、99% 的样本不高于该值，P50 即�
 - 相同 first draw、动画、滚动或静止帧类型；
 - 相同丢帧与采样规则。
 
-“P99 高”说明的是尾部分布拉长了；要定位根因，我们还得回到样本本身。高分位需要足够样本支撑，样本很少时直接保留全部观测值反而更诚实。
+“P99 高”说明的是尾部分布拉长了；要定位根因，还得回到样本本身。高分位需要足够样本量支撑，样本较少时直接保留全部观测值更为可靠。
 
 jank rate 的分子必须写清楚：可以是 `frameOverrunMs > 0` 的帧数、JankStats 按帧时序和界面状态启发式判定（根据可用信号推断）的帧数、FrameTimeline 里某一组 jank type（平台标注的卡顿原因类型），也可以是业务自定阈值。分子不同的几个“卡顿率”，名称也要分开。
 
@@ -280,7 +280,7 @@ Click-to-display（点击到画面可见的延迟） 是自定义的端到端指
 - 起点可选 input reader（系统从触摸设备读取输入）、input dispatch（系统把输入分发给目标窗口）、App 收到事件或业务点击回调；
 - 终点可选 App 提交帧、SurfaceFlinger（负责图层合成与呈现的系统服务） present（系统实际呈现该帧） 或外部光学传感器检测到屏幕变化；
 
-软件 Trace 通常盖不住触控控制器之前和面板 scanout（逐行扫描点亮像素）之后的物理延迟。跨版本比较时应固定起止层级：“点击回调到 App 提交帧”和“手指接触到屏幕发光”是两项指标。没有公开依据时，我们不为它写统一的 100 ms/200 ms 阈值。
+软件 Trace 通常覆盖不到触控控制器之前和面板 scanout（逐行扫描点亮像素）之后的物理延迟。跨版本比较时应固定起止层级：“点击回调到 App 提交帧”和“手指接触到屏幕发光”是两项不同指标。不同交互与设备链路的延迟差异很大，这一指标也不存在统一的 100 ms/200 ms 通用阈值，具体预算应按实测场景设定。
 
 
 ### 稳定性指标
@@ -303,7 +303,7 @@ Play 用最近 28 天数据评估 core vitals。数据只来自允许共享 usag
 <!-- gracker-diagram: ch16-03-06-play-population-denominators -->
 ![Play稳定性的人群与分母](../../assets/diagrams/ch16/ch16-03-06-play-population-denominators.png)
 
-图：Play先限定可观测人群，再按日活用户设备单位计算稳定性，并用滚动窗口评估。 user-perceived ANR当前只计输入分发超时；手机阈值与手表不同，退出事件率不能直接替换它。
+图：Play 先限定可观测人群，再按日活用户设备单位计算稳定性，并用滚动窗口评估。user-perceived ANR 当前只计入输入分发超时；手机阈值与手表不同，本地退出事件率也不能直接替换它。
 
 #### Crash/ANR 内部指标
 
@@ -325,14 +325,14 @@ API 30+ 的 `ActivityManager.getHistoricalProcessExitReasons()` 可以在后续�
 - `REASON_LOW_MEMORY` 的支持度要用 `ActivityManager.isLowMemoryKillReportSupported()` 检查；
 - `getPss()` / `getRss()` 是系统最后一次采样值，不保证等于死亡瞬间峰值；来不及采样时会返回 0；
 - `getTraceInputStream()` 只在系统保存了对应 trace 或 tombstone（native crash 的系统诊断记录）时可用；trace 位于独立的全局环形缓冲区，可能被其他 App 的新记录覆盖；
-- 历史记录本身也由环形缓冲区保留，只适合当补充诊断，而非无损事件日志；
+- 历史记录本身也由环形缓冲区保留，只能作为补充诊断，不能当作无损事件日志；
 
 内部可把 exit reason 率分成 ANR、Java/native crash、low memory、excessive resource、user requested 等类别。LMK（Low Memory Kill，系统在内存压力下结束进程）、OOM 和 crash 的成因不同，合并成一个“内存崩溃率”会掩盖差异。
 
 <!-- gracker-diagram: ch16-03-07-exit-evidence-lifecycle -->
 ![退出历史如何成为补充证据](../../assets/diagrams/ch16/ch16-03-07-exit-evidence-lifecycle.png)
 
-图：下次运行读取保留的退出记录，按reason、现场时间和可用artifact补充诊断。 历史记录和artifact都会被覆盖；内存值是最近采样，不能当死亡瞬间峰值，恢复后的ANR也可能附在其他退出记录上。
+图：下次运行读取保留的退出记录，按 reason、现场时间和可用 artifact 补充诊断。历史记录和 artifact 都会被覆盖；内存值是最近采样，不能当作死亡瞬间峰值，恢复后的 ANR 也可能附在其他退出记录上。
 
 ### 内存指标
 
@@ -351,7 +351,7 @@ PSS/RSS 是占用指标，只是 lmkd（low memory killer daemon，低内存终�
 
 当前 Play 还单列 Memory usage（Anonymous RSS + Swap）与 Bitmap memory usage：前者把匿名驻留页与已换出的匿名页合并观察，量的是匿名内存这一块，总 RSS、PSS 或 Java heap 要另外看；后者是另一项 Bitmap 占用指标。它们需按进程状态区分，匿名内存还按设备 RAM 档位和 App/游戏类别解释，MB 预算也按同样的分层制定。
 
-截至本次核对，官方说明这些内存项目越线可能从 2027 年 2 月起影响商店可见度。指标、阈值和生效时间分别维护；不要把未来的可见度处理写成当前已经实施。具体表格以当前 Play 指标页为准，内部场景预算仍由项目制定。
+截至本次核对，官方说明这些内存项目越线可能从 2027 年 2 月起影响商店可见度。具体指标、阈值和生效时间均由 Play 单独维护，评估当前版本时应区分已生效的规则与远期策略；最新数值以 Play 指标页为准，内部场景预算仍由项目制定。
 
 #### PSI 与系统压力
 
@@ -386,7 +386,7 @@ GC 次数本身说明不了性能好坏，要结合暂停时间、分配速率�
 
 #### Battery drain rate
 
-电量百分比每小时适合长时场景的粗粒度观察，但电池曲线受充放电状态、温度、电池健康度和系统平滑算法影响。短时实验应优先用可用的能量类计数：energy counter（累计能量计数器）、Power Rails（硬件电源轨测量）、ODPM（On-Device Power Monitor，设备内功耗监测）、Energy Consumer（硬件抽象层提供的逻辑耗能单元），或外部功耗仪。
+每小时电量百分比适合长时场景的粗粒度观察，但电池曲线受充放电状态、温度、电池健康度和系统平滑算法影响。短时实验应优先用可用的能量类计数：energy counter（累计能量计数器）、Power Rails（硬件电源轨测量）、ODPM（On-Device Power Monitor，设备内功耗监测）、Energy Consumer（硬件抽象层提供的逻辑耗能单元），或外部功耗仪。
 
 若能读取累计能量，平均功率可由同一 counter（随时间变化的数值） 的窗口差分计算：
 
@@ -401,7 +401,7 @@ Android 17 Power Stats 的 AIDL（Android Interface Definition Language，Androi
 <!-- gracker-diagram: ch16-03-10-energy-counter-power -->
 ![累计能量怎样换算平均功率](../../assets/diagrams/ch16/ch16-03-10-energy-counter-power.png)
 
-图：同设备、同次开机和同ID取累计能量与同源时间差，处理计数异常后再换算平均功率。 uWs除秒为uW；rail与consumer可重叠，整机能量不等于App能量，UID归因覆盖需另查。
+图：按同设备、同次开机和同 ID 计算累计能量与同源时间差，处理计数异常后再换算平均功率。uWs 除以秒得到 uW；rail 与 consumer 可能存在测量重叠，整机能量也不等同于 App 能量，UID 归因覆盖范围需另行核对。
 
 #### Active/Idle power
 
@@ -428,7 +428,7 @@ Partial wake lock（局部唤醒锁）使系统在屏幕可关闭时仍保持 CP
 <!-- gracker-diagram: ch16-03-11-wake-lock-reporting -->
 ![唤醒锁持有、会话分类与健康率](../../assets/diagrams/ch16/ch16-03-11-wake-lock-reporting.png)
 
-图：先按官方规则累计非豁免partial wake lock，再按其session分母与28天窗口解释过量比例。 后台或FGS持有、官方豁免与session口径都要保留；保持CPU可运行不等于CPU一直执行App工作。
+图：先按官方规则累计非豁免 partial wake lock，再按其 session 分母与 28 天窗口解释过量比例。后台或 FGS 持有、官方豁免与 session 口径都需要保留；保持 CPU 可运行并不代表 CPU 一直在执行 App 工作。
 
 ### 线上与线下怎样配合
 
@@ -557,7 +557,7 @@ Perfetto（Android 系统时间线分析工具）、Macrobenchmark 和稳定的�
 <!-- gracker-diagram: ch16-03-13-three-monitoring-layers -->
 ![信号、证据与分析的分工](../../assets/diagrams/ch16/ch16-03-13-three-monitoring-layers.png)
 
-图：轻量信号记录事件，有限证据解释异常，分析层负责分母、分群与版本比较。 信号来源要区分系统、库启发式和业务规则；聚合曲线不能独自恢复完整现场。
+图：轻量信号记录事件，有限证据解释异常，分析层负责分母、分群与版本比较。信号来源需区分系统判定、库启发式和业务规则；聚合曲线本身无法恢复完整现场。
 
 #### 事件协议与字段设计
 
@@ -622,7 +622,7 @@ Choreographer.getInstance().postFrameCallback(callback);
 <!-- gracker-diagram: ch16-03-15-framecallback-probe -->
 ![FrameCallback是节奏探针](../../assets/diagrams/ch16/ch16-03-15-framecallback-probe.png)
 
-图：在正确Looper上注册一次性回调，记录调整后的帧时间差，按需续订并在停止监控时移除。 回调到达不证明新buffer或实际present；时间参数不等于回调上CPU时刻，也不能直接推出GPU耗时。
+图：在正确 Looper 上注册一次性回调，记录调整后的帧时间差，按需续订并在停止监控时移除。回调按期到达不代表新 buffer 已产出或画面已实际 present；时间参数也不等于回调实际进入 CPU 的时刻，更无法直接推出 GPU 耗时。
 
 #### FrameMetrics：窗口内的帧耗时分项
 
@@ -841,11 +841,11 @@ fun registerAnrWarning(
 <!-- gracker-diagram: ch16-03-19-anr-three-signals -->
 ![停顿候选、预警和退出证据](../../assets/diagrams/ch16/ch16-03-19-anr-three-signals.png)
 
-图：watchdog、API37预警与退出历史分别描述停顿、接近超时和最终退出，按现场键关联。 三者没有一一对应；warning尽力而为，getAnrInfo可空，对话框字段不等于Play用户感知分类。
+图：watchdog、API 37 预警与退出历史分别描述停顿、接近超时和最终退出，按现场键关联。三者之间没有一一对应关系；warning 按尽力而为机制触发，`getAnrInfo` 可能返回空，对话框字段也不同于 Play 的用户感知分类。
 
 #### FileObserver 监听 traces.txt 的历史方案
 
-早期方案常监听 `/data/anr/traces.txt`。Android 17 的 AOSP 已经不用单一固定文件：`StackTracesDumpHelper` 把目录定义为 `/data/anr`，文件带 `anr_` 与 `temp_anr_` 前缀。普通第三方 App 受文件权限与 SELinux（Android 强制访问控制机制） 限制，把该目录当稳定、可读的公开接口是行不通的。
+早期方案常监听 `/data/anr/traces.txt`。Android 17 的 AOSP 已经不用单一固定文件：`StackTracesDumpHelper` 把目录定义为 `/data/anr`，文件带 `anr_` 与 `temp_anr_` 前缀。普通第三方 App 受文件权限与 SELinux（Android 强制访问控制机制）限制，无法把该目录当作稳定、可读的公开接口。
 
 因此：
 
@@ -854,7 +854,7 @@ fun registerAnrWarning(
 - API 30+ 使用 `ApplicationExitInfo` 读取系统公开的退出 artifact；
 - API 37 可增加 ANR warning，低版本以 watchdog 记录停顿候选。
 
-这项历史方案写在这里，是为了说清该从哪里迁移走；它在 Android 17 上已经算不上可行的应用 API。
+存量代码若仍依赖这一历史方案，应按上述路径迁移；它在 Android 17 上已经不是可用的应用级 API。
 
 #### SIGQUIT 与 ART SignalCatcher 的信号归属
 
@@ -889,7 +889,7 @@ ANR warning、严重主线程停顿、极端启动或用户反馈，都可以触
 <!-- gracker-diagram: ch16-03-21-baseline-and-diagnostics -->
 ![概率基线与异常诊断两条通道](../../assets/diagrams/ch16/ch16-03-21-baseline-and-diagnostics.png)
 
-图：基线在看到结果之前做概率入选，异常通道额外保存条件证据，两者分别计算和展示。 已知非零p才支持概率加权；异常集合的机型占比不是全体占比，重复进入两通道的事件还需去重。
+图：基线在看到结果之前做概率入选，异常通道额外保存条件证据，两者分别计算与展示。仅在已知非零 `p` 时支持概率加权；异常集合的机型占比不等同于全体占比，同时进入两条通道的事件还需去重。
 
 #### 设备端聚合
 
@@ -931,7 +931,7 @@ SLO 把团队承诺维持的性能要求写成可检查的数值。可执行的�
 3. 最小数据量：满足统计条件的用户、会话或帧达到统计要求；
 4. 数据健康：覆盖率、延迟、schema 分布和丢弃率正常。
 
-多窗口 burn-rate（错误预算消耗速度）适用于已经定义 good/bad 事件、分母和允许失败比例的 SLI：比较实际坏事件比例与允许比例，同时观察短、长窗口。它不是直接把 P99 除以延迟目标。发布告警还需关联 rollout 比例、同分群对照和数据健康；阈值来自指标合同、当前平台口径或团队 SLO，不另设通用 P0/P1 数字。
+多窗口 burn-rate（错误预算消耗速度）适用于已经定义 good/bad 事件、分母和允许失败比例的 SLI：比较实际坏事件比例与允许比例，同时观察短、长窗口，不能直接把 P99 除以延迟目标。发布告警还需关联 rollout 比例、同分群对照和数据健康；具体阈值来自指标合同、当前平台口径或团队 SLO，没有通用的 P0/P1 固定数字。
 
 报警事件应附带：
 
@@ -947,7 +947,7 @@ SLO 把团队承诺维持的性能要求写成可检查的数值。可执行的�
 <!-- gracker-diagram: ch16-03-23-slo-alert-gates -->
 ![告警先验证数据健康与分母](../../assets/diagrams/ch16/ch16-03-23-slo-alert-gates.png)
 
-图：目标或回归判据结合有效样本、覆盖与发布对照后形成告警，并附带诊断样本和负责人。 burn-rate基于坏事件比例和允许失败比例；不能把P99直接除以延迟目标，也不能把SDK关闭当作性能改善。
+图：目标或回归判据结合有效样本、覆盖与发布对照后触发告警，并附带诊断样本与负责人。burn-rate 基于坏事件比例与允许失败比例；不能把 P99 直接除以延迟目标，也不能把 SDK 关闭当作性能改善。
 
 ### ProfilingManager：由系统提供重型证据
 
@@ -990,7 +990,7 @@ Perfetto Tracing SDK 是 C++17 库，用 Track Event（按时间记录的事件�
 | in-process | 只采当前进程，应用控制 session 和 trace 数据 | 受采样与隐私约束的应用内诊断 |
 | system | 连接 `traced`（Perfetto 系统守护进程），将 App 事件与调度、syscall（系统调用）等系统事件放到同一时间线 | 本地调试、实验室和受控测试 |
 
-in-process backend 不需要特殊 OS 权限，适合保存 App 自己的短窗口 trace。system backend 的 session 必须从进程外部控制；写入事件的数据 producer 也读不回包含其他进程信息的 system trace，以免信息泄露和侧信道风险（从时间或资源差异间接推断敏感信息）。所以“线上远程让普通 App 自行抓取完整 system trace 并上传”，并不是 SDK system mode 的通用工作方式。
+in-process backend 不需要特殊 OS 权限，适合保存 App 自己的短窗口 trace。system backend 的 session 必须从进程外部控制；写入事件的数据 producer 也无法读回包含其他进程信息的 system trace，以免引发信息泄露和侧信道风险（从时间或资源差异间接推断敏感信息）。因此，SDK system mode 无法用于让普通应用在线上远程自行抓取完整 system trace 并上传。
 
 Android 侧若只需要 slice（有起止时间的区间）、async slice（可跨线程结束的区间） 或随时间变化的 counter，Perfetto 官方建议继续用 `android.os.Trace` 或 NDK `ATrace_*`：这些事件同样能进 Perfetto，接入成本也低于引入完整 C++ SDK。等已有 native 子系统、需要自定义 protobuf data source 或独立 in-process session 时，再评估 Perfetto SDK。
 
@@ -1027,7 +1027,7 @@ Vitals 的 UI Toolkit 渲染统计不覆盖直接 OpenGL/Vulkan 主画面；游�
 - 自定义 scene、interaction 与发布维度；
 - 与 issue、发布灰度和负责人系统的关联。
 
-自建系统通常由客户端 SDK、消息接收、实时流式或定时批量聚合、指标存储、artifact 存储、查询与报警组成。技术选型随组织基础设施变化，本文不绑定固定消息队列或数据库；比起组件名称，schema、分母、采样权重、数据保留和访问权限才是要先固定下来的。
+自建系统通常由客户端 SDK、消息接收、实时流式或定时批量聚合、指标存储、artifact 存储、查询与报警组成。消息队列与数据库选型随组织基础设施变化，真正需要先固定下来的是 schema、分母、采样权重、数据保留期和访问权限。
 
 ### 平台与客户端的职责
 
@@ -1055,7 +1055,7 @@ Vitals 的 UI Toolkit 渲染统计不覆盖直接 OpenGL/Vulkan 主画面；游�
 <!-- gracker-diagram: ch16-03-26-monitoring-to-reproduction -->
 ![线上聚合怎样回到可复查现场](../../assets/diagrams/ch16/ch16-03-26-monitoring-to-reproduction.png)
 
-图：用版本化关联键把线上分群、诊断artifact、Perfetto现场和同条件复测连接起来。 单条帧时长不能定位GPU/SF，watchdog不能证明系统ANR；聚合和现场证据各自保留覆盖范围。
+图：用版本化关联键把线上分群、诊断 artifact、Perfetto 现场和同条件复测连接起来。单条帧时长不能定位 GPU 或 SF，watchdog 记录也不能证明系统已判定 ANR；聚合指标与现场证据各有适用范围。
 
 ### 接入顺序
 

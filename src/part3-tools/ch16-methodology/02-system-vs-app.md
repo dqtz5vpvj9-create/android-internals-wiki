@@ -106,7 +106,7 @@ related_chapters:
 <!-- gracker-diagram: ch16-02-01-four-attribution-layers -->
 ![从观测事实到改动责任](../../assets/diagrams/ch16/ch16-02-01-four-attribution-layers.png)
 
-图：把同一窗口中的事实、直接原因、条件所有者和改动责任逐层连接。 运行状态与进程名称只提供起点；同一问题可以需要App、Framework和vendor共同修复。
+图：把同一时间窗内的事实、直接原因、条件所有者和改动责任逐层连接。运行状态与进程名称只是调查起点，同一个问题往往需要 App、Framework 与 vendor 协同修复。
 
 ## 平台与内核锚点
 
@@ -142,7 +142,7 @@ related_chapters:
 | `D` / Uninterruptible Sleep | 线程处于不可被普通信号打断的等待 | 看 <code>blocked_<wbr>function</code>、I/O、page fault（内存页缺失异常）、驱动、fence（图形任务同步信号）或内核栈；不能只写成“磁盘慢” |
 | 状态缺失 | 当前 Trace 无法还原这段时间 | 检查内核 ftrace 缓冲区、启用的数据源、丢包与采集起止位置 |
 
-Perfetto UI 的颜色会随版本和主题改变，报告应记录 state 值和时间，不依赖“浅绿色”“蓝色”这类描述。`blocked_function` 是采集到的内核阻塞函数信息，只有相关事件可用、被采集并能解析时才会出现；它不是所有线程切出的通用调用栈，也不一定代表上层业务等待原因。
+Perfetto UI 的颜色会随版本和主题变化，报告中应记录具体的 state 值与时间戳，避免依赖“浅绿色”“蓝色”这类视觉描述。`blocked_function` 是采集到的内核阻塞函数信息，仅在相关事件可用、已开启采集且能解析时才会出现；它记录的是内核等待点，既不同于完整调用栈，也未必直接代表上层业务等待原因。
 
 
 ## CPU 与调度延迟
@@ -202,7 +202,7 @@ wakeup arrow 表示 Trace 记录的唤醒执行上下文，不等于它制造了
 <!-- gracker-diagram: ch16-02-05-binder-dependency-chain -->
 ![同步Binder的完整依赖路径](../../assets/diagrams/ch16/ch16-02-05-binder-dependency-chain.png)
 
-图：先确认同步事务和reply，再沿服务端排队、执行状态及下游等待建立完整依赖链。 ioctl附近Sleep可能是空闲服务线程；客户端等待包含远端耗时，不能把两者重复相加。
+图：先确认同步事务与 reply，再沿服务端排队、执行状态及下游等待建立完整依赖链。ioctl 附近的 Sleep 也可能是空闲服务线程；由于客户端等待已经包含远端执行耗时，两者不能重复相加。
 
 ## 内存压力、kswapd 与 lmkd
 
@@ -253,7 +253,7 @@ SurfaceFlinger 侧的 jank 表示显示栈相对预测时序出现了偏差，�
 <!-- gracker-diagram: ch16-02-08-frame-classification-boundary -->
 ![从帧关联到显示栈归因](../../assets/diagrams/ch16/ch16-02-08-frame-classification-boundary.png)
 
-图：先关联目标Layer的SurfaceFrame与DisplayFrame，再把jank分类落实到同帧阶段证据。 SF Actual不等于线程持续占CPU；PredictionError也需区分，分类与颜色不能独自证明代码所有者。
+图：先关联目标 Layer 的 SurfaceFrame 与 DisplayFrame，再把 jank 分类落实到同帧的阶段证据。SF Actual 区间并不代表线程全程占用 CPU；PredictionError 也需单独区分，仅凭分类和颜色无法确定代码所有者。
 
 ## Thermal 与频率限制
 
@@ -266,7 +266,7 @@ thermal 条件成立后，改动责任仍可能分布在多侧：
 - Framework/vendor 调整 power hint（向电源策略传递的负载提示）、thermal policy 或错误配置；
 - 硬件与整机侧改善散热和功耗设计。
 
-不要用假设的“3.0 GHz 降到 1.5 GHz”代替设备证据，也不要把物理限制写成任何一侧都无法改善。
+排查时应直接读取设备实测频率和温控状态，不要用估算的降频数字代替设备证据；即便是物理散热约束，也可以通过降低负载、调整功耗提示或改进策略来缓解。
 
 ## ANR 的归因
 
@@ -284,7 +284,7 @@ Android 17 的 `ActivityManagerConstants.java`、`ActiveServices.java` 和 `Broa
 - 系统 CPU、I/O、内存与 thermal 背景；
 - App 在可控条件下能否稳定完成同一工作。
 
-完整阈值与组件行为见第 9 章。方法论章节不复制一张会随 DeviceConfig 和版本变化的固定数字表。
+完整阈值与组件行为见第 9 章；具体超时参数会随 DeviceConfig 和系统版本变化，实际排查仍应核对目标设备的运行配置。
 
 
 ## 多 App 共存时怎样归因
@@ -327,7 +327,7 @@ A/B 指只改变待验证因素的对照实验。比较系统升级前后时，�
 <!-- gracker-diagram: ch16-02-12-system-ab-regression -->
 ![系统版本回归的受控比较](../../assets/diagrams/ch16/ch16-02-12-system-ab-regression.png)
 
-图：固定App和实验协议，记录系统各层版本，先确认稳定的阶段变化再验证源码或配置假设。 跨轨阶段不能直接求和；两台设备量化个体差异，往返刷机控制恢复、编译、缓存和初始化。
+图：固定 App 与实验协议，记录系统各层版本，先确认稳定的阶段变化，再验证源码或配置假设。跨轨道阶段可能并行，不能直接求和；使用两台设备时需先量化个体差异，往返刷机则需控制数据恢复、编译、缓存与后台初始化。
 
 ## 归因速查表
 

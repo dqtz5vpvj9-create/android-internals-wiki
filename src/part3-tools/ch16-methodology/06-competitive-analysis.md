@@ -48,7 +48,7 @@ related_chapters:
 
 竞品对比只有在场景、设备状态、版本和指标口径一致时才有解释力。我们做它的目的，是用可重复的实验判断差异落在哪个用户阶段、竞品的哪些设计可以迁移到自己的产品上；一份笼统的排名反倒是次要产出。
 
-> 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）。本文未逐项审计某个内核分支；涉及调度、频率或功耗归因时，需要另存实际设备内核、事件与厂商实现证据。
+> 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）。平台框架机制以该基线为准；涉及调度、频率或功耗归因时，仍需结合目标设备的实际内核版本、事件与厂商实现证据验证。
 
 ## 为什么要认真做竞品性能分析
 
@@ -56,9 +56,9 @@ related_chapters:
 
 > 在指定设备、系统版本、应用版本、账号状态和操作路径下，两个应用的观测结果有多大差异？
 
-这个问题的答案有明确的范围：一轮竞品测试量出的是差异有多大、出现在哪个阶段；差异由哪段代码造成、放到全部用户身上是否成立，还要回到源码、Trace（系统时间线记录） 和更多设备上补证据。所以实验条件必须随结果一起写进报告——缺了条件，一个启动耗时或卡顿率连复现都困难，更撑不起版本决策。
+这个问题的答案有明确的范围：一轮竞品测试量出的是差异有多大、出现在哪个阶段；差异由哪段代码造成、放到全部用户身上是否成立，还要回到源码、Trace（系统时间线记录）和更多设备上补证据。所以实验条件必须随结果一起写进报告——缺了条件，一个启动耗时或卡顿率连复现都困难，更撑不起版本决策。
 
-本文的源码结论只用来解释 Android 平台这一侧的计时和帧数据；竞品内部的业务实现我们看不见，写原因时只能写成假设，并列出还缺哪些证据。
+AOSP 源码只能解释 Android 平台这一侧的计时与帧数据；由于无法直接看到竞品内部的业务实现，报告中关于竞品内部原因的推断只能列为假设，并写明还需要哪些证据。
 
 ## 竞品性能对比的方法论
 
@@ -114,7 +114,7 @@ A/B 在同一设备、相近时间内成对执行，并保留设备和独立 blo
 <!-- gracker-diagram: ch16-06-04-paired-sampling -->
 ![配对、相关层级与停止规则](../../assets/diagrams/ch16/ch16-06-04-paired-sampling.png)
 
-图：按设备和独立block保留配对，预先确定统计量、查看批次和停止规则。 差值中位数不等于中位数之差；相关帧不当作独立重复，尾部估计需样本量。
+图：按设备和独立 block 保留配对，预先确定统计量、查看批次与停止规则。配对差值的中位数不等同于两组中位数之差；同一交互内的相关帧不当作独立重复样本，尾部估计也需要足够样本量。
 
 ## 竞品启动速度对比
 
@@ -133,7 +133,7 @@ TTID 由系统记录，我们仍要核对实际 Activity、入口和显示边界
 <!-- gracker-diagram: ch16-06-06-am-start-wait-path -->
 ![正常绘制路径怎样回填TotalTime](../../assets/diagrams/ch16/ch16-06-06-am-start-wait-path.png)
 
-图：正常启动跟踪从shell等待进入窗口绘制报告，再将毫秒延迟写回WaitResult并唤醒等待者。 图中是正常跟踪路径；已有顶部Activity、超时或无有效跟踪需另分类，窗口报告不等于光学完成。
+图：正常启动跟踪从 shell 等待进入窗口绘制报告，再将毫秒延迟写回 `WaitResult` 并唤醒等待者。图中展示的是正常跟踪路径，已有顶部 Activity、超时或无有效跟踪需另行分类；窗口报告完成也不等同于屏幕光学呈现完成。
 
 下面的命令用于确认一个**进程冷启动**样本。Intent 描述待执行的操作和目标组件；`-S` 在启动前 force-stop（强制停止）Intent 匹配到的包，`-W` 等待启动结果：
 
@@ -222,7 +222,7 @@ Android 12 起，SurfaceFlinger（负责图层合成与呈现的系统服务） 
 <!-- gracker-diagram: ch16-06-10-frametimeline-object-join -->
 ![从目标Layer关联Surface与Display](../../assets/diagrams/ch16/ch16-06-10-frametimeline-object-join.png)
 
-图：按目标Layer与token联系应用Surface帧、合成Display帧和显示反馈，再判断覆盖。 一个DisplayFrame可合成多个SurfaceFrame；空集合、缺失结束事件与不支持Surface不能当无卡顿。
+图：按目标 Layer 与 token 关联应用 Surface 帧、合成 Display 帧和显示反馈，再判断覆盖范围。一个 DisplayFrame 可以合成多个 SurfaceFrame；空帧集合、缺失结束事件与不支持的 Surface 类型都不能当作无卡顿。
 
 Trace 时长要覆盖完整的操作路径：短动画可能几秒就够，长列表或视频场景可能要一分钟，“至少 10 秒”这类通用门槛站不住。持续时间跟着场景定义走，帧数和有效区间一起报告。
 
@@ -318,7 +318,7 @@ apkanalyzer -h apk compare --different-only app-a.apk app-b.apk
 
 ## 注意事项：避免误导性结论
 
-实验条件固定住之后，剩下的风险集中在结论的写法上。这一节把六种常见的过度解读放在一起，写报告时可以对照检查。
+固定实验条件之后，剩下的风险往往出在结论的解读方式上。下面列出六种常见的误判，撰写报告时可以逐项对照核查。
 
 ### 误区一：只看单次数据就下结论
 
@@ -357,14 +357,14 @@ SoC（System on Chip，系统级芯片）、GPU 驱动、内存、存储、厂�
 6. **统一计算**：从原始文件生成帧集合、分位数、配对差值和区间，分析代码与原始数据一起版本化。
 7. **报告门禁**：缺版本、样本不足、状态不匹配、目标失败与必需证据缺失分别分类；不生成超出证据的排名。Trace 不是所有指标的共同有效性条件，应在合同里说明它用于计量、归因还是补充诊断。
 
-Macrobenchmark 适合自有应用并提供 JSON 与逐轮 Perfetto 产物，但目标配置、启动入口、编译重置和测试工作负载仍需适配。当前官方指南要求 profileable；固定 1.4.1 源码的 `NOT-PROFILEABLE` 错误实际只在 API 29–30 且 `DeviceInfo.profileableEnforced` 时成立，API 31+ 的 app trace tag 不再以此为同一硬门槛。因此“竞品 manifest 改不了，Macrobenchmark 全线用不了”这个判断下早了，按实际库/API、权限和依赖逐项验收才是正路；需要时改用外部 UI Automator/adb 与 shell Perfetto，并记录覆盖限制——suppressErrors 只是把错误咽下去，条件并没有被满足。`FrameMetrics` 监听代码则需要可控制的目标进程。
+Macrobenchmark 适合自有应用并提供 JSON 与逐轮 Perfetto 产物，但目标配置、启动入口、编译重置和测试工作负载仍需适配。当前官方指南要求 profileable；固定 1.4.1 源码的 `NOT-PROFILEABLE` 错误实际只在 API 29–30 且 `DeviceInfo.profileableEnforced` 时成立，API 31+ 的 app trace tag 不再以此为同一硬门槛。因此，不能因为“改不了竞品 manifest”就断定 Macrobenchmark 全线用不了，还是应按实际库版本、API、权限和依赖逐项验收；必要时改用外部 UI Automator/adb 与 shell Perfetto，并记录覆盖限制——`suppressErrors` 只是把错误压掉，条件并没有真正满足。`FrameMetrics` 监听代码则需要可控制的目标进程。
 
 `dumpsys gfxinfo` 若作为兼容路径，流水线应按 Android API 版本选择解析器，并用固定样本验证字段。遇到未知格式直接失败——静默填 0 会把错误带进结论。
 
 <!-- gracker-diagram: ch16-06-17-automated-evidence-pipeline -->
 ![自动比较按证据和失败分类验收](../../assets/diagrams/ch16/ch16-06-17-automated-evidence-pipeline.png)
 
-图：流水线归档版本、调度设备、准备状态、交错执行，最后按指标所需证据计算与报告。 固定1.4.1的profileable硬检查有API29–30条件；其他版本/API需验收，未知格式与缺失不填零。
+图：流水线归档版本、调度设备、准备状态、交错执行，最后按指标所需证据计算并生成报告。固定 1.4.1 的 `profileable` 硬检查限定于 API 29–30 条件，其他版本与 API 仍需单独验收；未知格式与缺失样本一律不填零。
 
 ## 扩展：竞品功耗对比方法
 
@@ -390,7 +390,7 @@ adb bugreport bugreport.zip
 <!-- gracker-diagram: ch16-06-18-power-software-observations -->
 ![行为时间线、系统rails与电荷变化](../../assets/diagrams/ch16/ch16-06-18-power-software-observations.png)
 
-图：行为时间线帮助解释活动，高精度rails与电荷变化分别提供不同范围的能耗观测。 PowerMetric是系统级测量；型号名不证明rail支持，Type.Battery也不是同精度能量值。
+图：行为时间线帮助解释活动，高精度 rails 与电荷变化分别提供不同范围的能耗观测。`PowerMetric` 属于系统级测量；设备型号本身不证明 rail 支持，且 `Type.Battery` 与 rail 测量不属于同精度的能量值。
 
 ### 硬件测量方案
 
@@ -407,7 +407,7 @@ adb bugreport bugreport.zip
 <!-- gracker-diagram: ch16-06-19-external-power-integration -->
 ![从同步电压电流积分到能量](../../assets/diagrams/ch16/ch16-06-19-external-power-integration.png)
 
-图：在明确测量点校准并同步电压电流，按场景积分总能量，再保留配对差值与区间。 mAh是电荷；测量点、USB供电和空闲基线修正会影响结果，原始总能量同时保留。
+图：在明确测量点校准并同步电压电流，按场景积分总能量，再保留配对差值与区间。`mAh` 衡量的是电荷量；测量点位置、USB 供电与空闲基线修正都会影响结果，原始总能量应同时保留。
 
 ## 参考资料
 

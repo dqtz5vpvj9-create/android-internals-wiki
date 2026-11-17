@@ -134,7 +134,7 @@ Macrobenchmark 的目标应用要尽量接近 release：`debuggable=false`；启
 <!-- gracker-diagram: ch16-05-03-reset-data-boundary -->
 ![编译重置何时会清掉应用数据](../../assets/diagrams/ch16/ch16-05-03-reset-data-boundary.png)
 
-图：先按固定库和平台版本确认编译重置路径，再重新准备测量需要的数据与缓存。 1.4.1在API24～33非root会卸载重装；None不是禁用JIT，也不是只改编译且保留数据的保证。
+图：先按固定库版本与平台版本确认编译重置路径，再重新准备测量所需的数据与缓存。1.4.1 在 API 24～33 非 root 会话下会卸载重装；`None()` 既不代表禁用 JIT，也不保证在只改编译的同时保留应用数据。
 
 ### 温度状态门控
 
@@ -159,7 +159,7 @@ Macrobenchmark 的目标应用要尽量接近 release：`debuggable=false`；启
 | <span style="white-space:nowrap">短路径回归</span> | 冷却到参考状态，缓存与编译状态固定 | 环境门控通过后 | 每轮时长、分布、起止热状态 |
 | <span style="white-space:nowrap">持续负载</span> | 运行目标工作负载，直到温度与性能进入稳定区间 | 预热区间结束后 | 稳态时长、帧/功耗分布、频率与热状态曲线 |
 
-我们把持续负载的“稳定”交给预先定义的滑动窗口条件去判定：在连续的固定窗口里检查温度与性能波动是否收敛。曲线跑完再临时挑一段看起来平的区间，这样的“稳态”说服力存疑。预热数据要保留，单独存放，与稳态统计分开。
+我们把持续负载的“稳定”交给预先定义的滑动窗口条件去判定：在连续的固定窗口里检查温度与性能波动是否收敛。曲线跑完后再临时挑一段看起来平稳的区间，这样的“稳态”缺乏复现依据。预热数据要保留，单独存放，与稳态统计分开。
 
 
 ### 电量与供电
@@ -274,7 +274,7 @@ Microbenchmark 用 `AndroidBenchmarkRunner`，这个 runner（插桩测试运行
 <!-- gracker-diagram: ch16-05-08-sampling-hierarchy -->
 ![独立运行、迭代与帧不是同一层](../../assets/diagrams/ch16/ch16-05-08-sampling-hierarchy.png)
 
-图：先区分独立CI运行、单次运行中的迭代和迭代内样本，再设计检出目标与不确定性评估。 十次启动P90不代表线上用户P90；相邻帧不能一律当成独立实验重复。
+图：先区分独立 CI 运行、单次运行中的迭代与迭代内样本，再设计检出目标与不确定性评估。十次启动算出的 P90 不代表线上用户 P90；相邻帧也不能一律当作独立实验重复。
 
 ### Macrobenchmark 两类指标的聚合方式
 
@@ -294,7 +294,7 @@ API 31+ 的逐帧诊断可优先保留 `frameOverrunMs`：正值是超过该指�
 <!-- gracker-diagram: ch16-05-09-metric-aggregation -->
 ![启动run与帧样本池的区别](../../assets/diagrams/ch16/ch16-05-09-metric-aggregation.png)
 
-图：启动按轮保留单值，帧指标保留每轮样本并按固定实现合并，数值范围与方向分别解释。 frameDurationCpuMs是跨UI/RT经过时间，overrun也受匹配过滤影响，二者都不是自动根因结论。
+图：启动指标按轮保留单值，帧指标保留每轮样本并按固定实现合并，数值范围与方向分别解释。`frameDurationCpuMs` 是跨 UI/RT 的经过时间，`overrun` 也受匹配过滤条件影响，两者本身都不是自动的根因结论。
 
 ### 中位数、尾部与指标方向
 
@@ -323,7 +323,7 @@ Warm-up 在不同工具里改变的状态并不相同。JIT（Just-In-Time） �
 
 ### AndroidX Benchmark 1.4.1 的 CompilationMode
 
-截至 2026-10-26，官方发布页列出的稳定版为 1.5.0，alpha 为 1.6.0-alpha01；我们刻意把讲解固定在 1.4.1 上，下表以固定 1.4.1 的 Maven 源码说明 `CompilationMode`。项目应固定实际使用的版本，升级后重新核对实现和噪声；本表只对 1.4.1 负责，别把它当成所有后续版本的行为承诺。
+截至 2026-10-26，官方发布页列出的稳定版为 1.5.0，alpha 版为 1.6.0-alpha01；下表按固定参考版本 1.4.1 的 Maven 源码说明 `CompilationMode` 的实现语义。项目应锁定各自使用的版本，升级后重新核对实现差异与基线噪声，不同版本间的具体行为可能变化。
 
 
 | 模式 | 语义 | 使用建议 |
@@ -368,7 +368,7 @@ fun coldStartupWithRequiredBaselineProfile() {
 <!-- gracker-diagram: ch16-05-12-partial-profile-flow -->
 ![Baseline安装与运行热点分别控制](../../assets/diagrams/ch16/ch16-05-12-partial-profile-flow.png)
 
-图：固定Partial可先安装Baseline并编译，再可选运行工作负载收集profile并再次编译。 Require验证安装前提，不证明规则覆盖或收益；要隔离两类profile作用需分别配置对照。
+图：固定 `Partial` 可先安装 Baseline Profile 并编译，再按需运行工作负载收集 profile 后再次编译。`Require` 仅验证安装前提，不证明规则覆盖或收益；要隔离两类 profile 的作用需分别配置对照。
 
 ### 启动模式控制的状态范围
 
@@ -384,7 +384,7 @@ Macrobenchmark 的 `StartupMode` 控制启动前的进程/Activity 状态：
 <!-- gracker-diagram: ch16-05-14-cold-setup-order -->
 ![COLD的setup到正式测量顺序](../../assets/diagrams/ch16/ch16-05-14-cold-setup-order.png)
 
-图：固定1.4.1先运行setup，再清理支持的缓存并终止进程，最后正式启动测量。 仅存在目标进程内存的准备会丢失；WARM/HOT首轮未计入统计的进程预热又是另一层。
+图：固定 1.4.1 先运行 `setupBlock`，再清理支持的缓存并终止进程，最后正式启动测量。仅保存在目标进程内存中的准备工作会随进程终止而丢失；WARM/HOT 首轮未计入统计的进程预热则是另一层逻辑。
 
 ## 排除规则与异常值
 
@@ -401,7 +401,7 @@ Macrobenchmark 的 `StartupMode` 控制启动前的进程/Activity 状态：
 <!-- gracker-diagram: ch16-05-15-invalid-failed-slow-samples -->
 ![无效环境、目标失败与有效慢样本](../../assets/diagrams/ch16/ch16-05-15-invalid-failed-slow-samples.png)
 
-图：先按预定义规则区分环境无效、目标失败和有效慢值，再决定统计、阻断与补证。 不能把崩溃或错误页删掉后宣称通过；缺失不填零，排除数量和原始记录都需保留。
+图：先按预定义规则区分环境无效、目标失败与有效慢样本，再决定统计、阻断与补证。不能把崩溃或错误页删掉后宣称通过；缺失值不得填零，排除数量与原始记录都需保留。
 
 ## 性能基线与回归检测
 
@@ -429,7 +429,7 @@ Macrobenchmark 的 `StartupMode` 控制启动前的进程/Activity 状态：
 <!-- gracker-diagram: ch16-05-16-paired-versioned-baseline -->
 ![版本化基线与同机交错对照](../../assets/diagrams/ch16/ch16-05-16-paired-versioned-baseline.png)
 
-图：基线绑定构建、状态、工具和协议，在同机block中交错或随机运行基线与候选。 A/B/B/A是控制漂移的示例；它不自动消除所有热、缓存、网络和顺序效应。
+图：基线绑定构建、状态、工具和协议，在同机 block 中交错或随机运行基线与候选。A/B/B/A 是控制时间漂移的常用编排方式，但它不能自动消除所有热效应、缓存、网络与顺序影响。
 
 ### 阈值来自 SLO 与噪声下限
 
@@ -446,7 +446,7 @@ Macrobenchmark 的 `StartupMode` 控制启动前的进程/Activity 状态：
 <!-- gracker-diagram: ch16-05-17-absolute-relative-gates -->
 ![SLO违约与相对回归独立判定](../../assets/diagrams/ch16/ch16-05-17-absolute-relative-gates.png)
 
-图：质量检查后分别评估绝对SLO和相对回归，再按预定义规则形成通过、阻断或证据不足。 相对劣化不必先突破SLO；基线已违约也不能自动放行，反复加样到显著会改变错误率。
+图：质量检查通过后分别评估绝对 SLO 与相对回归，再按预定义规则形成通过、阻断或证据不足结论。相对劣化达到工程阈值即应处理，不必等到突破 SLO；基线本身已违约时也不能自动放行，且反复加样直到统计显著会改变错误率。
 
 ### 趋势与单次闸门并用
 
@@ -528,7 +528,7 @@ Gradle 会把额外测试输出复制到 `build/outputs/connected_android_test_a
 
 ### suppressErrors 的使用限制
 
-Macrobenchmark instrumentation arguments 支持 `androidx.benchmark.suppressErrors`，可压掉的包括 `DEBUGGABLE`、`LOW-BATTERY`、`EMULATOR`、`NOT-PROFILEABLE` 和 `METHOD-TRACING-ENABLED`。这些条件每一个都影响结果可信度，正式闸门该做的是修复环境，而不是把错误降级成 warning。
+Macrobenchmark instrumentation arguments 支持 `androidx.benchmark.suppressErrors`，可压掉的包括 `DEBUGGABLE`、`LOW-BATTERY`、`EMULATOR`、`NOT-PROFILEABLE` 和 `METHOD-TRACING-ENABLED`。这些条件每一个都会直接影响结果可信度，正式闸门应当修正测试环境，不要把错误降级成 warning。
 
 CI 还要限制同一设备上的并发，定期运行固定的 calibration workload（用于监测设备漂移的校准负载） 监测设备漂移，并在设备更换、电池老化、系统更新或 Benchmark 升级后重建噪声模型。
 
@@ -548,7 +548,7 @@ CI 自己计算 P90 或置信区间时，插值方法和 bootstrap（有放回�
 <!-- gracker-diagram: ch16-05-19-ci-artifact-pipeline -->
 ![CI将流程检查和数值门禁分开](../../assets/diagrams/ch16/ch16-05-19-ci-artifact-pipeline.png)
 
-图：流程smoke、真机数值测试、产物校验和分层判定使用明确的版本与数据协议。 dry run和模拟器结果不入性能基线；suppressErrors不能替代修复环境，缺失/失败不补零。
+图：将流程 smoke、真机数值测试、产物校验和分层判定纳入同一套版本化数据协议。dry run 与模拟器结果不进入性能基线；`suppressErrors` 不能替代环境修复，缺失或失败样本也不得补零。
 
 ## 扩展：Firebase Performance Monitoring 的边界
 

@@ -64,7 +64,7 @@ last_rework_at: '2026-10-21T13:37:20+08:00'
 
 # AOSP（Android Open Source Project，Android 开源项目） 代码阅读
 
-我们在排查设备问题时抓到的日志、slice 和调用栈，最终都要回到源码才能解释：这段行为由哪一版代码、在什么条件下产生。所以源码阅读要由具体运行证据驱动——先固定平台 tag（标签）、模块和调用入口，再沿日志、trace 或 Binder（Android 的进程间通信机制） 接口向上下游展开。这样得到的是可验证的实现解释，而不是在当前主干代码里找一个可能不存在于目标设备的答案。
+我们在排查设备问题时抓到的日志、slice 和调用栈，最终都要回到源码才能解释：这段行为由哪一版代码、在什么条件下产生。因此源码阅读应当由具体运行证据驱动——先固定平台 tag（标签）、模块和调用入口，再沿日志、trace 或 Binder（Android 的进程间通信机制）接口向上下游展开。这样才能得到可验证的实现解释，避免在主干最新代码里寻找一个未必存在于目标设备上的分支。
 
 ## 阅读源码前，固定三个坐标
 
@@ -210,7 +210,7 @@ shell 命令还可能来自 `external/toybox` 或独立项目。看到设备命�
 <!-- gracker-diagram: ch16-07-04-build-selected-implementation -->
 ![从源码文件到产品实际选择](../../assets/diagrams/ch16/ch16-07-04-build-selected-implementation.png)
 
-图：通过模块依赖、产品架构和生成规则确认候选文件如何进入所选产物。 文件存在不证明被编入；构建配置声明也不代替实际构建与刷入产物验收。
+图：通过模块依赖、产品架构和生成规则确认候选文件如何进入目标产物。文件存在于源码树中不代表一定被编入；构建配置声明也不能替代实际构建与刷机产物的验证。
 
 ### 问题到目录的初始映射
 
@@ -249,7 +249,7 @@ I/Choreographer: Skipped 42 frames!  The application may be doing too much work 
 <!-- gracker-diagram: ch16-07-05-skipped-frame-warning -->
 ![Skipped日志是迟到区间的估算](../../assets/diagrams/ch16/ch16-07-05-skipped-frame-warning.png)
 
-图：在已排定帧的相应分支，用原始帧时刻计算jitter，非零间隔下达到阈值才打印。 设备属性值可能偏离默认阈值30；日志只标记迟到本身，坏帧计数与迟到来源要靠进一步验证。
+图：在已排定帧的相应分支中，用原始帧时刻计算 jitter，并在非零帧间隔下达到阈值时打印日志。设备属性值可能偏离默认阈值 30；日志本身只反映回调进入时的迟到估算，坏帧计数与迟到来源仍需进一步验证。
 
 ### 可复用的日志定位步骤
 
@@ -355,7 +355,7 @@ Android 17 的 `SFTRACE_*` 还转到 `libs/tracing_perfetto` 封装。固定 `tr
 <!-- gracker-diagram: ch16-07-09-native-name-and-backend -->
 ![SFTRACE命名与后端选择](../../assets/diagrams/ch16/ch16-07-09-native-name-and-backend.png)
 
-图：SFTRACE保留调用点名称并经tracing_perfetto选择后端，采集时核对实际启用路径。 composite名称由函数名与动态VSync ID拼成，不自动带类名前缀；关闭atrace不必然关闭直接Perfetto路径。
+图：`SFTRACE` 保留调用点名称并经 `tracing_perfetto` 选择后端，采集时需核对实际启用的路径。`composite` 名称由函数名与动态 VSync ID 拼成，不自动带类名前缀；关闭 atrace 类别也未必会关闭直接写入 Perfetto 的路径。
 
 版本历史资料要按 tag 阅读：Android 12 到 Android 17 之间，SurfaceFlinger 的入口、宏封装和 slice 名都发生过变化。Android 17 的结论倒推不到旧 trace，旧文章里的函数名也要先对照当前源码，再拿来用。
 
@@ -392,7 +392,7 @@ Android 17 的 `SFTRACE_*` 还转到 `libs/tracing_perfetto` 封装。固定 `tr
 <!-- gracker-diagram: ch16-07-11-activitythread-entry -->
 ![ActivityThread主入口与组件派发](../../assets/diagrams/ch16/ch16-07-11-activitythread-entry.png)
 
-图：ActivityThread建立Java主线程运行环境并attach，随后由主Looper派发应用与组件工作。 main之前已有进程创建与运行时初始化；完整启动还跨system_server、ART、I/O和首帧。
+图：`ActivityThread` 建立 Java 主线程运行环境并完成 attach，随后由主 Looper 派发应用与组件工作。`main` 之前已经经历进程创建与运行时初始化；完整启动链路还跨越 `system_server`、ART、I/O 与首帧绘制。
 
 ### `ViewRootImpl`：顶层 View 树与 Window 系统的连接点
 
@@ -413,7 +413,7 @@ Android 17 的 `SFTRACE_*` 还转到 `libs/tracing_perfetto` 封装。固定 `tr
 <!-- gracker-diagram: ch16-07-12-viewroot-traversal -->
 ![traversal排定与消息屏障生命周期](../../assets/diagrams/ch16/ch16-07-12-viewroot-traversal.png)
 
-图：请求先更新状态，再按需排定traversal；执行时清标记、移除屏障并按状态遍历。 请求不会同步完成布局，也不保证每次新增VSync或每帧完整执行measure/layout/draw。
+图：请求先更新状态，再按需排定 traversal；执行时清标记、移除同步屏障并按状态遍历。请求既不会同步完成布局，也不保证每次都新增 VSync 或每帧完整执行 measure/layout/draw。
 
 分析时我们重点关注：
 
@@ -462,7 +462,7 @@ Android 17 的 `SFTRACE_*` 还转到 `libs/tracing_perfetto` 封装。固定 `tr
 <!-- gracker-diagram: ch16-07-14-surfaceflinger-present-path -->
 ![合成调用链跨越多个封装层](../../assets/diagrams/ch16/ch16-07-14-surfaceflinger-present-path.png)
 
-图：从SurfaceFlinger组装刷新参数，经CompositionEngine遍历输出，进入策略协商、合成与提交。 这是正常调用关系示意；client合成可选，HWC可提前present，offload等分支需要同帧证据。
+图：从 SurfaceFlinger 组装刷新参数，经 CompositionEngine 遍历输出，进入策略协商、合成与提交。图中是正常调用关系示意；client 合成可选，HWC 也可走提前 present，offload 等分支仍需同帧证据核对。
 
 按 HWC 的 fence 契约，物理屏的 present fence 在该帧开始显示（video-mode）或开始向面板内存传输（command-mode）对应的 VSync 触发；虚拟显示则在输出缓冲写完、可安全读取时触发。release fence 表示设备已读完相应旧缓冲，可以重新写入。定义见固定 tag 的 [`hwcomposer2.h`](https://android.googlesource.com/platform/hardware/libhardware/+/refs/tags/android-17.0.0_r1/include_all/hardware/hwcomposer2.h#1767)。
 
@@ -579,7 +579,7 @@ lunch aosp_cf_x86_64_only_phone-aosp_current-userdebug
 aidegen frameworks/base
 ```
 
-`lunch` 示例采用 product、release config、build variant 三段式兼容语法；该版也支持空格分隔，未给 release/variant 时默认 `trunk_staging`/`eng`。固定 Cuttlefish 产品表包含 `aosp_cf_x86_64_only_phone`，release map 将 `aosp_current` 别名映到 `cp2a`；这只能核对配置声明，不代表本轮已经完成构建。实际 target 仍须匹配研究对象；AIDEGen解析模块依赖，重新同步后需重跑，且可能覆盖已有IDEA配置，先保存本地改动。
+`lunch` 示例采用 product、release config、build variant 三段式兼容语法；该版也支持空格分隔，未指定 release/variant 时默认 `trunk_staging`/`eng`。固定 Cuttlefish 产品表包含 `aosp_cf_x86_64_only_phone`，release map 将 `aosp_current` 别名映射到 `cp2a`；这只用于核对配置声明，不代表本轮已经完成构建。实际 target 仍须匹配研究对象；AIDEGen 会解析模块依赖，重新同步源码后需重跑，且可能覆盖已有 IDEA 配置，操作前应先保存本地改动。
 
 ### C/C++：AIDEGen 或 Soong compdb
 
@@ -640,7 +640,7 @@ git -C frameworks/base blame -L 1074,1212 \
 
 ### 从 Change-Id 进入 Gerrit
 
-AOSP 提交消息通常包含 `Change-Id: I...`，它是一次 Gerrit 评审在多版提交间保持不变的标识。复制完整 Change-Id，在 [AOSP Gerrit](https://android-review.googlesource.com) 查询，并核对项目与目标分支；同一Change-Id可在不同仓库/分支复用，靠项目与分支信息才能锁定这次评审。
+AOSP 提交消息通常包含 `Change-Id: I...`，它是一次 Gerrit 评审在多版提交间保持不变的标识。复制完整 Change-Id，在 [AOSP Gerrit](https://android-review.googlesource.com) 查询，并核对项目与目标分支；同一 Change-Id 可在不同仓库或分支复用，靠项目与分支信息才能锁定这次评审。
 
 公开 change 页面可能包含 patch set（同一评审的某一版改动）、测试说明、review comment 和关联 bug。部分历史提交、上游导入或受限讨论没有完整公开信息，此时只能依据 commit message、diff、公开 bug 与代码行为。
 
@@ -665,7 +665,7 @@ AOSP 提交消息通常包含 `Change-Id: I...`，它是一次 Gerrit 评审在�
 
 ### 把 `main` 当作设备版本
 
-主干名和移动的最新发布分支，都对不上设备实际的 revision。当前官方FAQ已将 `aosp-main` 标为只读，并引导开发使用 `android-latest-release` 对应的manifest分支；这类移动别名仍随上游更新，本篇研究固定在 tag/commit 上。文章引用保留精确源码坐标，设备判断另核对fingerprint、模块版本与厂商信息。
+主干名和移动的最新发布分支，都对不上设备实际的 revision。当前官方 FAQ 已将 `aosp-main` 标为只读，并引导开发使用 `android-latest-release` 对应的 manifest 分支；这类移动别名仍会随上游更新，需要精确复现时仍应将坐标固定在具体的 tag 或 commit 上。文中所引源码均保留精确坐标，排查具体设备时另需核对 fingerprint、模块版本与厂商信息。
 
 ### 把搜索命中当作执行证据
 
