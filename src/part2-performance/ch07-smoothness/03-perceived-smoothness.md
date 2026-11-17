@@ -59,9 +59,9 @@ last_review_finalize_at: '2026-08-03T10:05:40+08:00'
 
 # 感知流畅性：步幅波动与无掉帧卡顿
 
-> ⚠️ 校勘（2026-10-23）：旧文把 App 准时完成概括为未触发 jank，并把 8/9 ms 写成“交替”；下文分别按显示链责任与绝对时间量化示例更正。Buffer Stuffing Recovery 的多次延后/阈值分支，以及 histogram 的调用方职责和区间端点，也已按 r1 源码复核。
+> 注：App 在自身 deadline（截止时间）前完成只代表本侧满足预算，后续 DisplayFrame 与显示末端仍可能触发其他类型的 jank；120 Hz 下的 8 ms / 9 ms 来自绝对时间截断后的分布规律，并非简单交替。下文关于 Buffer Stuffing Recovery 多次延后/阈值分支，以及直方图调用方职责与区间端点的结论，均按 AOSP `android-17.0.0_r1` 核对。
 
-App 在自身 deadline（截止时间）前完成一帧，通常说明它满足了这一帧的完成预算；但这一帧到用户眼前还要经过 SurfaceFlinger、显示末端等环节，任何一处仍可能出现其他分类的 jank。而且画面里的对象是否沿预期轨迹移动，还要看输入采样、运动模型、数值精度、像素取整、buffer（图形缓冲区）提交、刷新率选择和 present（呈现）节拍。我们把这两类问题分开叫：“帧准时”与“运动均匀”。
+App 在自身 deadline 前完成一帧，说明它满足了这一帧的生产预算；但画面抵达用户眼前还需经过 SurfaceFlinger、显示末端等环节，其中任何一处仍可能触发其他类型的 jank。另一方面，画面里的对象是否沿着预期轨迹平稳移动，还要看输入采样、运动模型、数值精度、像素取整、buffer（图形缓冲区）提交、刷新率选择和 present（呈现）节拍。因此，分析感知流畅性时，需要将“帧准时”与“运动均匀”分开考察。
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -69,7 +69,7 @@ App 在自身 deadline（截止时间）前完成一帧，通常说明它满足�
 
 ## “帧准时”与“运动均匀”是两组数据
 
-做流畅性分析时，我们至少要看三条时间线：
+做流畅性分析时，至少需要同时观察三条时间线：
 
 | 时间线 | 观察对象 | 常用证据 |
 |---|---|---|
@@ -92,7 +92,7 @@ FrameTimeline 里的绿色帧，只说明这一帧没有被判成 jank。FrameTi
 | fling 异常，手指跟随阶段正常 | `OverScroller`、自定义物理模型、SnapHelper、item 尺寸 | create/bind/layout 和图片回调 |
 | App 与显示节奏都平稳，高速相机仍看到不连续 | 面板扫描、像素响应、内容对比度或设备显示处理 | 相机曝光、快门和同步误差 |
 
-“无掉帧卡顿”是用户能观察到的现象，也是我们排查的起点；要落到根因，还得顺着上表的方向继续取证。
+“无掉帧卡顿”是用户能观察到的现象，也是排查的起点；要落到根因，还得顺着上表的方向继续取证。
 
 ## OverScroller 的时间模型
 
@@ -111,7 +111,7 @@ FrameTimeline 里的绿色帧，只说明这一帧没有被判成 jank。FrameTi
 
 图：这是普通 SPLINE 更新路径：整数毫秒输入、分段线性插值和整数像素输出分处不同位置。BALLISTIC、CUBIC、结束与边界处理另有分支；三处离散化都需结合轨迹验证。
 
-这三项的影响并不相同。第二项是分段线性近似，未必产生可见问题；第三项在低速末段很常见——位置停在一个像素上，或者突然跳过一个像素，都可能是整数位置造成的；第一项取决于整数毫秒换算，我们放到下一小节单独算。至于三项会不会真的被用户看到，要结合速度、屏幕密度、内容边缘和 present 节拍测量。
+这三项的影响并不相同。第二项属于分段线性近似，未必造成可见问题；第三项在低速末段很常见——位置停在一个像素上，或者突然前进一个像素，往往就是整数取整造成的；第一项取决于整数毫秒换算，下一小节单独展开。至于三项叠加后会不会被用户察觉，还要结合运动速度、屏幕密度、内容边缘与 present 节拍实测。
 
 <!-- gracker-diagram: ch07-03-pixel-rounding-example -->
 ![整数像素会怎样改变低速步幅](../../assets/diagrams/ch07/ch07-03-pixel-rounding-example.png)
@@ -122,24 +122,24 @@ FrameTimeline 里的绿色帧，只说明这一帧没有被判成 jank。FrameTi
 
 ### 8/9 ms 混合从哪里来
 
-`Choreographer.doFrame()` 保留着纳秒级 `frameTimeNanos`，但调用 legacy animation clock 时会执行 `frameTimeNanos / NANOS_PER_MS`，整数除法向下截断。理想的 120 Hz 周期约为 8.333 ms，映射到整数毫秒后，相邻 animation time（动画时间）的差值就分布在 8 ms 与 9 ms 之间：零相位的理想算术示例为 `0, 8, 16, 25, 33, 41, 50 ms`，差值为 `8, 8, 9, 8, 8, 9 ms`。60 Hz 常见 16/17 ms，90 Hz 常见 11/12 ms；这组整数序列是换算示例，不是设备实测。
+`Choreographer.doFrame()` 保留着纳秒级 `frameTimeNanos`，但调用 legacy animation clock 时会执行 `frameTimeNanos / NANOS_PER_MS`，整数除法向下截断。理想的 120 Hz 周期约为 8.333 ms，映射到整数毫秒后，相邻 animation time（动画时间）的差值就分布在 8 ms 与 9 ms 之间：零相位的理想算术示例为 `0, 8, 16, 25, 33, 41, 50 ms`，差值为 `8, 8, 9, 8, 8, 9 ms`。60 Hz 常见 16/17 ms，90 Hz 常见 11/12 ms；这组整数序列是换算示例，不代表设备实测。
 
-具体序列会随起始相位、显示模式、VSync 预测和是否跳帧而变，但它是整数换算规则的量化结果，规律来自截断位置，与每帧随机增减 1 ms 是两回事。把 1 ms 除以 8.33 ms 得到约 12%，描述的只是两个时间数值的比例；要把它说成位移误差或用户感知概率，还需要轨迹与呈现证据。
+具体序列会随起始相位、显示模式、VSync 预测和是否跳帧而变化，它是绝对时间截断规则下的量化结果，规律取决于截断位置，与每帧随机增减 1 ms 完全不同。将 1 ms 除以 8.33 ms 得到的约 12%，描述的只是两个时间数值之比；要进一步论证位移误差或用户感知概率，还需要轨迹与呈现证据。
 
 <!-- gracker-diagram: ch07-03-quantized-time-example -->
 ![120 Hz 的绝对时间量化示例](../../assets/diagrams/ch07/ch07-03-quantized-time-example.png)
 
 图：理想 120 Hz、零相位的算术示例：先截断每个绝对时间戳，再相减得到 8、8、9 ms 的重复组合。轨道按这些理想数值绘制，属于换算示意，不是设备采集数据。
 
-落到 `OverScroller` 上：高速、曲线斜率较大的区间，相邻整数毫秒采样可能形成不同的整数像素步幅；内容速度较低、屏幕密度较高，或显示侧节拍同时变化时，观测到的步幅又会不同。某台设备究竟有没有受影响，只有轨迹采样说了算。
+落到 `OverScroller` 上：在高速、曲线斜率较大的区间，相邻整数毫秒采样更容易形成不等的整数像素步幅；当内容速度较低、屏幕密度较高，或显示侧节拍同时波动时，观测到的步幅表现又会不同。某台设备究竟有没有受影响，最终要以轨迹采样结果为准。
 
 ## Choreographer 保留了哪些精度
 
-`Choreographer` 这边保留的精度更高：`doFrame()` 内部维护纳秒级 frame time（帧时间）、frame interval（帧间隔）和 deadline，以及平台可能提供的 frame timeline（帧时间线）；公开的 `FrameCallback.doFrame(frameTimeNanos)` 接收的也是纳秒时间。不过单位为 ns 不表示硬件或调度具有 1 ns 的实测精度。API 33 起，`postVsyncCallback()` 还能提供 `FrameData` 和候选 presentation timeline（呈现时间线）。`FrameData` / `FrameTimeline` 只在该 VSync 回调内有效，需要异步留存时，应在回调内复制 vsync ID、expected presentation 和 deadline 等数值。
+`Choreographer` 这边保留的精度更高：`doFrame()` 内部维护纳秒级 frame time（帧时间）、frame interval（帧间隔）和 deadline，以及平台可能提供的 frame timeline（帧时间线）；公开的 `FrameCallback.doFrame(frameTimeNanos)` 接收的也是纳秒时间。不过单位为 ns 并不代表硬件或调度具备 1 ns 的实测精度。从 API 33 起，`postVsyncCallback()` 还能提供 `FrameData` 与候选 presentation timeline（呈现时间线）。`FrameData` / `FrameTimeline` 仅在该 VSync 回调内有效，如需异步留存，应在回调内复制 vsync ID、expected presentation 与 deadline 等数值。
 
-精度在哪里降下来？就在 legacy View animation clock 的转换位置：`AnimationUtils.lockAnimationClock(frameTimeNanos / NANOS_PER_MS)`。这把锁是线程局部的：执行该 Choreographer 回调的同一线程里，旧动画与滚动代码读到的是 `max(currentVsyncTimeMillis, lastReportedTimeMillis)`。`lastReportedTimeMillis` 记录最近一次未锁定时的 `uptimeMillis()` 读数，作用是避免锁定时间退到该读数之前；至于全局时钟或跨线程同步，它管不到。
+精度降下来的位置就在 legacy View animation clock 的转换处：`AnimationUtils.lockAnimationClock(frameTimeNanos / NANOS_PER_MS)`。这把锁是线程局部的：执行该 Choreographer 回调的同一线程里，旧动画与滚动代码读到的是 `max(currentVsyncTimeMillis, lastReportedTimeMillis)`。`lastReportedTimeMillis` 记录最近一次未锁定时的 `uptimeMillis()` 读数，用来防止锁定时间回退到该读数之前；至于全局时钟或跨线程同步，它管不到。
 
-下面三句说的对象各不相同，我们分开核对：
+分析时间精度时，以下三个层次的对象各不相同，应分开核对：
 
 <!-- gracker-diagram: ch07-03-clock-precision-scope -->
 ![纳秒帧时间与线程局部毫秒动画钟](../../assets/diagrams/ch07/ch07-03-clock-precision-scope.png)
@@ -150,40 +150,40 @@ FrameTimeline 里的绿色帧，只说明这一帧没有被判成 jank。FrameTi
 - legacy `AnimationUtils` 消费者使用整数毫秒；
 - Compose frame clock（帧时钟）、自定义 `FrameCallback` 或其他引擎是否保留纳秒精度，要按各自实现核对。
 
-平台源码可在 [`Choreographer.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/Choreographer.java) 和 [`AnimationUtils.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/animation/AnimationUtils.java)复核。
+平台源码可在 [`Choreographer.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/Choreographer.java) 和 [`AnimationUtils.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/animation/AnimationUtils.java) 复核。
 
 ## 输入重采样的条件
 
-跟手性问题查到输入这一层时，我们先要弄清重采样发生在哪条路径上。本文核对的是常规 ViewRootImpl 的 JNI 路径：`NativeInputEventReceiver` 在目标应用进程内使用 `InputConsumer`，重采样逻辑在 `frameworks/native/libs/input/InputConsumer.cpp`。启用重采样且 frame time 有效时，批量消费的目标 sample time 从 frame time 回退 `RESAMPLE_LATENCY = 5 ms`。
+跟手性问题追到输入层时，先要明确重采样发生在哪条路径。这里核对的是常规 `ViewRootImpl` 的 JNI 路径：`NativeInputEventReceiver` 在目标应用进程内调用 `InputConsumer`，重采样逻辑位于 `frameworks/native/libs/input/InputConsumer.cpp`。在启用重采样且 frame time 有效时，批量消费的目标 sample time 会从 frame time 回退 `RESAMPLE_LATENCY = 5 ms`。
 
-接下来的分支看样本条件：有 future sample（目标时刻之后的样本）时，算法在前后样本之间插值；只有历史样本时才外推，也就是按已有趋势预测后续位置。外推上限同时受最近样本间隔的一半和 `RESAMPLE_MAX_PREDICTION = 8 ms` 限制。插值要求前后样本间隔至少 2 ms；外推要求最近两个真实样本的间隔在 `[2, 20] ms` 内，并受 pointer/source、工具类型、显示屏及 MOVE 等条件约束。遇到无效 frame time（例如 `-1`）时，批次会被直接消费，不走这条重采样路径。
+接下来的分支取决于样本条件：存在 future sample（目标时刻之后的样本）时，算法在前后样本之间插值；只有历史样本时才外推，即按已有趋势预测后续位置。外推上限同时受最近样本间隔的一半与 `RESAMPLE_MAX_PREDICTION = 8 ms` 限制。插值要求前后样本间隔至少 2 ms；外推要求最近两个真实样本的间隔在 `[2, 20] ms` 内，并受 pointer/source、工具类型、显示屏及 MOVE 等条件约束。遇到无效 frame time（例如 `-1`）时，批次会被直接消费，不走重采样分支。
 
-这里要防一个误读：5 ms 是算法挑重采样时刻用的偏移，端到端响应是否因此固定多出 5 ms，要看触控采样率、VSync 时序、历史样本、触控工具类型（手指或触控笔等）和预测方向。
+需要注意，5 ms 是算法挑选重采样时刻的回退偏移，端到端输入延迟是否因此多出 5 ms，还要结合触控采样率、VSync 时序、历史样本间距、触控工具类型（手指或触控笔等）和预测方向一起评估。
 
 <!-- gracker-diagram: ch07-03-input-resampling-branches -->
 ![目标采样时间、插值与受限外推](../../assets/diagrams/ch07/ch07-03-input-resampling-branches.png)
 
 图：图限常规 ViewRootImpl JNI 的 InputConsumer。有效帧时间和启用条件满足时，目标为 frameTime−5 ms；前后样本可插值，只有历史样本时才受限外推。条件不满足时保留真实数据路径，不把 5 ms 解释成额外睡眠。
 
-`ro.input.resampling` 是系统只读产品属性，第三方 App 拿不到运行时优化开关；OEM（设备厂商）、系统镜像或 userdebug（可调试系统构建）实验可以做 A/B（对照实验）。普通应用这边，应采集原始 MotionEvent、消费时刻、模型坐标和 present 证据。
+`ro.input.resampling` 是系统只读产品属性，第三方 App 拿不到运行时开关；OEM（设备厂商）、系统镜像或 userdebug（可调试系统构建）实验可以做 A/B（对照实验）。普通应用侧排查时，应采集原始 `MotionEvent`、消费时刻、模型坐标与 present 证据。
 
 源码可查 [`InputConsumer.cpp`](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/libs/input/InputConsumer.cpp)。
 
 ## Buffer Stuffing Recovery 放在哪一层
 
-buffer 一侧的问题要换一层看。Buffer stuffing 描述的是生产与消费节拍失配时额外排队、呈现延后的现象，也可能形成 dequeue / buffer release 等待。`Choreographer` 里对应的内部状态是 `BufferStuffingState` 和 `onWaitForBufferRelease()`：传入的等待时长严格大于 `mLastFrameIntervalNanos / 2` 时，后者把 `isStuffed` 置位。这个检测是 Choreographer 的恢复触发线索，和 FrameTimeline 的 `Buffer Stuffing` 分类属于不同层的判定。
+另一类节奏干扰发生在图形缓冲区一侧。Buffer stuffing 描述的是生产与消费节拍失配时额外排队、呈现延后的现象，也可能引发 dequeue / buffer release 等待。`Choreographer` 中对应的内部状态是 `BufferStuffingState` 与 `onWaitForBufferRelease()`：当传入的等待时长严格大于 `mLastFrameIntervalNanos / 2` 时，后者会将 `isStuffed` 置位。这个检测属于 Choreographer 自身的恢复触发线索，与 FrameTimeline 的 `Buffer Stuffing` 分类处于不同层级。
 
-恢复动作可以返回 `DELAY_FRAME`，安排下一个 VSync 并直接返回；也可以返回 `OFFSET`，把本次动画 frame time 减去当前一个 frame interval。开启 multi-recovery 时，同一次动画可以多次延后；threshold flag 要到累计主动延后达到 100 ms 才抑制进一步主动延后，并不立即结束恢复——源码要等 idle 判断通过后才 reset 恢复状态。
+恢复动作可以返回 `DELAY_FRAME`（安排下一个 VSync 并直接返回），也可以返回 `OFFSET`（将本次动画 frame time 减去当前一个 frame interval）。开启 multi-recovery 时，同一次动画可以多次延后；threshold flag 要到累计主动延后达到 100 ms 时才抑制进一步主动延后，且不会立即结束恢复——源码会等到 idle 判断通过后才 reset 恢复状态。
 
-这套 API 带有 `@hide`，仅供平台内部使用，并受内部 flag（开关）与实现约束；它会改变调度和动画时间线。在 Perfetto 里，我们还可能看到 `Buffer stuffing recovery` 轨道，或 FrameTimeline 的 `Buffer Stuffing` jank type（卡顿类型）。buffer 排队恢复与模型坐标量化是两种机制，也可能在同一个现场同时存在，取证时要分别进行。
+这套 API 带有 `@hide`，仅供平台内部使用并受内部 flag（开关）与实现约束，会直接改变调度与动画时间线。在 Perfetto 里，有时能看到 `Buffer stuffing recovery` 轨道，或 FrameTimeline 的 `Buffer Stuffing` jank type（卡顿类型）。buffer 排队恢复与模型坐标量化属于两种不同机制，也可能在同一现场并存，取证时应分开核对。
 
-排查时我们分开读三样东西：
+排查时把以下三件事分开看：
 
 - `OverScroller` 毫秒量化：App 运动模型输入时间的离散化；
 - Buffer stuffing：窗口 Producer（生产者）因 buffer 不可用而受到 backpressure；
 - Recovery：Choreographer 为减少排队 buffer，主动延后一帧并调整动画时间。
 
-应用侧该做的是处理 buffer 生产过快、GPU/Consumer（消费者）变慢或帧节奏错误这些源头；内部 recovery API 留给平台自己。
+应用侧的优化重心应放在解决 buffer 生产过快、GPU/Consumer（消费者）过慢或帧节奏错配这些根源上，平台内部的 recovery 机制由框架自行调度。
 
 <!-- gracker-diagram: ch07-03-buffer-recovery-actions -->
 ![Buffer Stuffing Recovery 的三类动作](../../assets/diagrams/ch07/ch07-03-buffer-recovery-actions.png)
@@ -194,28 +194,28 @@ buffer 一侧的问题要换一层看。Buffer stuffing 描述的是生产与消
 
 ### 采集四组数据
 
-一次可复现的测试，我们至少要记下四组数据：
+一次可复现的测试，至少需要同时记录以下四组数据：
 
-- 分别记录 `frameTimeNanos`、模型实际使用的评估时间 `t_eval`、选定 timeline 的 expected presentation time；实际 present 时间另从显示侧关联。它们的阶段不同，不能互相代替；
+- 分别记录 `frameTimeNanos`、模型实际使用的评估时间 `t_eval`、选定 timeline 的 expected presentation time；实际 present 时间另从显示侧关联。四者所属阶段不同，不能互相替代；
 - 运动模型输出，例如 scroller（滚动模型）位置、动画 progress（进度）、目标 transform（变换）；
 - View 层消费后的结果，例如 RecyclerView 本帧累计 `dx/dy` 或稳定 item anchor（条目参照点）的 decorated position（含装饰偏移的位置）；
 - FrameTimeline 中的 App SurfaceFrame（应用 Surface 帧记录）与 SurfaceFlinger DisplayFrame（整屏显示帧记录）。
 
 
-这里有个容易踩的坑：UI 线程 counter 记录的只是应用在该时刻准备好的状态，像素是否已经上屏，它说了不算。要证明“用户看到的步幅”，应保留进程、layer、actual slice ID 与 surface/display token，再把应用状态关联到实际被呈现的 buffer/显示帧；同一 surface token 可能出现在多个 layer，配对时只按 token 等值是不够的。
+需要注意，UI 线程 counter 记录的只是应用在该时刻准备好的状态，像素是否真正上屏还取决于后续合成与显示链路。要证明“用户看到的步幅”，应保留进程、layer、actual slice ID 与 surface/display token，再把应用状态关联到实际呈现的 buffer/显示帧；由于同一 surface token 可能出现在多个 layer，配对时只按 token 等值并不足够。
 
-跨日志与 trace 比较前，还要核对单位和时钟域：`frameTimeNanos` 使用 `System.nanoTime()` 时间基，Perfetto 可通过 clock snapshot 映射多种时钟，日志里的数值与 trace 的 `ts` 直接相减没有意义。原理见 [Perfetto 时钟同步](https://perfetto.dev/docs/concepts/clock-sync)。精度要求更高时，可以使用与 VSync 校准的高速相机或光学传感器。
+跨日志与 trace 比较前，还要核对单位和时钟域：`frameTimeNanos` 使用 `System.nanoTime()` 时间基，Perfetto 则通过 clock snapshot 映射多种时钟，直接把日志里的数值与 trace 的 `ts` 相减没有意义（原理见 [Perfetto 时钟同步](https://perfetto.dev/docs/concepts/clock-sync)）。若需更高的时间精度，可以使用与 VSync 校准的高速相机或光学传感器。
 
 <!-- gracker-diagram: ch07-03-clock-and-frame-identity -->
 ![关联前先校准时钟与帧身份](../../assets/diagrams/ch07/ch07-03-clock-and-frame-identity.png)
 
 图：frameTime 使用 System.nanoTime 时间基，Perfetto 的 ts 可能已经过时钟映射。日志与 trace 要确认单位、时钟域和同步关系；再以进程、layer、slice、buffer/token 关联到真正被呈现的状态。
 
-列表侧取数要挑稳定的身份。RecyclerView 的 `computeVerticalScrollOffset()` 可能受 LayoutManager 的 scrollbar（滚动条）估算策略影响，更稳妥的做法是记录同一条目的稳定业务键，或在 Adapter 已启用 stable IDs 时记录 item ID，再记录 decorated top（包含装饰偏移的顶部位置）和列表累计消费位移。会变化的 adapter position 和默认 `NO_ID` 都当不了稳定身份；多次 `onScrolled()` 应按实际关联的应用帧合并，并保留调用顺序。
+列表侧取数需要挑选稳定的条目身份。RecyclerView 的 `computeVerticalScrollOffset()` 可能受 LayoutManager 的 scrollbar（滚动条）估算策略影响，更稳妥的做法是记录同一条目的稳定业务键，或在 Adapter 已启用 stable IDs 时记录 item ID，再记录 decorated top（包含装饰偏移的顶部位置）与列表累计消费位移。会随增删变化的 adapter position 和默认 `NO_ID` 都无法作为稳定身份；同一帧内的多次 `onScrolled()` 应按实际关联的应用帧合并，并保留调用顺序。
 
 ### 用目标曲线计算残差
 
-设采样为 `(t_i, x_i)`，我们先用几个基础量把轨迹描述出来：
+设采样为 `(t_i, x_i)`，可以用几个基础量把轨迹特征刻画出来：
 
 - 时间步长 `Δt_i = t_i - t_(i-1)`；
 - 位移步长 `Δx_i = x_i - x_(i-1)`；
@@ -223,9 +223,9 @@ buffer 一侧的问题要换一层看。Buffer stuffing 描述的是生产与消
 - 目标位置 `x_expected(t_i)`；
 - 轨迹残差 `e_i = x_i - x_expected(t_i)`。
 
-窗口怎么选取决于运动形态。匀速时间窗口里，可以比较 `Δx` 或 `v` 的标准差与极差（最大值减最小值）；减速、回弹和贝塞尔动画则优先比较 `e_i`，并观察残差是否按 8/9 ms、11/12 ms 或刷新率切换呈现周期。如果离群点只有少数几个（明显偏离其他样本的点），还要检查跳帧、GC（垃圾回收）、调度和 item 布局。
+采样窗口的选取取决于运动形态。匀速时间窗口里，可以直接比较 `Δx` 或 `v` 的标准差与极差（最大值减最小值）；减速、回弹和贝塞尔动画则优先比较 `e_i`，并观察残差是否按 8/9 ms、11/12 ms 或刷新率切换呈现周期规律。若出现少数明显偏离其他样本的离群点，还要结合跳帧、GC（垃圾回收）、调度与 item 布局排查。
 
-算残差之前，先说明时间轴：内部模型用 `x_model - x_expected(t_eval)`；评估可见运动时，则用实际呈现 buffer 的坐标，与目标曲线在实际 present 时刻的位置比较，并说明相位或预测约定——本来有阶段差的两个时间，不能当成同一时间。报告里保留带符号的 `e_i` 分布以观察偏置/周期，同时给 `|e_i|` 的中位数、P95/P99 和峰值来描述误差大小；设备、刷新模式、Android build、初速度、内容、采样长度和重复次数也要齐全。
+计算残差前需先明确时间轴：评估内部模型时用 `x_model - x_expected(t_eval)`；评估可见运动时，则用实际呈现 buffer 的坐标去比较目标曲线在实际 present 时刻的位置，并说明相位或预测约定——存在阶段差的两个时间不能混为一谈。报告中建议保留带符号的 `e_i` 分布以观察偏置和周期，同时给出 `|e_i|` 的中位数、P95/P99 与峰值来衡量误差幅度，并附齐设备、刷新模式、Android build、初速度、内容、采样长度与重复次数。
 
 <!-- gracker-diagram: ch07-03-residual-reference -->
 ![轨迹残差要用同一时间轴](../../assets/diagrams/ch07/ch07-03-residual-reference.png)
@@ -234,7 +234,7 @@ buffer 一侧的问题要换一层看。Buffer stuffing 描述的是生产与消
 
 ### Perfetto 能回答哪些问题
 
-在这套流程里，Perfetto 负责回答五个问题：
+在这套排查流程里，Perfetto 主要回答五个问题：
 
 1. Expected Timeline 给了 App 多长的工作时间；
 2. Actual Timeline 中的 App work（应用工作）、GPU completion（GPU 完成）与 buffer post（缓冲区提交）是否按期；
@@ -242,28 +242,28 @@ buffer 一侧的问题要换一层看。Buffer stuffing 描述的是生产与消
 4. 刷新率、线程调度、buffer stuffing（缓冲区积压）或合成是否在同一时间窗口发生变化；
 5. App 自定义 counter 对应哪一帧。
 
-FrameTimeline 从 Android 12 / API 31 起可用。在有效提交与 fence 时间的常见路径中，App Actual slice 的结束取 App buffer post 与 GPU completion 中较晚的一项；无效/缺失 fence 走源码回退分支，自行用 0 补齐是错的。SurfaceFlinger timeline 继续覆盖合成与显示阶段。具体字段以 [Perfetto FrameTimeline 文档](https://perfetto.dev/docs/data-sources/frametimeline)为准。
+FrameTimeline 从 Android 12 / API 31 起可用。在有效提交与 fence 时间的常见路径中，App Actual slice 的结束点取 App buffer post 与 GPU completion 中较晚的一项；遇到无效或缺失 fence 时源码会走回退分支，不可自行用 0 补齐。SurfaceFlinger timeline 继续覆盖合成与显示阶段，具体字段以 [Perfetto FrameTimeline 文档](https://perfetto.dev/docs/data-sources/frametimeline)为准。
 
 ## 一套对照实验
 
 ### 实验 A：时间量化
 
-保留同一条运动曲线、初始位置和初速度，我们比较两种自有动画实现：
+保持同一条运动曲线、初始位置与初速度，对比两种自有动画实现：
 
-- 方案 A 使用每帧的 `frameTimeNanos`，计算从统一起点开始的绝对 elapsed time；
-- 方案 B 先把同一个 `frameTimeNanos` 截断成整数毫秒，再计算 elapsed time。
+- 方案 A 直接使用每帧的 `frameTimeNanos`，计算从统一起点开始的绝对 elapsed time；
+- 方案 B 先将同一个 `frameTimeNanos` 截断成整数毫秒，再计算 elapsed time。
 
-两组都使用相同的布局与绘制。若 B 的轨迹残差出现与整数毫秒取值相关的周期，而 A 的残差明显减小，实验就支持时间量化假设；它验证的是我们自己的模型，RecyclerView 的感知问题是否都由 `OverScroller` 造成，还要另行验证。
+两组采用完全相同的布局与绘制。如果 B 的轨迹残差出现与整数毫秒截断相关的周期波动，而 A 的残差明显收敛，实验就支持了时间量化假设；需要留意，这组对照验证的是自有动画模型，具体 RecyclerView 场景的感知抖动是否源自 `OverScroller`，仍要单独取证。
 
 
 ### 实验 B：模型与呈现分离
 
-实验 B 把模型与呈现分开看：在 App 中同时记录模型位置与 View 消费位置，并采集 FrameTimeline，再按最先波动的层分流：
+实验 B 用于拆开模型与呈现的责任：在 App 中同时记录模型位置与 View 消费位置，并采集 FrameTimeline，再按最先出现波动的层级分流：
 
-- 模型与 View 都波动，present 稳定：检查运动模型、像素取整和布局；
+- 模型与 View 都波动，present 稳定：检查运动模型、像素取整与布局；
 - 模型稳定，View 波动：检查 LayoutManager、item 尺寸、Snap（吸附）或更新回调；
-- 两者稳定，present 波动：查 RenderThread、buffer、SurfaceFlinger、ARR 和显示；
-- 三者都波动：从最早出现偏差的层开始。
+- 两者稳定，present 波动：排查 RenderThread、buffer、SurfaceFlinger、ARR 和显示链；
+- 三者都波动：从最早出现偏差的层级开始追查。
 
 <!-- gracker-diagram: ch07-03-model-view-present-triage -->
 ![模型、View 和 present 的分层诊断](../../assets/diagrams/ch07/ch07-03-model-view-present-triage.png)
@@ -272,25 +272,25 @@ FrameTimeline 从 Android 12 / API 31 起可用。在有效提交与 fence 时�
 
 ### 实验 C：刷新率与起始相位
 
-在设备支持的固定 60/90/120 Hz 刷新率下重复同一脚本，再测试 ARR（Adaptive Refresh Rate，自适应刷新率）。每种刷新率都要做多次冷机和热机运行——分别对应设备温度较低和升温后的状态——并固定初速度和数据。若残差周期随刷新率对应的毫秒量化序列变化，可以继续验证 time source（时间来源）；若残差只在 mode switch（显示模式切换）期间出现，则应检查刷新率选择与 present。
+在设备支持的固定 60/90/120 Hz 刷新率下重复同一测试脚本，再对照测试 ARR（Adaptive Refresh Rate，自适应刷新率）。每种刷新率均需进行多次冷机与热机运行（分别对应设备低温与升温稳态），并固定初速度与列表内容。如果残差周期随着刷新率对应的毫秒量化序列一起改变，可以继续验证 time source（时间来源）；如果残差仅集中在 mode switch（显示模式切换）期间，则应转而排查刷新率选择与 present 节拍。
 
-设备是否支持固定模式要看机型；开发者选项的强制刷新率只用于实验控制，不能当成产品修复。
+不同机型对固定刷新率模式的支持程度不一；开发者选项里的强制刷新率只能用于实验控制，无法作为产品修复手段。
 
 
 ## 优化策略
 
 ### 自有动画使用统一的纳秒时间基准
 
-自有动画和物理模型，应按同一个 VSync 时间基准计算绝对 elapsed time。模型评估时间一旦选定，就不要用回调实际到达时重新读取的 `uptimeMillis()` 替换；额外读钟可以用来测量执行延迟，但应与模型时间分开。这里还要区分“截断绝对时间戳后相减”和“把每段 `dt` 分别截断后累加”：前者的分段差值会混合出现，后者可能持续丢掉小数并产生累计漂移。
+自有动画和物理模型应基于同一个 VSync 时间基准计算绝对 elapsed time。模型评估时间一经选定，就不要再用回调实际执行时读取的 `uptimeMillis()` 去替换；额外读取时钟可以用于测量调度延迟，但应与模型时间分开。此外，还要区分“截断绝对时间戳后再相减”和“把每段 `dt` 分别截断后再累加”：前者会在混合周期里保持整体对齐，后者则会持续丢掉小数并积累时间漂移。
 
 <!-- gracker-diagram: ch07-03-absolute-versus-delta-floor -->
 ![绝对时间截断与逐段 dt 截断的区别](../../assets/diagrams/ch07/ch07-03-absolute-versus-delta-floor.png)
 
 图：理想 120 Hz、零相位、120 个周期的算术示例：绝对时间戳截断后相减为 1000 ms；每个 dt 单独截断为 8 ms 再累加，仅得到 960 ms。它说明逐段丢小数会累计，不是设备测量或 OverScroller 收益数据。
 
-发生一次帧延迟后，模型按绝对时间重新求值，通常还能让轨迹对应正确的时间。物理模拟若需要固定步长，可用 accumulator（累加器）驱动次数受限的 simulation step（模拟步进）：正常消耗后余量小于一个步长时，可按约定在 previous/current 状态间插值；达到补算上限后仍有积压，就要显式定义减速、丢弃时间或其他策略，把大于 1 的余量比例直接当普通插值权重是不行的。
+即使中间出现一次帧延迟，只要模型按绝对时间重新求值，后续轨迹通常仍能落回正确的时间位置。若物理模拟需要固定步长，可用 accumulator（累加器）驱动次数受限的 simulation step（模拟步进）：正常消耗后余量小于一个步长时，可按约定在 previous/current 状态间插值；达到补算上限后仍有积压，则须显式定义减速、丢弃时间或其他兜底策略，不可将大于 1 的余量比例直接当作普通插值权重。
 
-还要记住，固定步长是模型时间，不是该步的 CPU 执行时长；相位和端到端延迟也要纳入验收。方法与取舍见 [Glenn Fiedler：Fix Your Timestep!](https://gafferongames.com/post/fix_your_timestep/)。
+同时要注意，固定步长是模型时间，并非该步的 CPU 执行时长；整体相位与端到端延迟同样要纳入验收。相关设计与取舍见 [Glenn Fiedler：Fix Your Timestep!](https://gafferongames.com/post/fix_your_timestep/)。
 
 <!-- gracker-diagram: ch07-03-bounded-fixed-step -->
 ![固定模拟步进与显示插值的边界](../../assets/diagrams/ch07/ch07-03-bounded-fixed-step.png)
@@ -299,14 +299,14 @@ FrameTimeline 从 Android 12 / API 31 起可用。在有效提交与 fence 时�
 
 ### 平滑器的代价与适用范围
 
-对 `dt` 或坐标应用 EMA（指数移动平均）能减少高频变化，代价是增加相位延迟——输出变化晚于输入——并改变速度和手感。它适合处理经过测量确认的传感噪声；拿它当时间量化、掉帧或输入预测错误的通用修复，就找错了对象。
+对 `dt` 或坐标应用 EMA（指数移动平均）能压低高频抖动，但代价是引入相位延迟（输出滞后于输入）并改变原有的速度曲线与手感。它适合处理经过测量确认的传感噪声，若拿来充当时间量化、掉帧或输入预测偏差的通用补丁，反而会掩盖问题并牺牲跟手性。
 
 <!-- gracker-diagram: ch07-03-ema-timing-tradeoff -->
 ![坐标平滑会怎样改变输出时序](../../assets/diagrams/ch07/ch07-03-ema-timing-tradeoff.png)
 
 图：计算示例取 alpha=0.5、初值 y0=0，输入位置 0、1、2、3 得到输出 0、0.5、1.25、2.125。滤波改变了运动轨迹；是否值得平滑，需要同时测残差、跟手性和延迟，不能靠它纠正时间基或显示排队。
 
-插值器同样没有固定的性能排名：任何曲线在斜率较大处，都会把时间误差放大成更大的位移误差。所以选择 `PathInterpolator`、spring（弹簧模型）或 spline 时，以交互设计要求的速度/加速度连续性和轨迹残差为准。
+插值器同样没有绝对的性能优劣：任何曲线在斜率较大的区间，都会将相同的时间误差放大为更大的位移误差。选用 `PathInterpolator`、spring（弹簧模型）或 spline 时，应以交互设计要求的速度/加速度连续性与轨迹残差为依据。
 
 <!-- gracker-diagram: ch07-03-curve-slope-time-error -->
 ![曲线斜率怎样放大时间误差](../../assets/diagrams/ch07/ch07-03-curve-slope-time-error.png)
@@ -315,45 +315,45 @@ FrameTimeline 从 Android 12 / API 31 起可用。在有效提交与 fence 时�
 
 ### RecyclerView 能改什么
 
-RecyclerView 1.4.0 的 `ViewFlinger` 使用 `OverScroller`，应用没有公开 API 可以替换它的内部 time source。发现与毫秒量化相关的问题后，我们先确认它是否达到用户可感知的程度，再评估这些选择：
+RecyclerView 1.4.0 的 `ViewFlinger` 内部使用 `OverScroller`，应用没有公开 API 可以替换它的 time source。当确认存在毫秒量化相关的步幅问题且已达到用户可感知程度时，可以从三个方向评估取舍：
 
 - 调整 fling 初速度、摩擦或 snap 行为，并做跨刷新率测量；
-- 对特定控件实现受控的自定义滚动/动画；
+- 对特定控件实现受控的自定义滚动或动画；
 - 向 AndroidX 或平台提交最小复现与轨迹证据。
 
-而重写 LayoutManager 或 fling，会牵动 nested scrolling（嵌套滚动）、边界回弹、无障碍、焦点和手势行为约定，维护成本很高。
+重写 `LayoutManager` 或整个 fling 逻辑会牵动 nested scrolling（嵌套滚动）、边界回弹、无障碍、焦点和手势行为约定，长期维护成本较高。
 
 
 ### 呈现节奏异常时的排查路径
 
-如果 App 模型平稳而 present 不稳，继续调插值器就没有帮助了；这时应检查 expected/actual FrameTimeline、buffer backpressure（缓冲区反压，即生产速度超过消费速度）、RenderThread/GPU、SurfaceFlinger、刷新率选择和 present fence。完整过程参见[可变刷新率与帧率选择](../../part1-fundamentals/ch02-rendering/02-framerate-refresh-display-mode.md) 与 [标准 View/HWUI 渲染管线](../ch13-rendering-pipelines/01-android-view-pipeline-analysis.md)。
+如果 App 侧运动模型平稳而 present 节奏不稳，继续调整插值器并无帮助，此时应转向排查 expected/actual FrameTimeline、buffer backpressure（缓冲区反压，即生产速度超过消费速度）、RenderThread/GPU、SurfaceFlinger、刷新率选择与 present fence。完整机制参见[可变刷新率与帧率选择](../../part1-fundamentals/ch02-rendering/02-framerate-refresh-display-mode.md)与[标准 View/HWUI 渲染管线](../ch13-rendering-pipelines/01-android-view-pipeline-analysis.md)。
 
 
 ## AppJankStats 与 RelativeFrameTimeHistogram
 
-统计侧的新工具是 Android 16 / API 36 加入的 `AppJankStats`、`RelativeFrameTimeHistogram` 和 `View.reportAppJankStats()`。它们让库组件按 widget（界面组件）、navigation component（导航目标）和状态，组织并报告总帧数、jank 帧数与相对 deadline 的帧时间分布。统计值由调用方准备：构造 `AppJankStats`、给 histogram 加数值，本身不会自动测量坐标或帧完成时间；`View.reportAppJankStats()` 做的是把这些统计交给宿主报告链，与系统统计合并。
+在统计能力上，Android 16 / API 36 新增了 `AppJankStats`、`RelativeFrameTimeHistogram` 和 `View.reportAppJankStats()`，使库组件能够按 widget（界面组件）、navigation component（导航目标）与状态维度，组织并上报总帧数、jank 帧数以及相对 deadline 的帧时间分布。需要注意，统计值由调用方自行准备：构造 `AppJankStats`、向 histogram 写入数据本身不会自动测量坐标或帧完成时间；`View.reportAppJankStats()` 负责将这些统计交给宿主报告链并与系统统计合并。
 
 <!-- gracker-diagram: ch07-03-app-jank-reporting -->
 ![组件统计的准备、封装与报告](../../assets/diagrams/ch07/ch07-03-app-jank-reporting.png)
 
 图：API 36+ 的 AppJankStats 与 histogram 组织调用方准备的计数和时间分布，View.reportAppJankStats 交给宿主报告链。它适合组件状态聚合，坐标轨迹与跨进程原因仍需其他记录。
 
-`RelativeFrameTimeHistogram.addRelativeFrameTimeMillis(int)` 接收调用方提供的整数毫秒差值，并按预定义区间累计；按类契约使用 `render finish - deadline`，负值表示提前，正值表示迟到。中间区间 `[-20, 20) ms` 的桶宽为 2 ms，例如 `[-2, 0)`、`[0, 2)`；20 ms 已进入 `[20, 25)` 桶。所有普通桶按左闭右开解释，外侧区间逐步变宽。差值本身由调用方算好，坐标、速度或像素变化都不在这份载体里——例如 0 ms 与 1 ms 落进同一个桶，想从桶计数还原每帧精确时间，或拿它替代单独的 jank 帧数，都做不到。
+`RelativeFrameTimeHistogram.addRelativeFrameTimeMillis(int)` 接收调用方算好的整数毫秒差值并按预定义区间累计；按照类契约，该差值为 `render finish - deadline`，负值表示提前，正值表示迟到。中心区间 `[-20, 20) ms` 的桶宽为 2 ms（如 `[-2, 0)`、`[0, 2)`），`20 ms` 已归入 `[20, 25)` 桶；所有普通桶均按左闭右开划分，外侧区间逐步变宽。由于载体本身只记录分桶后的时间差，坐标、速度和像素变化均不包含在内；例如 0 ms 与 1 ms 会落进同一个桶中，因此既无法从桶计数还原每帧精确耗时，也不能用它替代独立的 jank 帧数统计。
 
 <!-- gracker-diagram: ch07-03-histogram-bucket-boundaries -->
 ![相对帧时间的符号与桶边界](../../assets/diagrams/ch07/ch07-03-histogram-bucket-boundaries.png)
 
 图：按类契约，relative time=render finish−deadline，负值提前、正值迟到。中心桶宽 2 ms，但 20 ms 已属于 [20,25)；0 与 1 ms 同在 [0,2)，桶计数不能还原精确逐帧结果。
 
-所以这组 API 适合 widget 级聚合；轨迹采样、Perfetto 对 App、SurfaceFlinger 和显示栈的分析，仍要按前面几节的做法来做。公开契约参见 [AppJankStats](https://developer.android.com/reference/android/app/jank/AppJankStats)、[RelativeFrameTimeHistogram](https://developer.android.com/reference/android/app/jank/RelativeFrameTimeHistogram) 和 [`View.reportAppJankStats()`](https://developer.android.com/reference/android/view/View#reportAppJankStats%28android.app.jank.AppJankStats%29)。
+可见这组 API 更适合 widget 级别的统计聚合，轨迹采样以及 Perfetto 对 App、SurfaceFlinger 和显示栈的逐帧分析仍要按前文流程开展。公开契约参见 [AppJankStats](https://developer.android.com/reference/android/app/jank/AppJankStats)、[RelativeFrameTimeHistogram](https://developer.android.com/reference/android/app/jank/RelativeFrameTimeHistogram) 和 [`View.reportAppJankStats()`](https://developer.android.com/reference/android/view/View#reportAppJankStats%28android.app.jank.AppJankStats%29)。
 
 ## ARR 与可变刷新率
 
-ARR 可以在同一个显示模式内按内容节拍改变刷新率，所以刷新节拍一变就写成 active mode 切换，会把机制看简单了。分析时我们分别记录显示 VSync/TE 周期、应用 frame time/interval、render rate 与实际 present 节拍，再看整数毫秒动画时间的差值序列。前面列出的 60 Hz 16/17 ms、90 Hz 11/12 ms、120 Hz 8/9 ms 只是理想周期的映射示例；设备的 VSync 预测、切换相位和应用帧率请求还会影响观测结果。
+ARR 可以在同一个显示模式内按内容节拍动态调整刷新率，因此刷新节拍改变未必意味着发生了 active mode 切换。分析时应分别记录显示 VSync/TE 周期、应用 frame time/interval、render rate 与实际 present 节拍，再对照整数毫秒动画时间的差值序列。前文给出的 60 Hz 16/17 ms、90 Hz 11/12 ms、120 Hz 8/9 ms 仅是理想周期的映射示例，实机结果还会受到设备 VSync 预测、切换相位及应用帧率请求影响。
 
-“ARR 切换一定可见”这个结论，机制本身给不出来，要靠验证：在同一时间范围内核对 active mode（当前显示模式）、render rate（渲染帧率）、Expected/Actual FrameTimeline、App 位移 counter 与 present。若残差或呈现节拍异常集中在 mode switch 前后，这就是继续检查切换策略的线索；同窗口内的工作量、调度、buffer 和合成变化仍需排除，只凭时间相邻就认定切换是根因，是不够的。
+至于 ARR 切换是否一定会产生可见抖动，单靠机制本身无法下结论，必须在同一时间窗口内交叉核对 active mode（当前显示模式）、render rate（渲染帧率）、Expected/Actual FrameTimeline、App 位移 counter 与 present。如果残差或呈现节拍异常集中在 mode switch 前后，可以将其作为继续排查切换策略的线索；同时仍需排除该窗口内工作量、调度、buffer 与合成变化的影响，只凭时间邻近不足以直接归因。
 
-RecyclerView 1.4.0 会在 `OverScroller` 滚动时调用 API 35 的 `View.setFrameContentVelocity()`，向平台报告内容速度。它以 px/s 提供内容速度信号；r1 View 实现中该值只对下一次绘制有效，且受 View 已附着与对应功能开关等条件约束。平台在适用时用它参与帧率决策，调用本身并不指定刷新率。相关机制见[RecyclerView 列表滑动性能](../../part5-app/ch22-rendering-practice/02-recyclerview-compose-lazylist.md)。
+RecyclerView 1.4.0 会在 `OverScroller` 滚动时调用 API 35 的 `View.setFrameContentVelocity()` 向平台报告内容速度（单位 px/s）。在 r1 View 实现中，该值仅对下一次绘制有效，且受 View 已附着及功能开关等条件约束；平台在适用场景下会参考它参与帧率决策，调用本身并不指定具体刷新率。相关机制见[RecyclerView 列表滑动性能](../../part5-app/ch22-rendering-practice/02-recyclerview-compose-lazylist.md)。
 
 <!-- gracker-diagram: ch07-03-arr-signals-and-results -->
 ![内容速度信号与 ARR 实际节拍](../../assets/diagrams/ch07/ch07-03-arr-signals-and-results.png)
@@ -370,7 +370,7 @@ RecyclerView 1.4.0 会在 `OverScroller` 滚动时调用 API 35 的 `View.setFra
 | Android 16 / API 36 | AppJankStats 与 RelativeFrameTimeHistogram | widget 级 jank 汇总，不含位移 |
 | Android 17 / API 37 | 用于核对的平台源码版本 | 复核 OverScroller、Choreographer、InputConsumer、buffer recovery 与显示策略 |
 
-最后是适用范围：平台和 OEM 可能修改 `OverScroller`、刷新率策略或输入参数；没有对应 build 源码时，以设备 trace、轨迹 counter 和光学结果为准。Chrome 或 OEM 私有实现也代表不了 AOSP（Android 开源项目）的通用结论。
+跨设备评估时还需注意，平台和 OEM 可能定制 `OverScroller`、刷新率策略或输入参数；在没有对应 build 源码的情况下，应以设备 trace、轨迹 counter 与光学测量结果为准，Chrome 或特定 OEM 私有实现也不能直接等同于 AOSP（Android 开源项目）的通用行为。
 
 ## 常见误判
 
