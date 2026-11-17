@@ -21,12 +21,12 @@ last_consolidated_at: '2026-08-24'
 
 # 第 14 章：Perfetto
 
-Perfetto 把 Android 各层性能事件放到同一条时间轴上；这些事件的采集记录就是 trace。渲染、输入、启动、ANR、调度、锁、Binder、I/O、内存和功耗由不同 data source 产生，data source 是向 trace 写入特定类型数据的组件。Trace Processor 把 trace 导入成可关联的 SQL 表，Perfetto UI 再把结果显示为 track（同类事件所在的时间轨道）和 slice（带起止时间的区间）。本章的目标是采集足以回答问题的数据、读懂各条 track 的语义，并把观察转成可复核的 SQL 查询和源码结论。
+Perfetto 把 Android 各层性能事件放到同一条时间轴上，这些事件的采集记录称为 trace。渲染、输入、启动、ANR、调度、锁、Binder、I/O、内存与功耗等维度分别由不同的 data source（向 trace 写入特定类型数据的组件）产生。导入阶段，Trace Processor 会把 trace 解析为可关联的 SQL 表；展示阶段，Perfetto UI 再将其呈现为按类别排列的时间轨道（track）和带起止时间的区间事件（slice）。围绕这条工作流，本章的目标是采集足以回答问题的数据、读懂各条 track 的语义，并把时间轴上的观察转成可复核的 SQL 查询与源码结论。
 
 <!-- gracker-diagram: ch14-index-01-collection-to-evidence -->
 ![从事件来源到可复核的调查结果](../../assets/diagrams/ch14/ch14-index-01-collection-to-evidence.png)
 
-图：不同数据源经配置、导入和查询形成可检查的时间轴与证据。 设备/SDK/分析器/UI分别固定版本；新分析器不能补回采集时未记录的数据。
+图：不同数据源经配置、导入和查询形成可检查的时间轴与证据。设备、SDK、分析器与 UI 各自固定版本；新分析器无法补回采集时未记录的数据。
 
 ## 版本口径
 
@@ -35,10 +35,10 @@ Perfetto 把 Android 各层性能事件放到同一条时间轴上；这些事�
 | Android 平台 | Android 17 / API 37 / `android-17.0.0_r1` | 平台源码、数据源注册、权限和系统事件语义 |
 | Android 内核 | `android17-6.18-2026-06_r6` | `sched`、perf event、ftrace、DMA-BUF 等内核行为 |
 | 平台内 Perfetto | v54 时代快照，加 Android 固定 tag 中的后续改动 | 应以 `android-17.0.0_r1` tag 标识实际源码，不能直接等同于纯上游 v54.0 或宿主机 v57 |
-| 宿主机分析器 | Perfetto v57.2 | 固定本章Trace Processor与标准库复核环境；UI的版本或固定链接环境另行记录，不能用TP版本代替 |
+| 宿主机分析器 | Perfetto v57.2 | 固定本章 Trace Processor 与标准库复核环境；UI 的版本或固定链接环境另行记录，不能用 TP 版本代替 |
 | AndroidX Tracing | 稳定版 1.3.0；2.0.0-beta01（2026-07-15） | 2.0 beta 的 `Tracer`、driver/sink、协程上下文传播和 host JVM trace 属于应用依赖，不是平台 API 37 的组成部分 |
 
-设备采集端与宿主机分析端可以独立升级。新 UI 通常能读取旧 trace，却无法让旧设备提供当时没有采集的数据源。查询得到空表时，应检查采集配置、设备权限、trace 是否丢包，以及当前分析器的 schema（可查询表与字段定义）；只升级浏览器页面无法补回缺失数据。
+设备采集端与宿主机分析端可以独立升级。新 UI 通常能读取旧 trace，却无法让旧设备提供当时没有采集的数据源。当查询得到空表时，应依次检查采集配置、设备权限、trace 是否丢包，以及当前分析器的 schema（可查询表与字段定义）；只升级浏览器页面无法补回缺失数据。
 
 ## 章节目录
 
@@ -58,40 +58,40 @@ Perfetto 把 Android 各层性能事件放到同一条时间轴上；这些事�
 
 ## 按任务选择阅读路径
 
-系统学习可按“采集与读图（14.1—14.3）→ 帧语义（14.13）→ 事件写入（14.6、14.12）→ SQL 与区间关联（14.7）→ 专题分析（14.5、14.8—14.10）→ 批量分析与 Agent 协作（14.4、14.11）”推进。先掌握数据从哪里来、字段表示什么，再使用自动化聚合和归因。
+系统学习建议按“采集与读图（14.1—14.3）→ 帧语义（14.13）→ 事件写入（14.6、14.12）→ SQL 与区间关联（14.7）→ 专题分析（14.5、14.8—14.10）→ 批量分析与 Agent 协作（14.4、14.11）”推进：先掌握数据从哪里来、字段表示什么，再使用自动化聚合与归因。
 
 <!-- gracker-diagram: ch14-index-02-question-to-reading-path -->
 ![按待回答的问题选择章节入口](../../assets/diagrams/ch14/ch14-index-02-question-to-reading-path.png)
 
-图：先确定问题类型，再沿相关章节核对采集、语义与依赖。 路径是阅读入口；单一分类或最长slice不构成根因，缺数据先回采集质量。
+图：先确定问题类型，再沿相关章节核对采集、语义与依赖。路径是阅读入口；单一分类或最长 slice 本身不构成根因，遇到数据缺失应先回溯采集质量。
 
 ### 第一次使用 Perfetto
 
-按 14.1 → 14.2 → 14.7 阅读。14.1 负责采集，14.2 解释轨道与选择区，14.7 给出可复用的 SQL 分析入口。
+按 14.1 → 14.2 → 14.7 阅读。14.1 负责采集与可靠性，14.2 解释轨道与选择区，14.7 给出可复用的 SQL 分析入口。
 
 ### 帧卡顿与渲染
 
-按 14.13 → 14.7 → 14.10 阅读。FrameTimeline 用 expected/actual 时间定位异常帧，FrameTracer 补充 buffer 流转阶段，CUJ（Critical User Journey，关键用户操作场景）标记要分析的交互，BufferQueue 则呈现 producer（写入 buffer 的一方）和 consumer（读取 buffer 的一方）发生的阻塞。若要归因到 RenderThread、GPU 或 SurfaceFlinger，还要回到对应的渲染章节。
+按 14.13 → 14.7 → 14.10 阅读。FrameTimeline 通过 expected/actual 时间定位异常帧，FrameTracer 补充 buffer 流转阶段，CUJ（Critical User Journey，关键用户操作场景）标记待分析的交互，BufferQueue 则呈现 producer（写入 buffer 的一方）和 consumer（读取 buffer 的一方）发生的阻塞。若要归因到 RenderThread、GPU 或 SurfaceFlinger，还需要回到对应的渲染章节。
 
 ### CPU、调度与频率
 
-按 14.3 → 14.9 → 14.7 → 14.4 阅读。Running 表示线程正在 CPU 上执行，Runnable 表示可以运行但仍在等待调度，Sleeping 通常表示线程正在等待某个条件或事件；三种状态要分开统计。频率、调度区间和业务 slice 的关联使用区间连接，批量回归则使用固定指标与查询。
+按 14.3 → 14.9 → 14.7 → 14.4 阅读。分析时要把三种线程状态分开统计：Running 表示正在 CPU 上执行，Runnable 表示可以运行但仍在等待调度，Sleeping 通常表示正在等待某个条件或事件。CPU 频率、调度区间和业务 slice 的关联通过区间连接完成，批量回归则依赖固定指标与查询。
 
 ### 输入、Binder 与跨进程等待
 
-按 14.3 → 14.7 → 14.5 阅读。先区分线程调度状态，再用 Binder 标准库查询客户端等待与服务端处理，最后沿输入流水线确定同一次输入事件的身份和时间窗。缺少预期事件时，回到 14.6 检查采集和埋点路径。
+按 14.3 → 14.7 → 14.5 阅读。先区分线程调度状态，再用 Binder 标准库查询客户端等待与服务端处理耗时，最后沿输入流水线确定同一次输入事件的身份和时间窗。缺少预期事件时，回到 14.6 检查采集和埋点路径。
 
 ### CPU profile 与内存
 
-按 14.8 → 14.1 → 14.7 阅读。pprof 记录的主要是按调用栈聚合的采样结果，Simpleperf protobuf 还能保存单个样本的时间戳，Perfetto `linux.perf` 可以把 CPU profile 与 system trace 采在同一时间轴上。内存分析要区分 heap profile（分配调用栈采样）、heap graph（对象引用图）、process counter（进程内存计数器）与 DMA-BUF（跨设备共享的 buffer）。
+按 14.8 → 14.1 → 14.7 阅读。pprof 记录的主要是按调用栈聚合的采样结果，Simpleperf protobuf 还能保存单个样本的时间戳，Perfetto `linux.perf` 则可以把 CPU profile 与 system trace 采在同一条时间轴上。内存分析需区分 heap profile（分配调用栈采样）、heap graph（对象引用图）、process counter（进程内存计数器）与 DMA-BUF（跨设备共享的 buffer）。
 
 ### 应用埋点与工具集成
 
-按 14.6 → 14.12 阅读。AndroidX Tracing 1.3.0主要封装平台Trace/ATrace，不能说它必然采用独立文件格式；2.0的实际写入路径取决于所选driver/sink。Perfetto SDK再区分system producer与应用自控in-process session。选型前先确认要系统时间轴、进程内文件，还是需配套schema/importer的自定义数据源。
+按 14.6 → 14.12 阅读。AndroidX Tracing 1.3.0 主要封装平台的 Trace/ATrace 接口，并不意味着它采用独立文件格式；2.0 的实际写入路径则取决于所选的 driver/sink。Perfetto SDK 进一步区分了 system producer 与应用自控的 in-process session。选型前应先确认需要对齐到系统时间轴、写入进程内文件，还是需要配套 schema/importer 的自定义数据源。
 
 ### 自动化与代理分析
 
-按 14.1 → 14.7 → 14.4 → 14.11 阅读，依次确认输入质量、查询语义、批量指标和 Agent 调查约束。这里的 Agent 指能够检查 schema、生成 SQL 并迭代分析的程序或 AI 助手。自动分析必须保留 trace hash（用于唯一标识输入文件的内容摘要）、分析器版本、实际执行的 SQL、单位、结果行数和数据缺口。Agent 可以加快 schema 探索与查询迭代，结论仍需由 trace 数据行、标准库语义和源码共同支持。
+按 14.1 → 14.7 → 14.4 → 14.11 阅读，依次确认输入质量、查询语义、批量指标和 Agent 调查约束。这里的 Agent 指能够检查 schema、生成 SQL 并迭代分析的程序或 AI 助手。自动化分析必须保留 trace hash（用于唯一标识输入文件的内容摘要）、分析器版本、实际执行的 SQL、单位、结果行数和数据缺口。Agent 可以加快 schema 探索与查询迭代，但结论仍需由 trace 数据行、标准库语义和源码共同支撑。
 
 ## 一次可复核的分析流程
 
@@ -104,12 +104,12 @@ Perfetto 把 Android 各层性能事件放到同一条时间轴上；这些事�
 7. 回到 Android 17 固定源码或对应上游 tag 验证字段与调用路径；
 8. 保存原始 trace、采集配置、SQL、工具二进制或构建 hash，以及结论适用的设备和版本边界。
 
-UI 截图适合说明事件位置，但不足以支持可重复的回归分析。SQL 聚合适合量化整体分布，也不能代替单帧、单事务或单调用栈的时序证据。
+UI 截图适合说明事件位置，但不足以支撑可重复的回归分析；SQL 聚合适合量化整体分布，也无法代替单帧、单事务或单调用栈的时序证据。
 
 <!-- gracker-diagram: ch14-index-03-reproducible-analysis-cycle -->
 ![把假设变成可重放的分析记录](../../assets/diagrams/ch14/ch14-index-03-reproducible-analysis-cycle.png)
 
-图：从假设和采集质量出发，固定对象与窗口，再以查询和源码验证依赖。 截图说明位置，聚合说明分布；两者仍需身份与时序证据，缺口和版本边界一并保存。
+图：从假设和采集质量出发，固定对象与窗口，再以查询和源码验证依赖。截图用于说明位置，聚合用于量化分布，两者仍需身份键与时序证据配合，缺口和版本边界也应一并保存。
 
 ## 官方入口
 

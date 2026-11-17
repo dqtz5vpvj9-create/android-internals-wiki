@@ -77,7 +77,7 @@ custom data source 写出的私有 protobuf 不会自动变成 PerfettoSQL 表�
 <!-- gracker-diagram: ch14-12-02-private-schema-pipeline -->
 ![私有packet可保留原始字节，但SQL需要解析链路](../../assets/diagrams/ch14/ch14-12-02-private-schema-pipeline.png)
 
-图：私有数据源从编码到SQL必须有对应schema、importer和表。 未知字段保留在原始文件，不会自动成为业务SQL行；没有错误日志也不足以证明导入成功。
+图：私有数据源从编码到 SQL 查询必须具备对应的 schema、importer 与表定义。未知字段仍保留在原始文件中，但不会自动变成业务 SQL 行，没有报错也不代表已经成功导入。
 
 ## 2. in-process backend：应用自己控制 session
 
@@ -86,9 +86,9 @@ in-process backend（进程内后端）把 tracing service、consumer 和 produc
 <!-- gracker-diagram: ed14-12-inprocess-and-system-control-data-topologies -->
 ![两种 backend 分别确定事件来源与 consumer 控制范围](../../assets/diagrams/ch14/ed14-12-inprocess-and-system-control-data-topologies.png)
 
-图：左侧in-process backend的producer、service、consumer都在本进程，仅含注册到该backend的数据源，不连接系统producer socket，不自动包含ftrace/Binder/SF/其它进程。右侧应用system producer经/dev/socket/traced_producer向系统traced注册并写入，实际采到哪些系统源由获准consumer配置；consumer负责整机会话的配置、启停和读取。producer可连接不等于可启动或读取整机trace，enable_system_consumer=false仅帮助裁掉未用代码，不负责授权。同进程可另启进程内backend，两条路径保持独立；图未把两个service连成自动合并链。
+图：左侧 in-process backend 的 producer、service 与 consumer 均位于本进程，只包含注册到该 backend 的数据源，不连接系统 producer socket，也不会自动包含 ftrace、Binder、SurfaceFlinger 或其他进程事件。右侧应用作为 system producer 通过 `/dev/socket/traced_producer` 向系统 `traced` 注册并写入，实际能采到哪些系统源完全由获准 consumer 的配置决定；consumer 负责整机会话的配置、启停和读取。producer 能够连接并不代表有权启动或读取整机 trace，`enable_system_consumer = false` 也只用于裁剪未用到的代码，不承担权限控制职责。同一进程仍可另外启动进程内 backend，两条路径各自独立，并不会自动合并到同一个 service。
 
-下面的示例固定使用 `kInProcessBackend`，并让调用方传入经过实测的 buffer 容量与应用私有输出 fd（file descriptor，文件描述符）：
+下面的示例使用 `kInProcessBackend`，并由调用方传入经过实测的 buffer 容量与应用私有输出 fd（file descriptor，文件描述符）：
 
 ```cpp
 #include <cstdint>
@@ -151,14 +151,14 @@ void StopAppTrace(
 <!-- gracker-diagram: ch14-12-04-inprocess-session -->
 ![普通进程内session从启动到导出](../../assets/diagrams/ch14/ch14-12-04-inprocess-session.png)
 
-图：普通会话启动后记录目标工作，停止写入与提交后选择一种导出方式。 writer flush仅作用调用线程；ReadTrace会消耗buffer，Blocking接口不放进延迟敏感回调。
+图：普通会话启动后记录目标工作，停止写入与提交后只选择一种导出方式。writer flush 仅作用于当前调用线程；`ReadTraceBlocking()` 会消耗 buffer，阻塞接口不应放入延迟敏感回调。
 
-`buffer_size_kb` 要根据目标设备上的事件率、最长采集时间和丢包统计确定。service 的 ring buffer（环形缓冲区）写满后覆盖旧数据，`DISCARD` 策略写满后舍弃新数据，两者丢失的时间段不同。它们与 producer 的共享内存写入缓冲区不是同一层；后者耗尽时还受数据源的 buffer-exhausted policy 约束。调大 consumer buffer 不能保证消除 producer 侧丢数。
+`buffer_size_kb` 要根据目标设备上的事件率、最长采集时间和丢包统计确定。service 的 ring buffer（环形缓冲区）写满后覆盖旧数据，`DISCARD` 策略写满后舍弃新数据，两者丢失的时间段不同。它们与 producer 的共享内存写入缓冲区不属于同一层；后者耗尽时还会受到数据源的 buffer-exhausted policy 约束，因此单纯调大 consumer buffer 并不能保证消除 producer 侧丢数。
 
 <!-- gracker-diagram: ch14-12-05-two-buffer-layers -->
 ![共享内存暂存与service保留buffer分层](../../assets/diagrams/ch14/ch14-12-05-two-buffer-layers.png)
 
-图：producer共享内存负责提交，service buffer决定已提交数据的保留窗口。 调大consumer buffer不保证消除共享内存耗尽；各策略与丢数统计按实际数据源检查。
+图：producer 共享内存负责提交，service buffer 决定已提交数据的保留窗口。调大 consumer buffer 不能保证消除共享内存耗尽，各策略与丢数统计需按实际数据源核查。
 
 ## 3. system backend：应用只作为 producer
 
@@ -179,7 +179,7 @@ void InitSystemProducer() {
 }
 ```
 
-同时设置 `enable_system_consumer = false` 且代码中不显式调用 `NewTrace(kSystemBackend)` 时，linker（链接器）可以把未使用的 system consumer IPC（进程间通信）代码从最终二进制中移除。这个字段只帮助构建工具删除未使用代码，不负责授权；应用代码仍不得创建 system consumer 来读取整机 trace。这里限定 producer-only 的系统后端路径；同一进程也可另外启用 in-process backend，并读取自己控制的进程内 session。外部 consumer 决定何时选择 `track_event`。
+同时设置 `enable_system_consumer = false` 且代码中不显式调用 `NewTrace(kSystemBackend)` 时，linker（链接器）可以把未使用的 system consumer IPC（进程间通信）代码从最终二进制中移除。这个字段只帮助构建工具删除未使用代码，并不负责授权；应用代码仍不得创建 system consumer 来读取整机 trace。这里展示的是仅作 producer 的系统后端用法；同一进程仍可另外启用 in-process backend，并读取自己控制的进程内 session，而外部 consumer 则决定何时启用 `track_event`。
 
 adb 或受控实验环境的外部 TraceConfig 要显式请求 `track_event`，并在 `TrackEventConfig` 中启用目标 category。需要调度证据时，再加入 `linux.ftrace` 的 `sched_switch`、`sched_waking`；duration 与 buffer 按复现窗口和实测写入速率设置。配置由具备 consumer socket 权限的 shell 或系统组件提交，应用 producer 不负责创建输出文件。
 
@@ -209,7 +209,7 @@ custom data source 继承 `perfetto::DataSource<T>`。每个活动 trace session
 <!-- gracker-diagram: ch14-12-09-async-stop-finalize -->
 ![异步停止先完整写尾packet，再提交和确认](../../assets/diagrams/ch14/ch14-12-09-async-stop-finalize.png)
 
-图：异步清理须完成packet、writer提交与停止确认，并遵守consumer超时。 Finalize早于Flush；多写入线程分别同步，flush callback连接断开时可能不回调。
+图：异步清理须完成 packet 写入、writer 提交与停止确认，并严格遵守 consumer 超时。`Finalize()` 须早于 `Flush()`；多写入线程应分别同步，而连接断开时 `flush callback` 可能永不回调。
 
 数据源名称宜使用团队控制域名的反向域名形式，减少与其他 producer 的命名冲突。
 
@@ -225,9 +225,9 @@ custom data source 继承 `perfetto::DataSource<T>`。每个活动 trace session
 
 ## 5. startup tracing、触发器与环形缓冲
 
-普通 session 只能记录它启动后发生的事件。Perfetto SDK 的 startup tracing（启动早期采集）会先让 data source 写入临时目标缓冲区，再等待后续 system session 用匹配的配置接管这些数据。Android 17 的 `Tracing::SetupStartupTracingOpts` 默认超时是 10 秒；没有匹配的后续 session 时持续等待，超过超时后中止，并不是遇到一次不匹配配置就立即结束。startup tracing 要求已有可用的 service 共享内存，或者 service 支持 producer-provided shared memory（由 producer 提供的共享内存）；需要后者而遭拒绝时无法继续启动早期采集。
+普通 session 只能记录它启动后发生的事件。Perfetto SDK 的 startup tracing（启动早期采集）会先让 data source 写入临时目标缓冲区，再等待后续 system session 用匹配的配置接管这些数据。Android 17 的 `Tracing::SetupStartupTracingOpts` 默认超时是 10 秒；没有匹配的后续 session 时持续等待，超过超时后中止，遇到一次不匹配的配置并不会立即结束。startup tracing 要求已有可用的 service 共享内存，或者 service 支持 producer-provided shared memory（由 producer 提供的共享内存）；需要后者而遭拒绝时就无法继续启动早期采集。
 
-下面的代码固定使用 system backend，并把 session handle（管理该 startup session 的对象）交给调用方；不再等待 system session 时，可以通过该 handle 主动 abort（中止等待）：
+下面的代码使用 system backend，并把 session handle（管理该 startup session 的对象）交给调用方；不再等待 system session 时，可以通过该 handle 主动 abort（中止等待）：
 
 ```cpp
 std::unique_ptr<perfetto::StartupTracingSession>
@@ -239,12 +239,12 @@ StartStartupTracing(const perfetto::TraceConfig& config) {
 }
 ```
 
-`timeout_ms` 用来覆盖这个默认超时；固定版本中设为 0 会取消自动超时，必须自行约束等待。销毁 `StartupTracingSession` 对象不会自动中止 session；应显式调用 `Abort()` 或 `AbortBlocking()`，且只影响尚未被接管的实例。`SetupStartupTracingOpts` 还提供 `on_setup`、`on_adopted` 和 `on_aborted` 回调，生产实现应记录临时数据是否被 system session 接管，或等待是否中止。
+`timeout_ms` 用来覆盖这个默认超时；在 Android 17 基线版本中设为 0 会取消自动超时，调用方必须自行约束等待。销毁 `StartupTracingSession` 对象不会自动中止 session，应显式调用 `Abort()` 或 `AbortBlocking()`，且只影响尚未被接管的实例。`SetupStartupTracingOpts` 还提供 `on_setup`、`on_adopted` 和 `on_aborted` 回调，生产实现应记录临时数据是否被 system session 接管，或等待是否中止。
 
 <!-- gracker-diagram: ch14-12-11-startup-adoption -->
 ![启动早期记录等待系统会话接管](../../assets/diagrams/ch14/ch14-12-11-startup-adoption.png)
 
-图：startup数据先写临时目标，匹配的外部系统会话在等待期限内接管。 固定默认10秒，0取消自动超时；销毁handle不自动Abort，已接管实例不受Abort影响。
+图：startup 数据先写入临时目标，待匹配的外部系统会话在等待期限内接管。基线默认超时 10 秒，设为 0 则取消自动超时；销毁 handle 不会自动 `Abort()`，已接管的实例也不受 `Abort()` 影响。
 
 startup tracing 不支持 in-process backend。in-process 场景应在目标初始化工作前创建普通 session，并等待 `StartBlocking()` 完成。
 
@@ -263,7 +263,7 @@ static void ActivateTriggers(
 <!-- gracker-diagram: ch14-12-12-trigger-prehistory -->
 ![触发信号不创建会话，事前数据需要预先记录](../../assets/diagrams/ch14/ch14-12-12-trigger-prehistory.png)
 
-图：应用只发送条件信号，实际会话与保留策略由consumer提前配置。 TTL是信号发送连接窗口；故障后才开始采集不能回补事前数据，也不授予读取权限。
+图：应用只负责发送条件信号，实际会话与保留策略由 consumer 提前配置。TTL 是信号发送的连接窗口；故障出现后才开始采集既不能回补事前数据，也不授予读取权限。
 
 要持续保留故障发生前的一段数据，session 必须提前运行并使用 ring buffer。故障出现后才启动 trace，只能看到故障后的活动。进程被 LMK（low-memory killer，低内存终止机制）或 native crash 直接终止时，producer 中尚未提交或尚未完整写好的数据可能丢失；纯 in-process service 的内存 buffer 也随进程消失。已经写出的私有文件字节通常仍在，但尾部、完整性和所需的持久化保证不能由正常退出示例推定。线上方案要单独验证异常退出路径。
 
@@ -337,7 +337,7 @@ Android 17 的 `packages/modules/Profiling/service/.../Configs.java` 给出了�
 <!-- gracker-diagram: ch14-12-16-profiling-config-boundary -->
 ![SDK producer不会自动进入ProfilingManager结果](../../assets/diagrams/ch14/ch14-12-16-profiling-config-boundary.png)
 
-图：固定17 ProfilingManager配置选择目标App的ATrace和平台数据源，未选择SDK数据源。 SDK system初始化不修改平台TraceConfig；SDK专属事件可自采，系统调度证据走获准consumer。
+图：Android 17 基线的 `ProfilingManager` 配置只选择目标 App 的 ATrace 与平台数据源，并未请求 SDK 数据源。SDK system 初始化不会修改平台 `TraceConfig`；SDK 专属事件可以自行采集，系统调度证据仍走获准的 consumer。
 
 | 环境 | 应用埋点 | session 控制 | 可期待的产物 |
 |---|---|---|---|
@@ -348,7 +348,7 @@ Android 17 的 `packages/modules/Profiling/service/.../Configs.java` 给出了�
 
 `ProfilingManager.requestProfiling()` 从 API 35 可用，系统触发注册从 API 36 可用。请求受系统限流且不保证执行；回调成功后也要使用 `ProfilingResult.getResultFilePath()` 取得交付文件。API 37 没有开放任意 TraceConfig 注入，所以应用不能要求它顺带启用私有 custom data source。
 
-`requestProfiling()` 的官方说明建议多数场景使用 AndroidX 高层封装。直接发起请求时，必须已设置完整的 executor（回调执行器）和 listener（结果监听器）组合。两者要在同一次调用中传入：可以随请求传给 `requestProfiling()`，也可以先通过 `registerForAllProfilingResults()` 注册全局回调。缺少完整组合时，请求会被丢弃，且不会收到结果回调；Android 17 固定源码在没有任何已注册回调时抛出 `IllegalArgumentException`。
+`requestProfiling()` 的官方说明建议多数场景使用 AndroidX 高层封装。直接发起请求时，必须已设置完整的 executor（回调执行器）和 listener（结果监听器）组合。两者要在同一次调用中传入：可以随请求传给 `requestProfiling()`，也可以先通过 `registerForAllProfilingResults()` 注册全局回调。缺少完整组合时，请求会被丢弃，且不会收到结果回调；Android 17 基线源码在没有任何已注册回调时会抛出 `IllegalArgumentException`。
 
 API 36 的系统触发结果只交付给全局监听器，注册触发器前应先完成全局回调注册。
 
@@ -381,10 +381,10 @@ WHERE instr(',' || COALESCE(slice.category, '') || ',', ',rendering,') > 0
 ORDER BY slice.ts, slice.id;
 ```
 
-`raw_dur_ns = -1` 表示未闭合。`observed_dur_ms` 对开放区间只给出到有效 trace 结束边界的观测值，不是完成时长；若结束边界不晚于事件时间，返回 NULL。本机 SDK 产物在 Trace Processor v57.2 中实际出现末端开放事件的 `trace_end() = slice.ts - 1 ns`，原查询输出 -0.000001 ms；v58.2 对同一产物的边界等于该事件时间，原查询输出 0。两者都不能解释为事件已经完成。`TRACE_EVENT` 的墙钟也不等于 CPU time。结果为空时，不要只看事件宏是否执行。检查 trace 配置是否选择 `track_event`、category 过滤是否匹配、producer 是否在 session 内连接，以及事件是否发生在 `StartBlocking()` 之后。
+`raw_dur_ns = -1` 表示未闭合。`observed_dur_ms` 对开放区间只给出到有效 trace 结束边界的观测值，不能等同于完成时长；若结束边界不晚于事件时间，则返回 `NULL`。实测本机 SDK 产物时，Trace Processor v57.2 对末端开放事件给出了 `trace_end() = slice.ts - 1 ns`，使查询输出 `-0.000001 ms`；v58.2 对同一产物的边界等于该事件时间，输出为 `0`。这两种结果都不能解释为事件已经完成。`TRACE_EVENT` 的墙钟耗时也不同于 CPU time。查询结果为空时，不要只盯着事件宏有没有执行，还应检查 trace 配置是否选择了 `track_event`、category 过滤是否匹配、producer 是否在 session 内完成注册与连接，以及事件是否确实发生在 `StartBlocking()` 之后。
 
 
-下面的查询检查示例 counter；counter 名来自 `TRACE_COUNTER` 的 track name；`SubmittedFrameId` 是帧编号快照，不是帧率或帧数增量，同名 track 仍需按 `track_id` 区分：
+下面的查询检查示例 counter；counter 名来自 `TRACE_COUNTER` 的 track name；`SubmittedFrameId` 是帧编号快照，并非帧率或帧数增量，同名 track 仍需按 `track_id` 区分：
 
 ```sql
 SELECT
@@ -399,7 +399,7 @@ ORDER BY counter.ts, counter.id;
 
 custom data source 的验收标准更高：原始 trace 中有 packet、Trace Processor 没有 importer error（导入错误）、目标 storage 表有行、未知枚举按兼容规则处理、SQL 输出与写入样本一致，五项都要通过；“没有 importer error”本身不能证明未知字段已被导入。
 
-进程内示例的验证环境为 macOS 主机和固定 v57.2 C++ SDK，覆盖 fd 直写与停止后读取两种产物；SQL 使用原生 Trace Processor v57.2 / v58.2 核对。system producer、startup 和 trigger 代码的验证范围仅限公开接口与编译，尚未覆盖 Android 设备录制、SELinux 运行、service 接管、异常退出或 APK 性能测量。
+文中的进程内示例已在 macOS 主机上基于 Perfetto v57.2 C++ SDK 完成 fd 直写与停止后读取两种产物的编译和验证，SQL 也在原生 Trace Processor v57.2 与 v58.2 上核对通过；system producer、startup tracing 与 trigger 代码则停留在公开接口与编译验证范围，实际 Android 设备录制、SELinux 运行限制、service 接管、异常退出与 APK 性能表现仍需结合真机测试。
 
 一次完整接入至少保存这些证据：
 

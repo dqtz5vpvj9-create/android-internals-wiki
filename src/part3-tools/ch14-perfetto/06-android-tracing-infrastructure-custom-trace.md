@@ -84,13 +84,13 @@ Perfetto 界面里的调度 Slice（时间轴事件区间）、应用自定义�
 
 > 源码基线：Android 17 / API 37 / AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
-这些现象分属不同的层，我们沿数据路径把它们拆开看：先走一遍内核 ftrace、atrace category 和 Perfetto 服务，再落到应用侧的 `android.os.Trace` 埋点，最后给出按层排查的做法。应用的 Trace 标记最终也会进入同一套基础设施，类别启用、进程权限和缓冲区配置都会影响它在时间线上的可见性。
+这些现象分别落在不同层级，沿数据流向逐层拆开来看会更清晰：我们先走一遍内核 ftrace、atrace category 和 Perfetto 服务，再落到应用侧的 `android.os.Trace` 埋点，最后给出一套按层排查的顺序。应用的 Trace 标记最终同样要经过这套基础设施，类别启用、进程权限和缓冲区配置都会直接影响它在时间线上的可见性。
 
 ## ftrace、atrace 与 Perfetto 采集路径
 
 ### 三层缓冲区
 
-排查丢数时，我们先要分清“缓冲区”指的到底是哪一层：系统追踪里叫这个名字的地方至少有三处，混用名称会把丢数原因引向错误位置。一次采集里，数据由 Producer（数据生产者）生成，经共享内存提交给 `traced`，最终进入 Consumer（数据使用方）读取的中央缓冲区。下面这三层按数据流方向排列。
+排查丢数前，先得明确“缓冲区”指的到底是哪一层：系统追踪里叫这个名字的地方至少有三处，混用概念很容易把丢数原因引向错误的位置。一次完整采集里，数据由 Producer（数据生产者）生成，经共享内存提交给 `traced`，最终汇入 Consumer（数据使用方）读取的中央缓冲区。按数据流向排列，这三层分别是：
 
 | 所在层 | 数据结构 | 写入者与读取者 | 常见丢数表现 |
 |---|---|---|---|
@@ -120,14 +120,14 @@ tracer 是由 `current_tracer` 选择的一套记录算法，tracepoint 则是�
 <!-- gracker-diagram: ch14-06-03-tracer-event-source -->
 ![函数 tracer 与静态事件源独立控制](../../assets/diagrams/ch14/ch14-06-03-tracer-event-source.png)
 
-图：current_tracer 选择函数追踪器，事件开关控制 tracepoint。 current_tracer 为 nop 时，已启用的 tracepoint 仍可记录。
+图：`current_tracer` 用于选择函数追踪器，事件开关则控制 tracepoint。即便 `current_tracer` 为 `nop`，已启用的 tracepoint 仍可正常记录。
 
-tracepoint 通过 `TRACE_EVENT` 等宏在源码中声明字段。未启用时走静态分支快速路径；在启用 jump label 且体系结构支持的构建中，关闭路径可被修补为 NOP（空操作指令），修补后的调用点走的就是空指令路径，普通条件判断被跳过。至于无 jump label 的回退、调用点参数求值和具体机器指令，开销随构建变化，零开销要按具体构建分别确认。启用后还要分配事件、复制字段并写入当前 CPU 的环形缓冲区，实际成本由事件频率、字段长度和读取方速度共同决定。
+tracepoint 通过 `TRACE_EVENT` 等宏在源码中声明字段。未启用时它走静态分支快速路径；在启用 jump label 且体系结构支持的内核构建中，关闭路径可被修补为 NOP（空操作指令），修补后的调用点直接执行空指令路径，从而跳过普通条件判断。至于未启用 jump label 时的回退分支、调用点参数求值和具体机器指令，开销会随构建配置而变化，是否接近零开销需要按具体构建单独确认。启用后还要分配事件、复制字段并写入当前 CPU 的环形缓冲区，实际开销由事件频率、字段长度和读取方速度共同决定。
 
 <!-- gracker-diagram: ch14-06-04-disabled-fastpath -->
 ![tracepoint 的关闭与开启路径](../../assets/diagrams/ch14/ch14-06-04-disabled-fastpath.png)
 
-图：关闭路径使用静态分支，开启后才记录字段并写入当前 CPU 缓冲。 NOP 快速路径依赖架构与 jump label 配置，不能给固定条件判断次数。
+图：关闭路径走静态分支，开启后才提取字段并写入当前 CPU 缓冲。NOP 快速路径依赖 CPU 架构与 jump label 配置，不能套用固定的条件判断次数。
 
 #### tracefs 暴露了哪些控制点
 
@@ -146,10 +146,10 @@ tracepoint 通过 `TRACE_EVENT` 等宏在源码中声明字段。未启用时走
 | `per_cpu/cpu<N>/stats` | 单 CPU 缓冲区覆盖、丢弃和读取统计 |
 | `tracing_on` | 当前 tracefs 实例是否记录事件 |
 
-Perfetto 的 [`Tracefs::EnableEvent()`](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/src/traced/probes/ftrace/tracefs.cc)启用事件时先向单事件 `enable` 文件写 `1`，写入失败后才把 `group:name` 追加到 `set_event`；停用过程对称，回退内容是 `!group:name`。核对 `set_event` 内容时按这个顺序判断——“Perfetto 会把每个事件写入 `set_event`”的说法与当前源码对不上。
+Perfetto 的 [`Tracefs::EnableEvent()`](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/src/traced/probes/ftrace/tracefs.cc) 在启用事件时，会先向单事件的 `enable` 文件写 `1`，写入失败后才把 `group:name` 追加到 `set_event`；停用过程则完全对称，回退写入 `!group:name`。核对 `set_event` 内容时要按这个顺序判断——“Perfetto 会把每个事件写入 `set_event`”的说法与当前源码并不一致。
 
 
-tracefs 还支持 `instances/<name>/` 下的命名实例；每个实例拥有自己的事件开关和缓冲区等状态。Perfetto 的 `FtraceController` 可以按 `FtraceConfig.instance_name` 创建并读取次级实例。次级实例可以隔离一部分内核追踪状态，Android atrace 配置则始终留在主实例：固定 `FtraceConfigMuxer` 会直接拒绝次级实例中的 `atrace_categories` 或 `atrace_apps` 请求，因为它们会影响全局状态。需要这些用户空间事件时，使用受支持的主实例配置即可。
+tracefs 还支持 `instances/<name>/` 下的命名实例，每个实例拥有独立的事件开关和缓冲区等状态。Perfetto 的 `FtraceController` 可以按 `FtraceConfig.instance_name` 创建并读取次级实例。次级实例能隔离一部分内核追踪状态，但 Android atrace 配置始终留在主实例：当前基线中的 `FtraceConfigMuxer` 会直接拒绝次级实例里的 `atrace_categories` 或 `atrace_apps` 请求，因为它们会影响全局状态。需要采集这些用户空间事件时，直接使用受支持的主实例配置即可。
 
 
 #### 常用事件与设备差异
@@ -248,12 +248,12 @@ data_sources {
 内核缓冲区的默认大小由设备内存决定：`FtraceConfigMuxer` 在调用方未指定时，物理内存低于约 7 GiB 的设备选每 CPU 2 MiB，达到或高于该阈值选每 CPU 8 MiB；MiB 与 GiB 均按 1024 进位，1 GiB 等于 1024 MiB。这是当前源码里的默认分支，具体设备仍以实测为准。
 
 
-`drain_period_ms` 控制定时读取内核缓冲区的间隔。未设置时控制器使用 100 ms 历史周期；所有实例都使用缓冲区水位轮询时，保底周期放宽到 1000 ms——水位轮询在缓冲区达到指定占用比例时唤醒读取，内核 6.18 已支持它依赖的 6.9+ 接口，常规配置保持未设置即可。
+`drain_period_ms` 控制定时读取内核缓冲区的间隔。未设置时，控制器使用 100 ms 的历史默认周期；当所有实例都启用缓冲区水位轮询时，保底周期会放宽到 1000 ms——水位轮询指缓冲区达到指定占用比例时才唤醒读取，内核 6.18 已支持它依赖的 6.9+ 接口，因此常规配置保持该字段未设置即可。
 
 <!-- gracker-diagram: ed14-06-shared-ftrace-requests-and-drain-choice -->
 ![共享实例合并活跃请求，读取周期另按显式请求和 poll 状态选择](../../assets/diagrams/ch14/ed14-06-shared-ftrace-requests-and-drain-choice.png)
 
-图：FtraceConfigMuxer同实例事件需求取并集，只有最后需求移除才停用；SDKoptout取并集，任一要求兼容atrace即不能保证另一prefer_sdk切换，函数图等共享状态不兼容可拒绝/独占。buffer_size_kb与drain_period_ms注释并发不保证请求值。显式活跃周期取最小合法值；无显式且非所有实例水位poll默认100ms，全部poll保底1000ms，6.18支持依赖6.9+接口。tick仅安排读取，实际唤醒/读完受调度数据量影响，不能解释为业务时长或保证不丢。
+图：`FtraceConfigMuxer` 对同实例的事件需求取并集，直到最后一个需求移除才停用事件；SDK opt-out 同样取并集，只要任一会话要求兼容 atrace，就无法保证另一会话通过 `prefer_sdk` 切换到 SDK，而函数图等共享状态不兼容时则会拒绝或要求独占。`buffer_size_kb` 与 `drain_period_ms` 在协议注释中也说明并发时不保证满足请求值。显式指定活跃周期时取最小合法值；未显式设置且并非所有实例都启用水位 poll 时默认 100 ms，全部启用 poll 时保底周期放宽到 1000 ms，内核 6.18 已支持其依赖的 6.9+ 接口。定期 tick 只安排读取调度，实际唤醒与读完时刻仍受系统调度和数据量影响，既不能解释为业务耗时，也不保证不丢数。
 
 ### 用户空间事件的两条路径
 
@@ -271,7 +271,7 @@ data_sources {
 <!-- gracker-diagram: ch14-06-14-java-backend-selection -->
 ![Java Trace 每次调用的 backend 选择](../../assets/diagrams/ch14/ch14-06-14-java-backend-selection.png)
 
-图：支持的单个 category 按 ATrace、SDK 启用状态及偏好位选择一条写入路径。 同一次调用最多写一个 backend；注册、属性缓存与设备传输需另外验证。
+图：受支持的单个 category 会按 ATrace、SDK 启用状态及偏好位选择一条写入路径。同一次调用最多写入一个 backend；注册、属性缓存与设备端传输仍需另行验证。
 
 这套选择逻辑是逐步演进的：Android 14 及更早分支中的 Java Trace 主要走 libcutils atrace，Android 15 开始接入 `tracing_perfetto`，后续版本补上并发 atrace 会话的优先级处理。分析跨版本 Trace 时，我们把事件的采集路径与目标系统分支对应起来。
 
@@ -302,16 +302,16 @@ Java TrackEvent 路径 → 应用进程的 TrackEvent Producer → 共享内存 
 Consumer → TraceConfig → traced → 各 Producer 的 DataSourceConfig
 ```
 
-图中 `traced` 接收 Consumer 的配置并协调 Producer，`traced_probes` 则是提供 `linux.ftrace` 等系统数据源的 Producer，两者职责不同。
+图中 `traced` 负责接收 Consumer 的配置并协调 Producer，`traced_probes` 则是提供 `linux.ftrace` 等系统数据源的 Producer，两者职责各自独立。
 
 <!-- gracker-diagram: ch14-06-15-producer-dataflow -->
 ![ATrace 与 TrackEvent 在 service 汇合](../../assets/diagrams/ch14/ch14-06-15-producer-dataflow.png)
 
-图：内核路径经 traced_probes，应用 TrackEvent 经自己的 Producer 和共享内存。 两条数据路径在 service 汇合，不共享彼此的 Producer SMB。
+图：内核路径经由 `traced_probes`，应用 TrackEvent 则经由自己的 Producer 和共享内存。两条数据路径在 service 汇合，各自使用独立的 Producer SMB。
 
 ### App、Framework、内核三层自定义入口
 
-数据路径清楚之后，我们来看在哪里加自己的事件。选入口先看要回答的问题：应用业务区间用 `android.os.Trace` 已经足够；平台原生 C/C++ 热路径用带 category 的 ATRACE；要观察内核状态转换时，才轮到添加 tracepoint。
+理清数据路径后，再看该在哪个层级加入自定义事件。选型主要看要回答的问题：应用业务区间用 `android.os.Trace` 即可，平台原生 C/C++ 热路径选用带 category 的 ATrace，只有需要观察内核状态转换时才考虑添加 tracepoint。
 
 
 #### App：同步区间、异步区间与计数器
@@ -406,16 +406,16 @@ static void update_state(int value, const char *name)
 }
 ```
 
-编译只是准备步骤：相应内核需已启动，或模块已加载且事件注册成功，随后核对 `events/my_custom/my_event/` 和 `available_events`。模块事件在固定内核的 `MODULE_STATE_COMING` 通知中注册，不需要先触发 `trace_my_event()` 才出现。Perfetto 配置里写斜杠形式 `my_custom/my_event`；还需当前构建允许 `traced_probes` 访问、配置成功启用，再由实际执行到的调用点产生记录。
+编译只是准备步骤：只有对应内核已经启动（或内核模块已加载且事件注册成功），才能在 `events/my_custom/my_event/` 和 `available_events` 中看到它。模块事件在基线内核的 `MODULE_STATE_COMING` 通知中注册，不必先触发 `trace_my_event()` 才会出现。Perfetto 配置中写作斜杠形式 `my_custom/my_event`；之后还需确认当前构建允许 `traced_probes` 访问且配置成功启用，最后由实际执行到的调用点产生记录。
 
 <!-- gracker-diagram: ch14-06-18-kernel-tracepoint-build -->
 ![静态 tracepoint 从声明到启用](../../assets/diagrams/ch14/ch14-06-18-kernel-tracepoint-build.png)
 
-图：声明与构建后先在运行内核注册，确认权限并启用，最后由调用点产生记录。 样例按 6.18 单参数 __assign_str 编写，未声称完成目标内核编译或设备采集。
+图：完成声明与构建后，需先在运行内核中完成注册，确认权限并启用，最后才会由调用点产生记录。样例按 6.18 单参数 `__assign_str` 编写，实际使用仍需在目标内核与设备上验证编译和采集。
 
 #### 从 `ftrace_event` 核对自定义事件
 
-新增事件还没有专用 Trace Processor 解析器时，可以先列出原始事件名称。下面的查询也能发现配置名与实际 `ftrace_event.name` 的差异。
+新增事件还没有专用 Trace Processor 解析器时，可以先列出原始事件名称。下面的查询还能顺便发现配置名与实际 `ftrace_event.name` 之间的差异。
 
 ```sql
 SELECT
@@ -426,12 +426,12 @@ GROUP BY name
 ORDER BY event_count DESC;
 ```
 
-结果中的名称以 Perfetto 实际写入的事件描述为准，靠 `group_event` 之类的拼接规则猜是猜不出来的。确认名称后，再通过 `arg_set_id` 连接 `args` 键值表展开字段；下面的查询保留 CPU、线程和全部参数。
+结果中的名称以 Perfetto 实际写入的事件描述为准，靠 `group_event` 之类的拼接规则去猜往往对不上。确认名称后，再通过 `arg_set_id` 连接 `args` 键值表展开字段；下面的查询会保留 CPU、线程和全部参数。
 
 <!-- gracker-diagram: ch14-06-19-generic-event-check -->
 ![自定义内核事件先核对原始名称与参数](../../assets/diagrams/ch14/ch14-06-19-generic-event-check.png)
 
-图：先发现实际事件名，再用 arg_set_id 展开原始字段并保留 CPU 与线程。 通用 protobuf 合成样本验证查询，不替代真实 tracepoint 注册和采集验证。
+图：先发现实际事件名，再用 `arg_set_id` 展开原始字段并保留 CPU 与线程信息。该查询已在通用 protobuf 合成样本上验证，实际使用仍需配合真实的 tracepoint 注册和设备采集核验。
 
 ```sql
 SELECT
@@ -466,7 +466,7 @@ ORDER BY f.ts, a.key;
 
 ### 丢数诊断与配置调整
 
-采集完成后，我们先用一条统一查询检查丢数。`stats` 是 Trace Processor 汇总采集与解析自诊断项的表，新版工具把当前会话内的 ftrace 计数增量放在 `*_delta`；其中 `ftrace_cpu_overrun_delta` 可能仍标为 `info`，只筛 `data_loss` / `error` 会漏掉它，也会漏掉中央缓冲区的 `traced_buf_chunks_overwritten` 和 `traced_buf_chunks_discarded`，它们在固定源码中同为 `info`。因此下面的显式名称列表同时覆盖内核与中央缓冲区；严重等级不是“是否丢数”的完整分类。
+采集完成后，先用一条统一查询检查丢数。`stats` 是 Trace Processor 汇总采集与解析自诊断项的表，新版工具把当前会话内的 ftrace 计数增量放在 `*_delta` 中；其中 `ftrace_cpu_overrun_delta` 可能仍标为 `info`，只筛 `data_loss` 或 `error` 会漏掉它，也会漏掉中央缓冲区的 `traced_buf_chunks_overwritten` 和 `traced_buf_chunks_discarded`——它们在当前基线源码里同样标为 `info`。因此下面的显式名称列表同时覆盖内核与中央缓冲区，不要把 `severity` 直接当作“是否丢数”的完整分类。
 
 ```sql
 SELECT
@@ -505,7 +505,7 @@ ORDER BY name, idx;
 <!-- gracker-diagram: ed14-06-buffer-loss-and-retention-layers -->
 ![按内核、Producer 与中央缓冲分层定位丢数](../../assets/diagrams/ch14/ed14-06-buffer-loss-and-retention-layers.png)
 
-图：内核perCPUftrace由buffer_size_kb按每CPUKiB控制，traced_probes读前overrun覆盖/commit_overrun提交异常/dropped_events非覆盖模式满拒收；Producer各有独立SMB，初始化hint非每份ftrace配置，固定平台nativehelper1024KiB非全部实际分配值，traced_buf_trace_writer_packet_loss需查突发/包大小/阻塞/service调度。中央TraceConfig.buffers.size_kb由traced汇总，RINGchunks_overwritten覆盖旧chunk可能符合近期窗口设计，DISCARDchunks_discarded拒新chunk；不控制SMB等待丢弃策略。statsseverity不是完整丢数分类，overrun/中央覆盖丢弃可为info，应显式查名。只扩容不消除探针效应，固定复现改单变量再验窗口及丢数。
+图：内核 per-CPU ftrace 缓冲区由 `buffer_size_kb` 按每 CPU KiB 控制，`traced_probes` 读取前可能发生 `overrun` 覆盖、`commit_overrun` 提交异常或非覆盖模式写满导致的 `dropped_events` 拒收。各 Producer 拥有独立的共享内存缓冲（SMB），初始化 hint 不受每份 ftrace 配置控制，平台原生辅助路径中 1024 KiB 的共享内存提示也并非所有 Producer 的实际分配值；出现 `traced_buf_trace_writer_packet_loss` 时，需排查写入突发、单包大小、Producer 阻塞与服务调度。中央 `TraceConfig.buffers.size_kb` 由 `traced` 汇总：`RING_BUFFER` 下的 `chunks_overwritten` 表示旧 chunk 被覆盖（可能符合“保留最近窗口”的预期），`DISCARD` 下的 `chunks_discarded` 表示拒绝新 chunk，且两者都不控制 SMB 的等待与丢弃策略。`stats.severity` 无法完整代表是否丢数，overrun 与中央覆盖/丢弃均可能为 `info`，查询时应显式列出指标名。单纯扩容无法消除探针效应，应在同一次复现中每次只改一个变量并复验窗口与丢数。
 
 ### 生产环境抓取约束
 
@@ -550,7 +550,7 @@ adb pull /data/misc/perfetto-traces/boottrace.perfetto-trace
 <!-- gracker-diagram: ch14-06-24-boot-trace-gates -->
 ![启动 Trace 的准备、触发和覆盖窗口](../../assets/diagrams/ch14/ch14-06-24-boot-trace-gates.png)
 
-图：配置与一次性属性先准备，待持久属性和 traced 就绪后启动采集。 数据分区与服务就绪之前的阶段可能缺失，preserve 模式不能同时改时钟和缓冲大小。
+图：先准备好配置与一次性属性，待持久属性和 `traced` 就绪后再启动采集。数据分区与服务就绪之前的早期阶段可能缺失，而 `preserve_ftrace_buffer` 模式不支持同时修改时钟源和缓冲区大小。
 
 历史沿革上，旧版本 Android 还存在 atrace boot trace 路径：它以 category 配置内核和用户空间 atrace 状态，输出流程与 Perfetto boot trace 不同。新配置以 `perfetto_trace_on_boot` 为准；阅读历史故障记录时，我们仍要能认出旧路径。
 
@@ -609,11 +609,11 @@ adb pull /data/misc/perfetto-traces/boottrace.perfetto-trace
 - `registerWithPerfetto()`；
 - `setAppTracingAllowed()`。
 
-其中一部分带 `@SystemApi`，另一部分直接标记 `@hide`：`@SystemApi` 面向获准的系统组件，`@hide` 表示它不进入公开 SDK，平台模块、系统应用或 OEM 代码可在相应构建环境中使用。Play 应用想把它们当功能依赖，反射和 hidden-API 这两条路都被堵死。平台源码里的 `setAppTracingAllowed()` 仍调用 JNI；原来的布尔许可参数已不参与判断，native 端仍会执行 `atrace_update_tags()` 刷新缓存，让派生进程及时识别追踪状态。它比完全 no-op 多这一步，又管不了普通应用的业务 trace 开关。AndroidX `forceEnableAppTracing()` 在 API 31 及以上跳过调用，是另一层兼容封装的行为。
+其中一部分带 `@SystemApi`，另一部分直接标记 `@hide`：`@SystemApi` 面向获准的系统组件，`@hide` 表示不进入公开 SDK，只有平台模块、系统应用或 OEM 代码可在对应构建环境中使用；Play 应用想靠反射或隐藏 API 调用都会被拦截。平台源码里的 `setAppTracingAllowed()` 仍调用 JNI，虽然原来的布尔许可参数已不再参与判断，native 端仍会执行 `atrace_update_tags()` 刷新缓存，让派生进程及时识别追踪状态。这比纯粹的空操作多出一步，但仍然管不了普通应用的业务 trace 开关。AndroidX 的 `forceEnableAppTracing()` 在 API 31 及以上则会跳过调用，属于另一层兼容封装。
 
 #### 1.2 应用工程优先使用 AndroidX
 
-截至 2026-10-25，AndroidX Tracing 的最新稳定版是 2.0.5，发布于 2026-10-21。为了复现经典 AndroidX 封装的系统 ATrace 路径，下面的依赖示例明确固定在 1.3.0；它负责低版本兼容，并提供自动配对 begin/end 的 Kotlin 扩展：
+截至 2026-10-25，AndroidX Tracing 的最新稳定版是 2.0.5，发布于 2026-10-21。为了演示经典的系统 ATrace 兼容路径，下面的依赖示例选用 1.3.0；它负责低版本兼容，并提供自动配对 begin/end 的 Kotlin 扩展：
 
 ```kotlin
 dependencies {
@@ -621,14 +621,14 @@ dependencies {
 }
 ```
 
-1.3.0 这组 API 把事件写入系统 trace；`trace` 与 suspend `traceAsync` 的实现已经合入 `tracing`，同版本 `tracing-ktx` 只传递依赖它。已核对发布的 Gradle module 元数据与 Android sources jar，而非只凭包名判断。2.0.0 起，AndroidX Tracing 新增稳定的进程内 Perfetto API，可在进程内缓冲 trace，并支持 flow、metadata（附在事件上的结构化说明）、Coroutine context propagation（协程切换线程时继续携带追踪上下文）和可插拔 sink（接收 trace 数据的输出端）。2.0.5 属于这条稳定线的后续修订。原有的 `android.os.Trace` 与 `trace {}` API 没有弃用，低频系统 trace 事件仍可继续使用，库代码尤其适合保留这条兼容路径。
+从发布的 Gradle module 元数据与 Android sources jar 可以确认，1.3.0 这组 API 会把事件写入系统 trace，其中 `trace` 与挂起函数 `traceAsync` 的实现已经合入 `tracing`，同版本的 `tracing-ktx` 只传递依赖它。从 2.0.0 起，AndroidX Tracing 新增了稳定的进程内 Perfetto API，支持进程内缓冲 trace、flow、metadata（附在事件上的结构化说明）、Coroutine context propagation（协程切换线程时继续携带追踪上下文）和可插拔 sink（接收 trace 数据的输出端）；2.0.5 属于这条稳定线的后续修订。原有的 `android.os.Trace` 与 `trace {}` API 并没有弃用，低频系统 trace 事件仍可继续使用，库代码尤其适合保留这条兼容路径。
 
-两套路径的采集方式不同：2.0.x 的进程内 trace 暂时不会自动出现在 Android Studio System Trace 中，要与系统 trace 合并，就走 AndroidX/Benchmark 1.5 支持的采集与事后合并流程。升级时还要分别验证初始化时机、缓冲策略、输出格式和线上开销。
+两套路径的采集方式不同：2.0.x 的进程内 trace 目前不会自动出现在 Android Studio System Trace 中，要与系统 trace 合并，仍需走 AndroidX/Benchmark 1.5 支持的采集与事后合并流程。升级时还要分别验证初始化时机、缓冲策略、输出格式和线上开销。
 
 <!-- gracker-diagram: ch14-06-27-androidx-paths -->
 ![AndroidX 经典系统路径与进程内路径](../../assets/diagrams/ch14/ch14-06-27-androidx-paths.png)
 
-图：固定 1.3.0 复现经典 ATrace，2.0.x 进程内事件需支持的采集与合并流程。 最新稳定版核对为 2.0.5；依赖版本、初始化和输出路径要分别锁定。
+图：示例采用 1.3.0 复现经典 ATrace 路径，2.0.x 进程内事件则需配合支持的采集与合并流程。最新稳定版为 2.0.5；实际选型时应分别锁定依赖版本、初始化与输出路径。
 
 ### 2. 三类事件分别表达什么
 
@@ -650,7 +650,7 @@ fun readCachedFeed(): List<FeedItem> =
 <!-- gracker-diagram: ch14-06-28-sync-wall-cpu -->
 ![同步 Slice 的墙钟时长包含等待](../../assets/diagrams/ch14/ch14-06-28-sync-wall-cpu.png)
 
-图：同步区间的 ts 与 dur 表示线程时间轴上的跨度，需调度表拆分运行和等待。 Slice wall duration 不等于 CPU time，重叠子区间也不能简单再累加。
+图：同步区间的 `ts` 与 `dur` 表示线程时间轴上的跨度，需结合调度表拆分运行和等待。Slice 的 wall duration 不等于 CPU time，重叠子区间也不能简单相加。
 
 同步切片遵守三条硬约束：
 
@@ -658,16 +658,16 @@ fun readCachedFeed(): List<FeedItem> =
 - 调用必须按栈结构嵌套；
 - `endSection()` 结束的是当前线程最近一次尚未结束的 section，它不接收名称。
 
-同步切片要避开可能切换线程的协程挂起点。挂起点是协程暂停并允许底层线程执行其他工作的地方，协程恢复时可能已经换到另一条线程；若它在线程 B 恢复，线程 A 会留下未结束的栈，线程 B 又会结束一个不属于它的切片，后续时间线随之错位。
+同步切片要避开可能切换线程的协程挂起点。挂起点是协程暂停并让底层线程去执行其他工作的位置，恢复执行时可能已经切到另一条线程；如果它在线程 B 恢复，线程 A 会留下未闭合的栈，线程 B 又会错关一个不属于它的切片，后续时间线随之错位。
 
 <!-- gracker-diagram: ch14-06-29-suspend-sync-stack -->
 ![同步区间跨协程挂起会错位](../../assets/diagrams/ch14/ch14-06-29-suspend-sync-stack.png)
 
-图：同步 section 的配对属于线程栈，恢复到另一线程不能结束原线程的 begin。 整段逻辑任务用异步或挂起感知 API；同步埋点只围住确定不挂起的区间。
+图：同步 section 的配对绑定线程调用栈，协程恢复到另一线程时不能用来结束原线程的 begin。整段逻辑任务应使用异步或挂起感知 API，同步埋点只围住确定不会挂起的区间。
 
 #### 2.2 异步切片：一项工作经历了多条线程
 
-异步切片记录逻辑任务的开始到完成，适合队列任务、网络请求、图片加载和协程。下面的示例使用 AndroidX 的 suspend 扩展包住一次请求：
+异步切片记录逻辑任务从开始到完成的过程，适合队列任务、网络请求、图片加载和协程。下面的示例使用 AndroidX 的 suspend 扩展包住一次请求：
 
 ```kotlin
 import androidx.tracing.traceAsync
@@ -683,21 +683,21 @@ suspend fun loadProfile(userKey: String): Profile {
 }
 ```
 
-异步 begin/end 可以位于不同线程，名称和 cookie 必须一致。elapsed time 指从开始到结束经过的时钟时间，切片里可能装着排队、网络等待、锁等待和多次调度；它计量的是逻辑任务的跨度，某一条线程未必持续执行了这么久。
+异步的 begin 与 end 可以落在不同线程，只要名称和 cookie 保持一致即可。elapsed time 指从开始到结束经过的时钟时间，这段切片里可能夹杂排队、网络等待、锁等待和多次线程调度；它度量的是逻辑任务的整体跨度，并不代表某一条线程持续执行了这么久。
 
-示例中的 AtomicInteger 要交给全进程统一的 tracing 组件独占分配才成立：各模块自己从 0 开始数，重叠任务容易撞号；整数回绕之后，也要等旧 ID 的任务结束才轮到复用。同一个名称下可能同时有多项任务在跑，cookie 就是用来区分它们的整数标识。Perfetto 的 ATrace 文档把所有异步事件的 cookie 视为进程内共享的整数命名空间，即同一进程里各处代码共用一组整数 ID。所以我们让一个受控的 tracing 组件统一分配仍在使用的 cookie，任务完成后才允许复用。`name.hashCode()`、固定常量和多个互不协调的计数器都可能在重叠任务中碰撞。
+示例中的 `AtomicInteger` 必须交给全进程统一的 tracing 组件独占分配才能成立：如果各模块各自从 0 开始递增，重叠任务很容易撞号；整数回绕之后，也必须等旧 ID 对应的任务结束后才能复用。同一名称下可能同时有多个任务在运行，cookie 就是用来区分它们的整数标识。Perfetto 的 ATrace 文档把所有异步事件的 cookie 视为进程内共享的整数命名空间，也就是说同一进程里各处代码共用同一组整数 ID。因此通常由一个受控的 tracing 组件统一管理仍在使用的 cookie，任务完成后才放回复用；`name.hashCode()`、固定常量和互不协调的局部计数器都可能在重叠任务中发生碰撞。
 
 <!-- gracker-diagram: ch14-06-30-async-cookie-lifetime -->
 ![异步 cookie 统一分配到任务结束](../../assets/diagrams/ch14/ch14-06-30-async-cookie-lifetime.png)
 
-图：同一逻辑任务跨线程时保持名称与 cookie，活跃 ID 在进程内统一管理。 局部计数器不自动全进程唯一，回绕时也不能复用仍活跃的 ID。
+图：同一逻辑任务跨线程执行时保持名称与 cookie 不变，活跃 ID 在进程内统一管理。局部计数器无法自动保证全进程唯一，整数回绕时也不能复用仍处于活跃状态的 ID。
 
-公共 `beginAsyncSection()` 会创建进程范围的 async track，即在 Perfetto 时间线上承载逻辑任务区间的一行。多个切片在 UI 中上下排列只表示时间重叠，父子关系和因果关系从这里读不出来。需要 flow（用箭头表示事件间因果关系）、metadata 或可指定名称的 track 时，评估 Perfetto SDK 或 AndroidX Tracing 2.0。
+公共的 `beginAsyncSection()` 会创建进程范围的 async track，即在 Perfetto 时间线上承载逻辑任务区间的一行。多个切片在 UI 中上下排列只表示时间上存在重叠，父子关系和因果关系从这里读不出来。如果需要 flow（用箭头表示事件间的因果连线）、metadata 或可指定名称的 track，可改用 Perfetto SDK 或 AndroidX Tracing 2.0。
 
 <!-- gracker-diagram: ch14-06-31-async-stacking -->
 ![异步轨道堆叠不表示父子关系](../../assets/diagrams/ch14/ch14-06-31-async-stacking.png)
 
-图：UI 通过上下摆放区分重叠异步区间，不自动建立业务因果或父子关系。 公开 ATrace async 没有 flow；跨进程的相同 name/cookie 也不会自动配对。
+图：UI 通过上下堆叠区分重叠的异步区间，并不会自动建立业务因果或父子关系。公开 ATrace async API 不提供 flow；跨进程的相同 name/cookie 也不会自动配对。
 
 #### 2.3 Counter：某个状态在这一刻是多少
 
@@ -711,37 +711,37 @@ fun onDecodeQueueChanged(depth: Int) {
 }
 ```
 
-每次调用写入一个绝对值样本，Perfetto 用相邻样本绘制 Counter Track，也就是一条数值随时间变化的轨道；累加增量、求速率这些工作都留给了应用自己。高频循环应限制写入频率，或只在值变化时写，避免采集开销和 trace 缓冲区压力反过来改变被测行为。
+每次调用都会写入一个绝对值样本，Perfetto 据此绘出数值随时间变化的 Counter Track；累加增量、计算变化速率这些工作则留给分析阶段自行完成。高频循环应限制写入频率，或仅在数值变化时记录，避免采集开销和 trace 缓冲区压力反过来干扰被测行为。
 
 <!-- gracker-diagram: ch14-06-32-counter-absolute-values -->
 ![Counter 每次写入绝对值](../../assets/diagrams/ch14/ch14-06-32-counter-absolute-values.png)
 
-图：队列深度、连接数等状态用 Counter 绝对值记录，变化率和增量由应用另算。 AndroidX 1.3.0 示例使用 Int 兼容封装；高频调用仍会增加事件带宽。
+图：队列深度、连接数等状态用 Counter 绝对值记录，变化率和增量需另行计算。AndroidX 1.3.0 示例使用 `Int` 兼容封装；高频调用仍会推高事件带宽。
 
 ### 3. 名称设计决定后续分析成本
 
 #### 3.1 使用稳定、低 cardinality 名称
 
-cardinality（基数）是一个字段可能出现的不同取值数量。Trace 名称应从一组规模小、相对固定的值中选择，让同一类工作保持同一名称，例如：
+cardinality（基数）是一个字段可能出现的不同取值数量。Trace 名称应从一组规模小、相对固定的值中选择，让同一类工作始终保持相同名称，例如：
 
 - `Startup.loadLocalConfig`
 - `FeedRepository.readCache`
 - `ImageDecode.decode`
 - `Checkout.submit`
 
-用户 ID、完整 URL、搜索词、文件路径和时间戳都要留在名称之外：动态名称会制造大量难以聚合的切片，还可能把个人数据写进可分享的 trace。需要区分少量固定分支时，用有限枚举后缀，如 `ImageDecode.jpeg` 与 `ImageDecode.webp`。
+用户 ID、完整 URL、搜索词、文件路径和时间戳都要留在名称之外：动态名称不仅会制造大量难以聚合的碎片切片，还可能把个人数据写进可分享的 trace。确实需要区分少量固定分支时，可以采用有限枚举后缀，如 `ImageDecode.jpeg` 与 `ImageDecode.webp`。
 
 
 #### 3.2 长度和字符约束
 
-`beginSection()` 的公开约束是最多 127 个 Unicode code unit。这里的 code unit 是 Java UTF-16 字符串中的 16 位编码单元，也是 `String.length()` 计数的基本单位；一个增补平面字符会占两个 code unit，所以 127 这个上限落在编码单元上，可见字符数和字节数都要另行换算。JNI 层会把 `|` 与换行替换为空格，避免破坏 ATrace marker 文本协议。
+`beginSection()` 的公开约束是最多 127 个 Unicode code unit。这里的 code unit 是 Java UTF-16 字符串中的 16 位编码单元，也是 `String.length()` 计数的基本单位；一个增补平面字符会占两个 code unit，因此 127 的上限约束的是编码单元数，可见字符数和 UTF-8 字节数需要另行换算。JNI 层还会把 `|` 与换行符替换为空格，避免破坏 ATrace marker 文本协议。
 
-平台公开的异步与 Counter 方法不做 `beginSection()` 那套 127 code unit 检查，截断点要看 JNI 层和 marker 缓冲各自的容量。本文固定的 AndroidX 1.3.0 封装则会把同步、异步和 Counter 标签统一截到 127 个 code unit。长名称截断还可能把不同操作变成相同标签，应主动使用稳定短名称。
+平台公开的异步与 Counter 方法不做 `beginSection()` 那套 127 code unit 检查，实际截断点取决于 JNI 层和 marker 缓冲各自的容量；示例选用的 AndroidX 1.3.0 封装则会把同步、异步和 Counter 标签统一截断到 127 个 code unit。长名称截断还可能把不同操作变成相同标签，因此应主动使用简洁稳定的短名称。
 
 <!-- gracker-diagram: ch14-06-34-name-boundaries -->
 ![平台、JNI、AndroidX 与 marker 的长度边界](../../assets/diagrams/ch14/ch14-06-34-name-boundaries.png)
 
-图：平台同步名按 UTF-16 检查 127，AndroidX 1.3.0 统一截标签，JNI 与 marker 另有限制。 不同长度单位不能混算；名称截断还可能把不同标签变成同名。
+图：平台同步名称按 UTF-16 检查 127 上限，AndroidX 1.3.0 统一截断标签，JNI 与 marker 缓冲另有各自限制。不同长度单位不可混算，名称截断还可能把不同标签变成同名。
 
 #### 3.3 延迟构造动态标签
 
@@ -847,16 +847,16 @@ python3 record_android_trace \
 
 #### 5.3 `isEnabled()` 的含义
 
-`Trace.isEnabled()` 经 native 查询 `TRACE_TAG_APP` 对应的 ATrace tag 或 Perfetto app category 是否启用，任一路成立就可能返回 true；适合避免构造只供 trace 使用的字符串。它回答的只有当前启用状态这一件事。trace buffer 还剩多少空间、事件是否完整保留到文件、配置里有没有 sched、Binder 或 FrameTimeline、trace 里适不适合记敏感信息，这些都要靠后面的丢数查询和配置核对来回答。所以我们把它用在控制观测代码的额外开销上；鉴权、隐私判断和业务分支，交给业务自己的机制。
+`Trace.isEnabled()` 会经 native 查询 `TRACE_TAG_APP` 对应的 ATrace tag 或 Perfetto app category 是否启用，只要其中一路成立就可能返回 true，适合用来跳过仅服务于 trace 的字符串构造。但它能回答的也只有当前启用状态这一件事——trace buffer 还剩多少空间、事件是否完整保留到文件、配置里是否采集了 sched、Binder 或 FrameTimeline、以及 trace 中是否适合记录敏感信息，全都需要靠后面的丢数查询与配置核对来确认。因此只应拿它控制观测代码的额外开销，鉴权、隐私判断和业务分支都必须交给业务自身的逻辑。
 
 <!-- gracker-diagram: ed14-06-enabled-label-and-retention-boundaries -->
 ![启用状态只控制额外观测工作，事件保留还要逐层核验](../../assets/diagrams/ch14/ed14-06-enabled-label-and-retention-boundaries.png)
 
-图：普通函数入参字符串先求值，关闭trace不能撤销分配；AndroidX懒标签在启用状态成立时才执行lambda，有限枚举避免高基数/敏感名。原文Android17isEnabled检查APP的atracetag或SDKcategory当前状态，不是采集启动/权限/隐私/容量证明；包装分别按真实begin/end生命周期。业务block不能因开关改变结果；已写事件仍可能被覆盖/丢弃，最终需检查窗口/track/字段/stats及sched/Binder/FT数据源。经典1.3API及Java内部backend分开固定，不向进程内新版自动系统合并泛化。
+图：普通函数入参里的字符串会先求值，关闭 trace 也无法撤销已经发生的分配；AndroidX 懒标签只在启用状态成立时才执行 lambda，配合有限枚举可避免高基数与敏感名称。Android 17 基线中的 `isEnabled()` 只检查 APP 的 atrace tag 或 SDK category 当前状态，并不能证明采集已启动、权限满足、隐私合规或缓冲区容量充足；各类包装仍分别按真实的 begin/end 生命周期配对。业务代码块决不能因追踪开关而改变返回结果；已写入的事件仍可能被覆盖或丢弃，最终必须核验时间窗口、track、字段、`stats` 以及 sched、Binder、FrameTimeline 数据源。这里讨论的经典 1.3 API 与 Java 内部 backend 分属既有系统路径，不能直接泛化到 2.0.x 的进程内自动合并路径。
 
 ### 6. 协程和线程池怎么埋
 
-一条协程经常经历“调用线程提交—等待队列—工作线程执行—回调线程恢复”。整项任务用异步切片，单个不会 suspend（暂停协程）的 CPU 或同步 I/O 区间再用同步切片。下面的代码展示这两层语义：
+一条协程经常经历“调用线程提交—等待队列—工作线程执行—回调线程恢复”。整项任务用异步切片包裹，其中确定不会 suspend（暂停协程）的 CPU 计算或同步 I/O 区间再使用同步切片。下面的代码展示了这两层语义：
 
 ```kotlin
 import androidx.tracing.trace
@@ -879,24 +879,24 @@ suspend fun loadFeed(cookie: Int): List<FeedItem> =
     }
 ```
 
-`Feed.load` 包含等待和线程切换；`Feed.queryDb` 与 `Feed.mapModels` 各自落在执行线程上。这里明确假定 `feedDao.readAll()` 是不会挂起的同步 DAO 方法，映射循环也不挂起，begin/end 才保持同线程。如果实际使用 Room 的 suspend DAO，这套同步包装就要换掉：整段保留异步区间，确定不会挂起的内部阶段再单独埋点。
+`Feed.load` 覆盖了等待和线程切换，而 `Feed.queryDb` 与 `Feed.mapModels` 各自落在真实执行线程上。这里明确假设 `feedDao.readAll()` 是不会挂起的同步 DAO 方法、映射循环也不会挂起，begin 与 end 才能保证在同一线程上。如果实际使用的是 Room 的 suspend DAO，这套同步包装就必须去掉：整段保留异步区间，仅对内部确定不挂起的阶段单独埋点。
 
 <!-- gracker-diagram: ch14-06-38-coroutine-two-levels -->
 ![异步任务跨度与线程内同步阶段](../../assets/diagrams/ch14/ch14-06-38-coroutine-two-levels.png)
 
-图：整项协程使用异步区间，确定不挂起的 DAO 和映射阶段各在线程内标记。 示例 DAO 明确为同步方法；实际 suspend DAO 不能套同线程同步包装。
+图：整项协程使用异步区间，确定不挂起的 DAO 读取与映射阶段则各自在执行线程内标记。示例假设 DAO 为同步方法，实际使用 suspend DAO 时切勿套用同线程同步包装。
 
-线程池任务也遵循同一原则。这里的 worker 是从线程池取出并执行任务的工作线程：
+线程池任务也遵循同样的原则。这里的 worker 指从线程池取出并执行任务的工作线程：
 
 - 提交到完成：异步切片；
 - 单次 worker 执行：同步切片；
 - 队列长度：Counter；
-- 排队时间：优先记录提交、出队和执行起点。只有执行区间完整、同一任务无重叠且其他等待已单独排除时，才可用区间差估算；异步总跨度减执行时间通常还混有网络、锁和调度等待。
+- 排队时间：优先直接记录提交、出队和执行起点。只有执行区间完整、同一任务无重叠且其他等待已单独排除时，才可用区间差做估算；异步总跨度减去执行时间通常还混杂了网络、锁和调度等待。
 
 <!-- gracker-diagram: ch14-06-39-queue-duration-boundary -->
 ![排队时间需要提交、出队与执行锚点](../../assets/diagrams/ch14/ch14-06-39-queue-duration-boundary.png)
 
-图：记录任务提交、出队和执行起点，才能将排队与其他等待分开。 异步总时长减执行片段一般还含网络、锁和调度等待，重叠区间不能重复相减。
+图：记录任务提交、出队和执行起点，才能把排队时间与其他等待剥离开。异步总时长减去执行片段一般还包含网络、锁与调度等待，重叠区间更不可重复相减。
 
 UI 中异步轨道的上下排列只用于分开重叠区间，调用关系要从 flow edge 找；flow edge 是连接两个事件、表达先后或因果关系的有向边，公共 ATrace async event 并没有它。
 
@@ -938,7 +938,7 @@ DecodedFrame decodeFrame(const EncodedFrame& input) {
 
 `TraceScope` 使用 C++ RAII 惯用法：构造对象时开始切片，对象离开作用域执行析构函数时结束切片。这样无论正常返回还是异常展开，都会执行 `ATrace_endSection()`。名称要避开换行和 `|`；高频调用前可用 `ATrace_isEnabled()` 避免昂贵的标签构造。
 
-平台源码中的 `<cutils/trace.h>` 还提供 `ATRACE_BEGIN`、`ATRACE_INT` 和系统 tag。它们属于平台内部接口。普通 NDK 应用使用 `<android/trace.h>`，事件隐式归入 app tag；`ATRACE_TAG_APP` 在 API 37 源码中的值是 `1 << 12`。固定 NDK `ATrace_*` 实现直接调用 libcutils `atrace_*`，写入走的仍是 `trace_marker`；前述 Java `tracing_perfetto` 的 backend 选择是另一套入口，API 名称看起来对应，也带不来 TrackEvent 切换。
+平台源码中的 `<cutils/trace.h>` 还提供 `ATRACE_BEGIN`、`ATRACE_INT` 和系统 tag，它们都属于平台内部接口。普通 NDK 应用使用 `<android/trace.h>`，事件隐式归入 app tag；`ATRACE_TAG_APP` 在 API 37 源码中的值是 `1 << 12`。该版本的 NDK `ATrace_*` 实现直接调用 libcutils `atrace_*`，底层写入走的仍是 `trace_marker`；前面提到的 Java `tracing_perfetto` backend 选择属于另一套入口，即便 API 名称看起来相互对应，NDK 路径也不会随之切换到 TrackEvent。
 
 
 ### 8. 平台私有能力该怎样理解
@@ -1003,7 +1003,7 @@ ORDER BY dur DESC, ts, id;
 <!-- gracker-diagram: ch14-06-42-slice-context-views -->
 ![同步与异步事件已经是配对后的 Slice](../../assets/diagrams/ch14/ch14-06-42-slice-context-views.png)
 
-图：直接查询线程与进程上下文视图，保留实例、轨道和原始时间。 异步线程名可为空；dur=-1 的未闭合样本要单独报告，不计正常延迟。
+图：直接查询带线程与进程上下文的视图，保留实例、轨道和原始时间戳。异步切片的线程名可以为空；`dur = -1` 的未闭合样本应单独报告，不要计入正常延迟。
 
 #### 9.2 分位数语法
 
@@ -1049,21 +1049,21 @@ WHERE p.name = 'com.example.reader'
 ORDER BY c.track_id, c.ts, c.id;
 ```
 
-Counter 的算术平均值会受到采样频率影响。时间加权平均应先按 `track_id` 把样本展开为 `[ts, next_ts)` 的阶梯区间，再裁到场景窗、进程与 Trace 边界，用有效区间时长作权重。首条样本之前的状态未知，末值保持到边界属于外推假设，采集缺口期间也没有观测；跨同名轨道或进程实例直接相加，得先单独确认再算。§14.5 给出了带 `end_basis` 的完整区间与窗口求交示例。
+Counter 的算术平均值会受到采样频率影响。计算时间加权平均时，应先按 `track_id` 把样本展开为 `[ts, next_ts)` 的阶梯区间，再裁切到场景窗口、进程与 Trace 边界，并用有效区间时长作为权重。首条样本之前的状态未知，末值保持到边界属于外推假设，采集缺口期间也没有连续观测；若要跨同名轨道或进程实例合并，必须先单独确认语义后再相加。§14.5 给出了带 `end_basis` 的完整区间与窗口求交示例。
 
 <!-- gracker-diagram: ch14-06-44-counter-coverage -->
 ![时间加权 Counter 先还原有效区间](../../assets/diagrams/ch14/ch14-06-44-counter-coverage.png)
 
-图：按 track_id 还原阶梯值区间，并裁到场景、进程和 Trace 边界后加权。 首值前未知，末值保持是外推假设，缺口不能当连续观测。
+图：按 `track_id` 还原阶梯值区间，并裁切到场景、进程和 Trace 边界后再加权。首值前未知，末值保持是外推假设，采集缺口不能当作连续观测。
 
 #### 9.4 `slice.category` 列的含义
 
-`slice.category` 对 Track Event category 有明确含义，ATrace slice 的这一列通常是空的；按 `category = 'atrace'` 过滤，目标事件可能一个都留不下。应用事件用进程名、稳定的自定义名称和 track context 定位更可靠——track context 指切片所属线程、进程和轨道等上下文。
+`slice.category` 对 Track Event category 有明确含义，但 ATrace slice 的这一列通常是空的；如果直接按 `category = 'atrace'` 过滤，目标事件可能一条都留不下。对于应用事件，用进程名、稳定的自定义名称和 track context（切片所属线程、进程和轨道等上下文）来定位更可靠。
 
 <!-- gracker-diagram: ch14-06-45-category-filter -->
 ![ATrace Slice 不能靠 category=atrace 识别](../../assets/diagrams/ch14/ch14-06-45-category-filter.png)
 
-图：TrackEvent category 与 ATrace marker 来源不同，用进程、名称和轨道上下文定位。 ATrace Slice 的 category 通常为空，强制等于 atrace 会过滤掉目标记录。
+图：TrackEvent category 与 ATrace marker 来源不同，应结合进程、名称和轨道上下文定位。ATrace Slice 的 `category` 通常为空，强制要求等于 `'atrace'` 会过滤掉目标记录。
 
 ### 10. 高频埋点和 buffer 失真
 

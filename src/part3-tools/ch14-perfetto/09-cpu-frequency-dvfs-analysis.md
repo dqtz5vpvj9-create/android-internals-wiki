@@ -74,7 +74,7 @@ Linux CPUFreq 调频框架把控制路径分成 policy、governor 和 scaling dr
 <!-- gracker-diagram: ed14-09-cpufreq-policy-governor-hook-and-driver -->
 ![policy 约束下的 schedutil 映射与驱动解析](../../assets/diagrams/ch14/ed14-09-cpufreq-policy-governor-hook-and-driver.png)
 
-图：policy定义共享控制域和min/max；schedutil用util、capacity、参考频率计算候选，vendor map hook非零结果替代默认映射，零值走map_util_freq。缓存可复用目标，否则cpufreq_driver_resolve_freq解析支持频点，仍受policy和driver限制。更新间隔来自各policy transition delay，非跨设备固定周期；最终硬件/固件响应另需反馈，不把控制链画成有效频率保证。
+图：`policy` 定义共享控制域与最小/最大频率约束；`schedutil` 基于利用率 `util`、`capacity` 与参考频率计算候选频率，若 `vendor map hook` 返回非零值则替代默认映射，返回零值时回退到 `map_util_freq`。若目标频点可复用缓存则直接沿用，否则调用 `cpufreq_driver_resolve_freq()` 解析驱动支持的频点，整体仍受 `policy` 与驱动限制。更新间隔来自各自 `policy` 的 `transition_delay_us`，并非跨设备固定周期；最终硬件与固件响应仍需硬件反馈确认，控制链本身并不直接保证有效频率。
 
 频率数据能回答到哪一步，可以按下面的强弱理解：
 
@@ -86,12 +86,12 @@ Linux CPUFreq 调频框架把控制路径分成 policy、governor 和 scaling dr
 | `cpuinfo_cur_freq` /<br>`cpuinfo_avg_freq` | 驱动具备相应反馈能力时，更接近硬件观测 | 所有设备都实现并允许读取 |
 | PMU（Performance Monitoring Unit，性能监控单元）/ AMU（Activity Monitor Unit，活动监控单元）与硬件功耗计 | 实际执行、周期或能耗的补充证据 | 单靠 Perfetto cpufreq 轨无法替代这些数据 |
 
-这一层里有一处文档与实现的差异值得先记下：Perfetto 文档和 proto（Protocol Buffers 配置定义）注释把轮询路径描述为读取 `cpuinfo_cur_freq`，同一版本的 `CpuFreqInfo::ReadCpuCurrFreq()` 实现读取的是 `scaling_cur_freq`。内核文档也说明，`scaling_cur_freq` 多数情况下表示 scaling driver 最近请求的 P-state（处理器性能状态），与硬件瞬时频率之间还隔着驱动报告这一层。我们核对某一版本时以该版本的实现为准，文档与实现的差异同时记下来。[Android 17 Perfetto 采集实现](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/src/traced/probes/common/cpu_freq_info.cc) [Android 17 CPUFreq 文档](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/Documentation/admin-guide/pm/cpufreq.rst)
+这一层里有一处文档与实现的差异值得先记下：Perfetto 文档和 proto（Protocol Buffers 配置定义）注释把轮询路径描述为读取 `cpuinfo_cur_freq`，同一版本的 `CpuFreqInfo::ReadCpuCurrFreq()` 实现读取的却是 `scaling_cur_freq`。内核文档也说明，`scaling_cur_freq` 多数情况下表示 scaling driver 最近请求的 P-state（处理器性能状态），与硬件瞬时频率之间还隔着驱动报告这一层。核对某一版本时应以该版本的实现为准，并把文档与实现的差异一并记下来。[Android 17 Perfetto 采集实现](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/src/traced/probes/common/cpu_freq_info.cc) [Android 17 CPUFreq 文档](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/Documentation/admin-guide/pm/cpufreq.rst)
 
 <!-- gracker-diagram: ed14-09-software-frequency-sources-and-hardware-boundary -->
 ![三种频率来源都先按软件报告解释](../../assets/diagrams/ch14/ed14-09-software-frequency-sources-and-hardware-boundary.png)
 
-图：固定内核普通切换完成CPUFREQ_POSTCHANGE写freqs->new，fast_switch写driver返回freq，同policy在线CPU可分别产生事件。固定Perfetto ReadCpuCurrFreq实际读scaling_cur_freq，文档/proto注释cpuinfo_cur_freq差异需记录；读取失败/空值/解析失败可填0，先按缺失无效候选，不证明停钟。多数scaling_cur_freq为driver最近请求状态，硬件有效频率/执行周期/能耗另要设备支持的硬件反馈与计量，不能用软件保持曲线替代。
+图：Android 17 基线内核在普通切换完成路径 `CPUFREQ_POSTCHANGE` 写入 `freqs->new`，在 `fast_switch` 路径写入驱动返回的 `freq`，同一 policy 内的在线 CPU 可分别产生事件。Android 17 Perfetto 的 `ReadCpuCurrFreq()` 实际读取 `scaling_cur_freq`，这与文档和 proto 注释中的 `cpuinfo_cur_freq` 存在差异，核对时需加注记录；读取失败、空值或解析失败时会填入 0，应先当作缺失或无效候选处理，不能以此证明 CPU 停钟。多数 `scaling_cur_freq` 只代表驱动最近一次请求的 P-state，真实的硬件有效频率、执行周期和能耗仍要依赖设备支持的硬件反馈与功耗计量，软件保持曲线不能替代硬件观测。
 
 ## 采集入口：事件、轮询和系统信息
 
@@ -146,7 +146,7 @@ data_sources {
 }
 ```
 
-`linux.ftrace` 通过内核 tracepoint（预先定义的静态事件点）记录 `power/cpu_frequency` 的切换时刻，`linux.sys_stats` 补充轮询快照，`linux.system_info` 在采集开始时读取一次可用频点。这些路径及补充数据源都可能因版本、驱动、内核配置、权限或 sysfs 导出差异而缺失，所以我们采集后的第一件事是核对实际表、`stats`、ftrace setup metadata 与目标身份。本轮仅在 native Trace Processor57.2/58.2 导入受控合成数据并验证 SQL，配置用固定 Android17 描述编译；帧模型测试会注明兼容模型表，全程没有涉及 Android 设备录制、内核/ART 构建、硬件频率反馈或功耗实测。[Android 17 Perfetto CPU frequency 文档](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/docs/data-sources/cpu-freq.md)
+`linux.ftrace` 通过内核 tracepoint（预先定义的静态事件点）记录 `power/cpu_frequency` 的切换时刻，`linux.sys_stats` 补充轮询快照，`linux.system_info` 在采集开始时读取一次可用频点。这些路径及补充数据源都可能因版本、驱动、内核配置、权限或 sysfs 导出差异而缺失，因此采集后的第一件事是核对实际表、`stats`、ftrace setup metadata 与目标身份。文中 SQL 与配置均在主机端 Trace Processor 57.2 / 58.2 上导入受控合成数据、并按 Android 17 描述编译校验，帧模型查询也同样针对兼容模型表说明；真机设备录制、内核或 ART 构建、硬件频率反馈及功耗测量则需在目标设备上实测。[Android 17 Perfetto CPU frequency 文档](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/docs/data-sources/cpu-freq.md)
 
 
 事件驱动路径只在频率发生变化时写记录：某个 CPU 在 trace 开头保持原频点，轨道左侧就会留白，这段空白只说明“还没有切换事件”，CPU 是否仍在运行，要看调度和 idle 轨道。轮询能补快照，代价是漏掉采样点之间的切换。所以面向启动和掉帧的分析，要保留事件驱动采集。
@@ -157,7 +157,7 @@ data_sources {
 <!-- gracker-diagram: ch14-09-09-limits-not-request -->
 ![policy 上下限没有记录 governor 目标请求](../../assets/diagrams/ch14/ch14-09-09-limits-not-request.png)
 
-图：比较连续上下限值，判断当时是否允许更高频率。 相同限制可重复上报；只见上限时低请求与限频都有可能，来源需另查。
+图：比较连续上下限值，判断当时是否允许更高频率。相同限制可能重复上报；只看到上限时，“低请求”与“被限频”都有可能，具体来源仍需另查。
 
 ## Running、Runnable、idle 与频率
 
@@ -177,7 +177,7 @@ Running 时间也换算不成“CPU 算力已用满”：相同 wall time（墙�
 <!-- gracker-diagram: ch14-09-10-state-evidence -->
 ![线程状态决定频率关联的含义](../../assets/diagrams/ch14/ch14-09-10-state-evidence.png)
 
-图：Running 是获得 CPU 的区间，Runnable 是等待 CPU；S/D 还需等待原因。 高频 Running 仍可受缓存、内存、分支或共享资源限制。
+图：`Running` 表示获得 CPU 的区间，`Runnable` 表示等待 CPU，`S`/`D` 还需查明各自等待原因。即便处于高频 `Running`，吞吐仍可能受缓存、内存、分支或共享资源限制。
 
 我们分析 App 卡顿时，沿着下面的顺序读：
 
@@ -193,14 +193,14 @@ Perfetto 的 `cpu_idle_counters`（CPUIdle 状态区间表）已把原始值 `42
 <!-- gracker-diagram: ch14-09-12-idle-normalization -->
 ![CPUIdle 原始退出值被规范为 active](../../assets/diagrams/ch14/ch14-09-12-idle-normalization.png)
 
-图：原始4294967295规范为-1；非负值表示设备定义的 idle state。 state编号留在同一SoC内比较；空闲状态与功耗看各自轨道。
+图：原始值 `4294967295` 被规范化为 `-1`（active），非负值则表示设备定义的 idle state。state 编号应留在同一 SoC 内比较，空闲状态与功耗需查看各自轨道。
 
 CPUIdle 的两个参数经常被一起引用：target residency 回答“在这个状态停留多久才划算”——它是进入某个状态后至少停留多久才比浅层状态更节能，其中包含进入成本；exit latency 回答“醒来要等多久”——它是唤醒后恢复到可执行第一条指令的最坏延迟。若唤醒发生在进入状态的过程中、硬件必须先完成进入再退出，该上界还须覆盖相应进入阶段。短任务的首段延迟可能同时来自 idle 退出与升频，所以我们观察任务时，要看唤醒前后的完整区间。[Android 17 CPUIdle 文档](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/Documentation/admin-guide/pm/cpuidle.rst)
 
 <!-- gracker-diagram: ch14-09-13-idle-exit-boundary -->
 ![target residency 与 exit latency 是不同约束](../../assets/diagrams/ch14/ch14-09-13-idle-exit-boundary.png)
 
-图：residency 判断进入状态是否划算，exit latency 约束唤醒到首条指令的最坏延迟。 若进入中唤醒且必须完成进入，exit latency 上界也应覆盖相关进入阶段。
+图：`target residency` 判断进入某个状态是否划算，`exit latency` 则约束从唤醒到恢复执行首条指令的最坏延迟。若在进入过程中收到唤醒且硬件必须先完成进入再退出，`exit latency` 上界也应覆盖这段进入过程。
 
 ## policy、cluster 与 CPU 标识
 
@@ -240,9 +240,9 @@ Trace Processor 里有三种容易混淆的标识：
 <!-- gracker-diagram: ch14-09-16-cpu-identity-domains -->
 ![按字段语义统一成 ucpu 再关联](../../assets/diagrams/ch14/ch14-09-16-cpu-identity-domains.png)
 
-图：sched.cpu 是 ucpu 兼容别名，counter轨cpu是设备逻辑编号。 多机连接 counter 需 machine_id + 逻辑cpu；展示逻辑编号从cpu表读取。
+图：`sched.cpu` 是 `ucpu` 的兼容别名，而 counter 轨道中的 `cpu` 才是设备逻辑编号。多机环境下连接 counter 需使用 `machine_id` 加逻辑 `cpu`，最终展示逻辑编号应从 `cpu` 表读取。
 
-下面使用 Android17 公开 prelude 和主机57.2/58.2 均可核对的 `cpu_available_frequencies`，通过 `ucpu` 关联真实逻辑编号和机器身份。
+下面使用 Android 17 公开 prelude 和 Trace Processor 57.2/58.2 均可核对的 `cpu_available_frequencies`，通过 `ucpu` 关联真实逻辑编号和机器身份。
 
 ```sql
 SELECT
@@ -253,7 +253,7 @@ JOIN cpu AS c ON cf.ucpu = c.ucpu
 ORDER BY c.machine_id, c.cpu, cf.freq;
 ```
 
-`metadata_tables.py` 里保留着 `wrapping_sql_view=cpu_freq` 声明，但同 tag 的公开 SQL prelude 明确定义的是 `cpu_available_frequencies`；本轮 native57.2/58.2 里也是该视图存在、`cpu_freq` 缺席。一个表名是否真的可执行，要同时核对公开 SQL 和实际 `sqlite_master`，表生成声明只当线索。频点集合、`cluster_id`、`capacity` 和同步变频可以互相校验，policy 成员仍以设备 sysfs 或内核源码为准。[Android 17 `cpu_freq` 表定义](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/src/trace_processor/tables/metadata_tables.py)
+`metadata_tables.py` 里保留着 `wrapping_sql_view=cpu_freq` 声明，但同 tag 的公开 SQL prelude 明确定义的是 `cpu_available_frequencies`；在主机端 Trace Processor 57.2/58.2 中也是该视图存在、`cpu_freq` 缺席。一个表名是否真的可执行，要同时核对公开 SQL 和实际 `sqlite_master`，表生成声明只作线索。频点集合、`cluster_id`、`capacity` 和同步变频可以互相校验，policy 成员仍以设备 sysfs 或内核源码为准。[Android 17 `cpu_freq` 表定义](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-17.0.0_r1/src/trace_processor/tables/metadata_tables.py)
 
 
 ## 三类 workload 的判断方法
@@ -332,7 +332,7 @@ LIMIT 100;
 <!-- gracker-diagram: ed14-09-collection-and-frequency-hold-model -->
 ![事件、轮询与系统信息先分源，再建立保持区间](../../assets/diagrams/ch14/ed14-09-collection-and-frequency-hold-model.png)
 
-图：ftrace切换事件记录时序，sys_stats500ms仅示例快照不能还原点间切换，system_info启动时一次读取可用频点/CPU信息。counter_leading_intervals把样本延到下次样本，尾值到trace_end，首样本之前未知；保持不是硬件连续测量。原始sched.dur=-1另行处理，本章仅闭合Running并报告开放记录；缺失/无效频率不补0。轨道为关系示意，无设备时间数值。
+图：ftrace 切换事件记录切换时序，`sys_stats` 中的 500 ms 轮询只是示例周期快照（无法还原点间切换），`system_info` 则在启动时读取一次可用频点与 CPU 信息。`counter_leading_intervals!` 将样本延续到下一次采样，末尾外推至 `trace_end()`，首条样本之前依然未知；前向保持并不等于硬件连续测量。原始 `sched.dur = -1` 需另行处理，下文仅统计闭合 `Running` 并单独报告开放记录，缺失或无效频率也不补 0。图中轨道仅作关系示意，不代表实际设备时间数值。
 
 下面的模板用 `ucpu` 对调度区间与频率区间做 `SPAN_JOIN`（按时间求区间交集），也是后面频率分布、迁核和帧窗口查询共用的准备步骤。
 
@@ -415,7 +415,7 @@ ORDER BY p.start_ts, p.upid, t.utid;
 <!-- gracker-diagram: ed14-09-span-validation-and-running-intersections -->
 ![先验证 SPAN 输入，再对 Running 和已知正频率求交](../../assets/diagrams/ch14/ed14-09-span-validation-and-running-intersections.png)
 
-图：两侧按ucpu分区：sched只取dur>0并保留sched_id/utid，频率仅取单轨CPU、dur>0和freq>0；多轨歧义及无效值保留缺口。各侧用runningMAX前序end查重叠，任一输入重叠时整体SPAN输入清空并停止统计；诊断为空才求交。指定窗口须同一半开范围裁剪两侧。SPAN结果为闭合Running与已知正频率交集，保留原始counter/track/sched身份；全部闭合Running另作为覆盖分母，不能把无频率段补0。
+图：两侧均按 `ucpu` 分区：调度侧只取 `dur > 0` 的闭合 `Running` 并保留 `sched_id` 与 `utid`，频率侧仅取单轨 CPU 中 `dur > 0` 且 `freq > 0` 的区间，将多轨歧义与无效值留作缺口。各侧按前序最大结束时间检查重叠，任一输入存在重叠时清空整体 SPAN 输入并停止统计，仅在诊断结果为空时执行求交；限定分析窗口时须用同一半开范围先裁剪两侧。SPAN 输出为闭合 `Running` 与已知正频率的交集，并保留原始 counter、track 与 sched 身份；全部闭合 `Running` 另作为覆盖率分母，切勿将无频率段补 0。
 
 ```sql
 WITH target_thread AS (
@@ -454,14 +454,14 @@ ORDER BY running_ms DESC;
 <!-- gracker-diagram: ch14-09-26-two-denominators -->
 ![覆盖率和频率分布使用两个分母](../../assets/diagrams/ch14/ch14-09-26-two-denominators.png)
 
-图：合成校验：闭合Running55ms，其中已知正频率40ms，覆盖率72.73%。 频点pct以40ms为分母，覆盖率以55ms为分母；开放记录另列，不是周期或能耗占比。
+图：合成校验示例：闭合 `Running` 共 55 ms，其中已知正频率覆盖 40 ms，覆盖率为 72.73%。各频点 `pct` 以 40 ms 为分母，覆盖率以 55 ms 为分母；开放调度记录单独列出，这两项均不代表指令周期或能耗占比。
 
 下面把 UI 线程 Running 裁到 `android_frames` 的候选模型窗口，保留 `upid`、代表性ID和模型计数。这份模型表会聚合多Layer/多个DrawFrame，部分基础数据通过INNER JOIN排除，expected计数还固定为1，逐Layer的完整帧列表要到原始 FrameTimeline 里去看；我们先回查异常的原始 FrameTimeline，再来解释下面的频率覆盖。
 
 <!-- gracker-diagram: ch14-09-27-frame-model-coverage -->
 ![帧模型保留代表ID、计数与覆盖缺口](../../assets/diagrams/ch14/ch14-09-27-frame-model-coverage.png)
 
-图：按upid固定模型帧，分别聚合闭合Running和频率交集后再关联。 android_frames聚合多Layer/DrawFrame且会排除缺记录，expected计数常量1不证明完整。
+图：按 `upid` 限定模型帧，分别聚合闭合 `Running` 和已知频率交集后再关联。`android_frames` 会聚合多个 Layer/DrawFrame 且可能排除缺失记录，`expected_frame_timeline_count = 1` 是常量，不能证明数据完整。
 
 ```sql
 INCLUDE PERFETTO MODULE android.frames.timeline;
@@ -508,7 +508,7 @@ ORDER BY f.ts, ui_running_ms DESC;
 <!-- gracker-diagram: ch14-09-28-frame-overlap-boundary -->
 ![逐帧覆盖直接相加得不到全局总量](../../assets/diagrams/ch14/ch14-09-28-frame-overlap-boundary.png)
 
-图：UI与RenderThread分别选utid；重叠模型窗口可能覆盖同一Running。 改RenderThread要同时改两个CTE；GPU、SF与显示仍走各自证据链。
+图：UI 线程与 RenderThread 应分别选择各自的 `utid`；互相重叠的模型窗口可能覆盖同一段 `Running`。改查 RenderThread 时须同时修改两个 CTE，而 GPU、SurfaceFlinger 与显示侧仍需沿各自的证据链核对。
 
 线程迁核直接从公共结果里就能观察。我们先在原始闭合 Running 区间上按 `utid` 分区、以 `(ts,sched_id)` 排序找出相邻记录的 `ucpu` 变化，再关联目标段的频率；这样识别出的变化都来自原始调度记录，频率切分点只参与关联，未知频率的迁核候选也通过查询里的 LEFT JOIN 保留下来。
 
@@ -560,7 +560,7 @@ ORDER BY m.ts, m.sched_id, f.freq;
 <!-- gracker-diagram: ed14-09-migration-from-original-sched-and-frequency -->
 ![迁核先认原始调度段，再关联目标段频率](../../assets/diagrams/ch14/ed14-09-migration-from-original-sched-and-frequency.png)
 
-图：先在原始闭合Running按utid分区、(ts,sched_id)排序LAG前一ucpu，ucpu变化成为候选；其ts仅首次观测到新CPU闭合Running起点，不是精确迁核决策时刻。两段间隙可含Runnable/Sleeping/开放段/缺口，不直接等Runnable。之后LEFT JOIN目标段频率保留未知频率候选，同sched_id可多频点行仍是同调度段。迁核原因需状态、唤醒、约束与负载另证，默认cluster_id不证拓扑。
+图：先在原始闭合 `Running` 区间按 `utid` 分区、以 `(ts, sched_id)` 排序并通过 `LAG()` 取得前一 `ucpu`，将 `ucpu` 变化识别为迁核候选；这里的 `ts` 只是首次观测到新 CPU 闭合 `Running` 的起点，并非精确的迁核决策时刻。两段间隙内可能包含 `Runnable`、`Sleeping`、开放调度段或采集缺口，不能直接等同于 `Runnable`。随后 `LEFT JOIN` 目标段频率并保留未知频率候选，同一 `sched_id` 即使拆出多频点行仍属于同一调度段。迁核原因仍需结合线程状态、唤醒、约束与负载另行求证，默认 `cluster_id` 不能作为拓扑依据。
 
 ## 端侧 AI 推理中的 governor 协同
 
@@ -572,14 +572,14 @@ ORDER BY m.ts, m.sched_id, f.freq;
 <!-- gracker-diagram: ch14-09-32-paper-percent-base -->
 ![延迟下降与反向增加的百分比分母不同](../../assets/diagrams/ch14/ch14-09-32-paper-percent-base.png)
 
-图：第4节最多下降40.4%以默认governor延迟为分母。 归一化100→59.6只是百分比说明；反向增加约67.8%，不是40.4%，也不是设备绝对延迟。
+图：第 4 节报告的“最多下降 40.4%”以默认 governor 延迟为分母。图中归一化 `100 -> 59.6` 仅作百分比说明：反向增幅约为 67.8% 而非 40.4%，也不代表设备绝对延迟。
 
 论文以 llama.cpp b2202 扩展实现 FUSE：离线先搜索 GPU 候选频率，再为至多两个 GPU 候选搜索 CPU 频率，运行时按 prefill/decode 阶段和请求长度应用 CPU/GPU 组合；内存 governor 保持默认。它是该受控实验栈中的统一能效策略，与 Android17 通用系统 governor 之间隔着实验栈这层边界。FUSE 评估覆盖论文表2的六个4-bit模型；其中 ShareGPT 真实请求实验抽样200条，prefill≤512 token、decode≤256 token。在论文设定的近似等总能耗目标下，三组模型的平均 TTFT（Time to First Token，首 token 延迟）降低7.0%—16.9%，TPOT（Time per Output Token，平均每个输出 token 的时间）降低25.4%—36.8%；这组数字描述的是平均效果，逐次推理、逐 token 的能耗要另做计量。[论文页面](https://arxiv.org/abs/2507.02135)
 
 <!-- gracker-diagram: ch14-09-33-fuse-two-step -->
 ![FUSE 先GPU后CPU，内存保持默认](../../assets/diagrams/ch14/ch14-09-33-fuse-two-step.png)
 
-图：离线搜索GPU候选，再为至多两组候选搜索CPU，运行时按阶段应用。 内存governor保持默认；200条请求的真实请求指标按近似等总能耗目标，属于平均效果。
+图：FUSE 离线先搜索 GPU 候选频率，再为至多两组 GPU 候选搜索 CPU 频率，运行时按阶段与长度应用。内存 governor 保持默认；200 条真实请求的指标是在近似等总能耗目标下测得的平均效果。
 
 这些数字的适用范围就是论文那组设备和推理栈；换到 Android 17、其他 SoC、NPU（Neural Processing Unit，神经网络加速器）后端或不同推理运行时，都要重新测。对我们更有用的是它带来的诊断视角：GPU 执行仍依赖 CPU 提交，KV cache（注意力计算复用的 key/value 缓存）与权重访问受内存系统影响，单看 CPU 利用率可能低估整条推理流水线的时序需求。
 
@@ -606,12 +606,12 @@ CPU Frequency 是结果信号，我们解释它的来源时，要结合下面几
 本地 `adb perfetto` 接受完整 TraceConfig，在设备允许的范围内可以显式启用分析所需的数据源。Android Studio Profiler 用的是工具自己的采集配置，版本与入口不同会得到不同字段；我们分析前先检查 `cpu_counter_track` 和 trace metadata，界面名称只当入口线索。
 
 
-Android17 `ProfilingManager` 的system trace由平台 `Configs` 生成受限配置，应用不能直接提交任意TraceConfig。固定源码还在 `KEY_COLLECT_STACK_SAMPLING` 与 `systemTraceAddStackSampling` flag条件下支持附加linux.perf栈采样，“固定配置”要读成“默认之外还有条件扩展”，但该可选栈采样仍补不齐下面缺失的DVFS事件。这份配置包含 compact sched（压缩编码的调度事件）、进程信息、应用 atrace 分类和 SurfaceFlinger FrameTimeline，未启用 `power/cpu_frequency`、`power/cpu_idle`、`linux.sys_stats` 或 `linux.system_info`。system trace 结果还会经过 redaction（敏感信息裁剪），并受系统 rate limiter（采样频率限制）、参数范围和设备配置约束。它可以支持应用侧线上性能采样；本地 CPU DVFS 分析还是要交回完整 TraceConfig。[Android 17 Profiling 配置](https://android.googlesource.com/platform/packages/modules/Profiling/+/refs/tags/android-17.0.0_r1/service/java/com/android/os/profiling/Configs.java) [Android 17 ProfilingService](https://android.googlesource.com/platform/packages/modules/Profiling/+/refs/tags/android-17.0.0_r1/service/java/com/android/os/profiling/ProfilingService.java)
+Android 17 的 `ProfilingManager` system trace 由平台 `Configs` 生成受限配置，应用不能直接提交任意 `TraceConfig`。该版本源码还在 `KEY_COLLECT_STACK_SAMPLING` 与 `systemTraceAddStackSampling` flag 成立时支持附加 `linux.perf` 栈采样，也就是在默认预设之外保留了条件扩展能力，但这一可选栈采样仍然补不齐下文缺失的 DVFS 事件。默认预设包含 compact sched（压缩编码的调度事件）、进程信息、应用 atrace 分类和 SurfaceFlinger FrameTimeline，未启用 `power/cpu_frequency`、`power/cpu_idle`、`linux.sys_stats` 或 `linux.system_info`。system trace 结果还会经过 redaction（敏感信息裁剪），并受系统 rate limiter（采样频率限制）、参数范围和设备配置约束。它适合支持应用侧线上性能采样，而本地 CPU DVFS 分析依然需要使用完整 `TraceConfig`。[Android 17 Profiling 配置](https://android.googlesource.com/platform/packages/modules/Profiling/+/refs/tags/android-17.0.0_r1/service/java/com/android/os/profiling/Configs.java) [Android 17 ProfilingService](https://android.googlesource.com/platform/packages/modules/Profiling/+/refs/tags/android-17.0.0_r1/service/java/com/android/os/profiling/ProfilingService.java)
 
 <!-- gracker-diagram: ed14-09-local-tools-and-online-preset-capabilities -->
 ![采集入口决定可请求范围，实际产出仍要核对](../../assets/diagrams/ch14/ed14-09-local-tools-and-online-preset-capabilities.png)
 
-图：本地adb perfetto在权限允许内可提交完整TraceConfig；Studio由工具版本与入口决定预设；固定Android17 ProfilingManager由Configs生成受限system trace，应用不能提交任意配置，KEY_COLLECT_STACK_SAMPLING与对应flag可条件扩展linux.perf。固定预设含compact sched/进程/应用atrace/FrameTimeline，未启用freq、idle、sys_stats、system_info，且redaction、rate limiter、参数与设备配置仍约束交付。可选栈不补DVFS缺失源，交付后枚举真实轨道。
+图：本地 `adb perfetto` 在权限允许范围内可提交完整 `TraceConfig`；Android Studio 由工具版本与入口决定预设；Android 17 `ProfilingManager` 则由 `Configs` 生成受限 system trace（应用无法提交任意配置），当 `KEY_COLLECT_STACK_SAMPLING` 与对应 flag 成立时可条件扩展 `linux.perf`。其默认预设包含 compact sched、进程信息、应用 atrace 与 FrameTimeline，未启用 `freq`、`idle`、`sys_stats` 和 `system_info`，且输出仍受 redaction、rate limiter、参数范围与设备配置约束。可选调用栈采样无法补齐 DVFS 缺失数据源，拿到 Trace 后应先枚举实际轨道。
 
 拿到线上 trace 后，先把实际存在的数据源和轨道列出来。缺少 idle、policy limit、GPU 或 thermal 时，报告写到“已观测 CPU 频率与调度状态的相关性”为止；要升级到整机能耗或 governor 根因，得先把这些缺的数据补上。
 

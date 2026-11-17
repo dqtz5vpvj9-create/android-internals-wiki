@@ -55,16 +55,16 @@ last_review_finalize_at: '2026-08-04T14:07:05+08:00'
 
 # Agent 辅助 Perfetto 分析协议
 
-这里的 Agent 指能够读取 trace、调用 `trace_processor` 并执行 SQL 的工具型 AI。本文把“协议”用作一套可重复执行的调查流程和记录格式，与网络报文无关。它要达到的目标是可复查：人工查看 Perfetto UI 很快，但结论容易散落在截图、口头判断和临时 SQL 里，换一份 trace 或换一名分析者，就很难重放同一条推理路径。所以我们把流程固定下来：输入完整、SQL 经执行验证、证据与假设分开、报告注明版本和采集缺口。这些约束取自 `android/skills/profilers` 的固定提交和 Perfetto 官方 Agent skill 的主机侧能力边界（该 skill 由供 Agent 读取的说明文件、脚本与工具包装组成）。
+这里的 Agent 指能够读取 trace、调用 `trace_processor` 并执行 SQL 的工具型 AI。本文把“协议”用作一套可重复执行的调查流程和记录格式，与网络报文无关。它要达到的目标是可复查：人工查看 Perfetto UI 很快，但结论容易散落在截图、口头判断和临时 SQL 里，换一份 trace 或换一名分析者，就很难重放同一条推理路径。因此把流程固化下来尤为关键：输入完整、SQL 经执行验证、证据与假设分开、报告注明版本和采集缺口。这些约束提炼自 `android/skills/profilers` 的指定提交以及 Perfetto 官方 Agent skill 的主机侧能力边界（该 skill 由供 Agent 读取的说明文件、脚本与工具包装组成）。
 
 <!-- gracker-diagram: ed14-11-investigation-dependencies-and-stop-loop -->
 ![局部取证、同窗口复核与三种调查出口](../../assets/diagrams/ch14/ed14-11-investigation-dependencies-and-stop-loop.png)
 
-图：先固定可验证问题、Trace SHA、实例/窗口、TP/skill/SQL包等执行环境并检查schema与采集覆盖；实际SQL输出经语义检查后成为证据，局部长slice拆状态，沿flow/token/唤醒/栈等追依赖。回到同一用户可感知窗口比较竞争解释，保留原始身份、层级与缺口。当前可见证据已回答问题才带边界交付；仍有可验证候选继续查询；关键源缺失、截断或时钟不齐则停止具体归因并给补采方案。结论只约束当前Trace/窗口/schema，不承诺已找到所有不可见瓶颈，也不以最长项/最大状态/排行直接定根因。
+图：先锁定可验证问题、Trace SHA、进程实例/窗口及 Trace Processor、skill、SQL 包等执行环境，并核对 schema 与采集覆盖。真实 SQL 输出经过语义检查后才成为证据，局部长 slice 需拆分调度状态，并沿 flow、token、唤醒或调用栈追查依赖；随后回到同一用户可感知窗口比较竞争解释，保留原始身份、层级与采集缺口。当现有可见证据已足以回答问题时才带边界交付结论；仍有可验证候选时继续查询；若关键数据源缺失、Trace 截断或时钟无法对齐，则停止具体归因并给出补采方案。结论只约束当前 Trace、窗口与 schema，并不承诺已经找到所有不可见瓶颈，也不能仅凭最长项、最大状态或单项排行直接定根因。
 
 在 14.1 节 Trace 抓取、14.7 节 Perfetto SQL 常用模板、14.10 节 BufferQueue 阻塞案例的基础上，这里聚焦 Agent 调查流程：怎样提问、怎样取证、怎样避免过早下结论。
 
-> 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）；`platform/external/perfetto` 固定在提交 `ece66975738007dd0978b911d8a2077e49b8f31e`；涉及调度和内核等待时，内核用 `android17-6.18-2026-06_r6`；主机侧 SQL 在 Perfetto v57.2（提交 `da1d152cff27890903d158fe96751de3aab883cc`）的 Trace Processor 上验证，并覆盖 Android 17 标签中的标准库。
+> 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）；`platform/external/perfetto` 对应提交 `ece66975738007dd0978b911d8a2077e49b8f31e`；涉及调度和内核等待时，内核基线为 `android17-6.18-2026-06_r6`；主机侧 SQL 在 Perfetto v57.2（提交 `da1d152cff27890903d158fe96751de3aab883cc`）的 Trace Processor 上验证，并覆盖 Android 17 标签中的标准库。
 
 工具版本的历史也交代一句：Perfetto v57.0 引入了官方 Agent skill，v57.1 修复安装包遗漏内置 Trace Processor wrapper 的问题，v57.2 修复 Trace Processor 解析带内嵌 proto descriptor（trace 自带的 Protocol Buffers 字段定义）的部分 trace 时出现的兼容问题。
 
@@ -118,7 +118,7 @@ trace 里往往带着进程名、线程名、URL、日志、文件路径和业�
 
 ## Scratchpad：事实和假设分开
 
-调查过程要落在纸面上。固定提交中的 `perfetto-trace-analysis` 要求在 trace 同目录创建 scratchpad，文件名取 trace 文件名加 `_analysis.md` 后缀；团队流程还要服从权限和数据处理规则——trace 目录只读或由外部系统管理时，我们把 scratchpad 放入获准的工作目录，并记录 trace 散列值与权限受控存储中的文件标识。scratchpad 里只写已经验证的事实，“可能是”“看起来像”这类判断放到调查计划里去。
+调查过程要落在纸面上。对应提交下的 `perfetto-trace-analysis` 要求在 trace 同目录创建 scratchpad，文件名取 trace 文件名加 `_analysis.md` 后缀；团队流程还要服从权限和数据处理规则——当 trace 目录只读或由外部系统管理时，就把 scratchpad 放入获准的工作目录，并记录 trace 散列值与权限受控存储中的文件标识。scratchpad 里只写已经验证的事实，“可能是”“看起来像”这类判断放到调查计划里去。
 
 scratchpad 分成三张表：
 
@@ -133,14 +133,14 @@ scratchpad 分成三张表：
 <!-- gracker-diagram: ch14-11-05-facts-hypotheses -->
 ![假设、事实、排除与待验证项分开流转](../../assets/diagrams/ch14/ch14-11-05-facts-hypotheses.png)
 
-图：假设经实际查询后转为事实或有范围的排除，证据不足保留待验证项。 工作记录放获准目录并绑定Trace散列；外部要求同目录不覆盖只读/正文目录约束。
+图：假设经实际查询后转为已验证事实或有范围限制的排除项，证据不足时保留为待验证项。工作记录应放入获准目录并绑定 Trace 散列值；外部规范要求放在同目录时，不可越过只读或正文目录权限约束。
 
 ## Perfetto SQL：先查表结构，再写查询
 
-写查询之前先想清楚风险在哪：Perfetto SQL 即使语法正确，表、字段、模块版本或时间区间口径错了，同样可能给出误导性结果。所以 `perfetto-sql` 对 Agent 的约束是固定 Trace Processor 和 SQL 包，先检查当前表结构，再编写查询，并对真实输出做语义校验。
+写查询之前先想清楚风险在哪：Perfetto SQL 即使语法正确，表、字段、模块版本或时间区间口径错了，同样可能给出误导性结果。所以 `perfetto-sql` 对 Agent 的约束是固定 Trace Processor 和 SQL 包版本，先检查当前表结构，再编写查询，并对真实输出做语义校验。
 
 
-固定源码快照里的表分三类入口。`slice`、`thread_state`、`thread`、`process` 等基础表由 Trace Processor 预置；`android.startup.startups`、`slices.time_in_state` 等标准库模块要通过 `INCLUDE PERFETTO MODULE` 加载；旧版基于 trace 的 metric 由 metric 运行入口生成，不能因为加载了同名标准库模块，就认定 metric 表已经存在。
+该版本源码快照里的表分三类入口：`slice`、`thread_state`、`thread`、`process` 等基础表由 Trace Processor 预置；`android.startup.startups`、`slices.time_in_state` 等标准库模块通过 `INCLUDE PERFETTO MODULE` 加载；旧版基于 trace 的 metric 则由 metric 运行入口生成，不能因为加载了同名标准库模块，就认定 metric 表已经存在。
 
 | 规则 | 操作要求 | 防止的问题 |
 |---|---|---|
@@ -217,7 +217,7 @@ FROM coverage AS c LEFT JOIN state_groups AS g ON TRUE
 ORDER BY state_dur_ms DESC;
 ```
 
-最长项只作为探索目标，用户问题或根因还要靠后续证据确认。`observed_slice_ms` 是闭合时长或截到 Trace 结束的观测范围，`open_state_ms` 单列来自开放状态的部分。无状态匹配时保留目标行与 NULL，把它读成 0ms 执行或 100% 睡眠都是误读。`overlap_errors>0` 时先排查合并/解析或输入模型，异常数值先挡在结论之外。覆盖率不足时报告缺口，并记录选用的截止策略。
+最长项只作为探索目标，用户问题或根因还要靠后续证据确认。`observed_slice_ms` 是闭合时长或截到 Trace 结束的观测范围，`open_state_ms` 单列来自开放状态的部分。无状态匹配时保留目标行与 `NULL`，把它读成 0 ms 执行或 100% 睡眠都是误读。`overlap_errors > 0` 时先排查合并、解析或输入模型，异常数值先挡在结论之外。覆盖率不足时报告缺口，并记录选用的截止策略。
 
 
 ## 六类问题方向：把开放问题改写成可执行动作
@@ -235,12 +235,12 @@ ORDER BY state_dur_ms DESC;
 | Memory | 触发：LMK、swap 上升、kswapd 活跃、图形内存异常<br>先查：已采集的内存计数器、LMK、PSI、dmabuf / dma_heap、堆图<br>再查：查进程 RSS、swap、GPU buffer、Bitmap 与持有路径 | 只看 Java heap，漏掉 native 或图形内存 |
 | Power | 触发：屏灭耗电、无法 suspend、modem 或蓝牙电源轨高<br>先查：可用的电源轨、suspend、唤醒源、网络与厂商功耗轨道<br>再查：查唤醒源、UID 流量、蓝牙 / modem / thermal 事件 | 把缺失电源轨或归因字段解释成零功耗 |
 
-这张表用来选择调查方向，提示文件中的字段名和因果句仍要逐项验证。“缺少或固定频率即 governor bug”这样的提示句只能当候选假设，频率缺口、限频、idle 和设备实现要分开确认。`PARTITIONED` 消除不了同分区输入的重叠；本书前节的 native 检查已证明符合条件的 VIEW 可作 SPAN 输入，提示文档里的 materialized 要求只是文档说法，接口层面以主机回归为准。嵌套 slice 直接 SUM 仍可能重复计数。我们按用户窗口与已验证事实选择六类方向，缺轨时写“证据不可见”，异常是否存在留待补采确认。
+这张表用来选择调查方向，提示文件中的字段名和因果句仍要逐项验证。“缺少或固定频率即 governor bug”这样的提示句只能当候选假设，频率缺口、限频、idle 和设备实现要分开确认。`PARTITIONED` 消除不了同分区输入的重叠；前文针对原生算子的验证已表明符合条件的 `VIEW` 同样可以作为 `SPAN` 输入，提示文档中的 `materialized` 要求只是一般建议，接口支持情况仍以实际 Trace Processor 回归结果为准。嵌套 slice 直接 `SUM` 仍可能重复计数。我们按用户窗口与已验证事实选择六类方向，缺轨时就写“证据不可见”，异常是否存在留待补采确认。
 
 
 ## Wall time 与 CPU time 必须分离
 
-在 trace 里圈出一个长 slice 后，我们要先问：这段时间线程到底在干什么。`dur` 记录的是 wall time（经过时间），与 CPU time（CPU 运行时间）是两个量——里面可能是 CPU 执行，也可能是调度等待、Binder、锁、futex（用户态同步所用的内核等待机制）或 I/O 等待。所以 Agent 流程要求每个可疑长 slice 都查 `thread_state`，再按状态选择下一组证据。
+在 trace 里圈出一个长 slice 后，先问清楚这段时间线程到底在干什么。`dur` 记录的是 wall time（经过时间），与 CPU time（CPU 运行时间）是两个量——里面可能是 CPU 执行，也可能是调度等待、Binder、锁、futex（用户态同步所用的内核等待机制）或 I/O 等待。所以 Agent 流程要求每个可疑长 slice 都查 `thread_state`，再按状态选择下一组证据。
 
 判断顺序分五步：
 
@@ -257,18 +257,18 @@ ORDER BY state_dur_ms DESC;
 - `Sleeping`：可能对应等事件、锁、Binder 回复或 futex。
 - `Uninterruptible Sleep`：需要结合 `io_wait`、`blocked_function`、内核线程与 block 事件判断。
 
-固定标签下的 `slices.time_in_state` 会输出 `io_wait` 和 `blocked_function`，但后两项依赖 `sched/sched_blocked_reason`；`blocked_function` 还受 userdebug 构建与符号可用性限制。
+Android 17 基线下的 `slices.time_in_state` 会输出 `io_wait` 和 `blocked_function`，但后两项依赖 `sched/sched_blocked_reason`；`blocked_function` 还受 userdebug 构建与符号可用性限制。
 
 函数名出现在 slice 上，只说明线程处于该标记范围，CPU 当时是否在执行这个函数要靠其他证据。所以报告要分别给出经过时间、CPU 运行时间或调度状态分布，再用 Binder flow、锁事件、调用栈或内核证据定位等待方。
 
 <!-- gracker-diagram: ch14-11-09-wall-versus-cpu -->
 ![墙钟由执行、排队和等待共同组成](../../assets/diagrams/ch14/ch14-11-09-wall-versus-cpu.png)
 
-图：slice名称只表明标记范围，先分离Running、Runnable和阻塞，再查依赖。 最大状态占比不必决定关键路径；S/D不唯一对应某个锁、Binder或存储原因。
+图：slice 名称只表明标记范围，应先分离 `Running`、`Runnable` 与阻塞等待，再追查依赖。最大状态占比未必决定关键路径；`S` 或 `D` 状态也并不唯一对应某个锁、Binder 或存储原因。
 
 ## 从局部异常到全局复核
 
-复杂 trace 里常常同时存在好几种异常：App 主线程等待、系统服务慢 Binder、SurfaceFlinger 合成异常、后台 I/O。我们抓到其中一个，也只是证明了它存在；要归因，还要证明它与用户可感知窗口重合，并沿依赖关系找到决定总耗时的关键路径（critical path）。
+复杂 trace 里常常同时存在好几种异常：App 主线程等待、系统服务慢 Binder、SurfaceFlinger 合成异常、后台 I/O。抓到其中一个，也只是证明了它存在；要归因，还要证明它与用户可感知窗口重合，并沿依赖关系找到决定总耗时的关键路径（critical path）。
 
 
 全局复核至少包括四步：
@@ -278,7 +278,7 @@ ORDER BY state_dur_ms DESC;
 - **FrameTimeline / Binder 复核**：对 jank、启动、点击无响应类问题，分别确认异常帧和慢 Binder 是否与用户可感知窗口重合。
 - **计数器复核**：查看可用的 cpufreq、内存、电源轨、dmabuf 等计数器是否在同一窗口发生变化，并核对单位与采样间隔。
 
-下面仍以最长有效线程 slice 构造探索窗口，正式调查时替换 target_window。查询保留完整观测时长、窗口交集、原始 dur/open 标记、track 与 upid/utid，并明确区分嵌套层级。读结果时记住两点：开放 slice 截到 trace_end 仍只是观测边界估计；查询只列出带 thread_track 的线程 slice，内核或 GPU 工作的覆盖情况要另行确认。
+下面仍以最长有效线程 slice 构造探索窗口，正式调查时替换 `target_window`。查询保留完整观测时长、窗口交集、原始 `dur`/open 标记、`track` 与 `upid`/`utid`，并明确区分嵌套层级。读结果时记住两点：开放 slice 截到 `trace_end()` 仍只是观测边界估计；查询只列出带 `thread_track` 的线程 slice，内核或 GPU 工作的覆盖情况要另行确认。
 
 ```sql
 WITH effective_slice AS (
@@ -375,22 +375,22 @@ Perfetto SQL 模板进入团队工作流后要像代码一样测试。字段变�
 
 一个可维护的测试集至少包含四类用例：
 
-- **语法冒烟测试（最小执行检查）**：每条模板在固定 Trace Processor 与 Android 17 标准库组合下可以解析和执行。
-- **表结构测试**：模板使用的表、视图、列与公开模块能在固定版本查到。
+- **语法冒烟测试（最小执行检查）**：每条模板在指定的 Trace Processor 与 Android 17 标准库组合下可以解析和执行。
+- **表结构测试**：模板使用的表、视图、列与公开模块能在对应版本中查到。
 - **边界测试**：覆盖空结果、未闭合 slice、跨窗口相交、缺少 `sched`、缺少 FrameTimeline 等情况。
-- **语义测试**：使用可审计的合成 trace 或固定 golden trace（作为预期基准的参考 trace）验证输出，例如状态区间要落在目标窗口内、父子 slice 要按嵌套关系处理，避免被误加为独立耗时。
+- **语义测试**：使用可审计的合成 trace 或 golden trace（作为预期基准的参考 trace）验证输出，例如状态区间要落在目标窗口内、父子 slice 要按嵌套关系处理，避免被误加为独立耗时。
 
-空 trace 只能证明 SQL 在零行输入下可解析，关联、单位和归因正确与否要靠语义用例回答。Perfetto 的差分测试会把输入 trace、查询或 metric 的输出与固定预期结果比较；项目模板至少要为启动、帧、Binder、I/O 与功耗查询保留代表性 trace、预期输出、Trace Processor 版本和标准库提交。本轮示例仅在 native Trace Processor57.2/58.2 导入受控合成输入，并复用输入/依赖 SHA 未变的前节通过记录；固定 17 顶层模块与主机依赖分别注明。Android 设备录制、Framework/内核构建和性能因果实验均未执行。
+空 trace 只能证明 SQL 在零行输入下可解析，关联、单位和归因是否正确要靠语义用例回答。Perfetto 的差分测试会把输入 trace、查询或 metric 的输出与预设预期结果比较；项目模板至少要为启动、帧、Binder、I/O 与功耗查询保留代表性 trace、预期输出、Trace Processor 版本和标准库提交。文中 SQL 模板与边界行为均在 native Trace Processor 57.2 与 58.2 上基于受控合成输入验证（并对照 Android 17 顶层模块与主机依赖）；Android 设备实际录制、Framework/内核构建及性能因果实验则需在真机环境中另行开展。
 
 
 ## 源码与 trace 关联
 
-Perfetto 提供事件、状态和时间关系，优化动作通常还要回到源码。Agent 报告定位到 slice、Binder 方法或 native 符号后，我们要接着建立到 AOSP 或业务代码的映射。
+Perfetto 提供事件、状态和时间关系，优化动作通常还要回到源码。Agent 报告定位到 slice、Binder 方法或 native 符号后，下一步就是建立到 AOSP 或业务代码的映射。
 
 常见映射路径有四种：
 
 - **slice 名称 → App trace marker**：回到产生 marker 的业务代码，确认标记范围；Java 可从 `Trace.beginSection()` 等调用点查起，native marker 则查对应 ATrace API。
-- **Binder 方法 → Framework 服务**：从接口描述符（Binder 接口名）、transaction、服务名与服务端进程映射到固定标签的 AOSP 实现，再结合服务端线程状态判断阻塞点。
+- **Binder 方法 → Framework 服务**：从接口描述符（Binder 接口名）、transaction、服务名与服务端进程映射到对应标签的 AOSP 实现，再结合服务端线程状态判断阻塞点。
 - **native 符号 → AOSP / vendor 模块**：用符号、build ID（二进制构建标识）、进程与调用栈定位同一次构建的二进制；缺少匹配符号时标注 vendor 闭源边界。
 - **FrameTimeline / SurfaceFlinger → 图形栈章节**：队列、fence、BufferQueue、HWC 等机制回到 2.8 与 14.10；报告里点到引用即可，原理展开交给对应章节。
 
