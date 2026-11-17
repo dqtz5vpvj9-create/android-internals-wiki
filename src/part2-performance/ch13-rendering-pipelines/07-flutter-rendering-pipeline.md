@@ -187,7 +187,7 @@ Flutter framework、engine 和 Android embedding 不属于 AOSP，系统升到 A
 | Android 默认启用 Impeller | Flutter 3.27，Android API 29+ | API 29+ 仍要核对 Impeller 是否被关闭，以及运行时选择 Vulkan 还是 GLES |
 | HCPP | Flutter 3.44 起提供，当前为实验性 opt-in（显式选择加入） | 还需 Android API 34+、Impeller、Vulkan 和运行时 SurfaceControl swapchain 可用 |
 
-本文以 3.32 stable 的默认合并模型为主线，与 issue #150525 的维护者说明一致；架构文档把合并起点写为 3.29。两者是发布与默认配置的不同口径。落到 3.29—3.31、定制 engine 或显式配置的 App 上，我们记录实际 revision，并在 Perfetto 中确认 Dart UI work 与平台回调的 tid；后续 engine 是否保留相同 opt-out，也以当时的实际配置为准。[来源：线程合并说明](https://github.com/flutter/flutter/issues/150525)
+本文以 3.32 stable 的默认合并模型为主线，与 issue #150525 的维护者说明一致；架构文档把合并起点写为 3.29。两者是发布与默认配置的不同口径。落到 3.29—3.31、定制 engine 或显式配置的 App 上，我们记录实际 revision，并在 Perfetto 中确认 Dart UI work 与平台回调的 tid；后续 engine 是否保留相同 opt-out，也以当时的实际配置为准。[^source-audit-note-1]
 
 
 ## 一帧的公共前半段
@@ -220,12 +220,12 @@ flowchart LR
 
 ### Platform / Dart UI work
 
-Engine 请求帧后，VSync callback 才驱动对应工作，系统 vsync 来一次也未必就要重建一次 Widget tree。需要生成新 scene 时，Dart framework 处理 animation、build、layout 和 paint，`Animator::Render` 按 view id 收集 `LayerTree`，`Animator::EndFrame` 完成 producer continuation，把本轮任务交给 raster pipeline。`Animator::BeginFrame` 先申请 pipeline 空位；失败会记录 `PipelineFull` 并重新请求帧，所以我们读这个 slice 时，要把申请空位的部分和 Dart build 分开看。[来源：Animator](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/common/animator.cc)
+Engine 请求帧后，VSync callback 才驱动对应工作，系统 vsync 来一次也未必就要重建一次 Widget tree。需要生成新 scene 时，Dart framework 处理 animation、build、layout 和 paint，`Animator::Render` 按 view id 收集 `LayerTree`，`Animator::EndFrame` 完成 producer continuation，把本轮任务交给 raster pipeline。`Animator::BeginFrame` 先申请 pipeline 空位；失败会记录 `PipelineFull` 并重新请求帧，所以我们读这个 slice 时，要把申请空位的部分和 Dart build 分开看。[^source-audit-note-2]
 
 
 在 3.32 stable+ 的主线模型中，UI task runner 与 Android platform task runner 都映射到宿主 Main thread，MethodChannel 回调、Activity 生命周期、输入事件和 Dart frame work 在同一线程上串行竞争：耗时较长的插件回调会推迟 Dart build；过重的 Dart work 也会拖慢平台消息和输入处理。
 
-Raster task runner 通常仍独立。`Rasterizer::Draw()` 从 pipeline 消费任务，随后 `DrawToSurfaces` 逐 view 处理，取得输出 frame，再经 compositor preroll/paint 与 `Submit()` 或 external-view embedder 提交；失败、discard 和 retry 分支有没有走到产出新 buffer，要看这一轮的实际结果。IO task runner 负责图片或资源相关工作，解码、上传与实际使用之间仍可能有跨线程依赖。另有一条捷径：仅 external texture 更新时，`Animator::DrawLastLayerTrees()` 还可以跳过本轮 Dart build，复用先前 layer tree 再绘制。[来源：Rasterizer](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/common/rasterizer.cc)
+Raster task runner 通常仍独立。`Rasterizer::Draw()` 从 pipeline 消费任务，随后 `DrawToSurfaces` 逐 view 处理，取得输出 frame，再经 compositor preroll/paint 与 `Submit()` 或 external-view embedder 提交；失败、discard 和 retry 分支有没有走到产出新 buffer，要看这一轮的实际结果。IO task runner 负责图片或资源相关工作，解码、上传与实际使用之间仍可能有跨线程依赖。另有一条捷径：仅 external texture 更新时，`Animator::DrawLastLayerTrees()` 还可以跳过本轮 Dart build，复用先前 layer tree 再绘制。[^source-audit-note-3]
 
 <!-- gracker-diagram: ed13-07-new-scene-and-texture-reuse -->
 ![新 scene 先取 pipeline 空位，texture-only 可复用旧树再绘制](../../assets/diagrams/ch13/ed13-07-new-scene-and-texture-reuse.png)
@@ -273,7 +273,7 @@ PlatformView、`RenderMode.texture`、`RenderMode.image` 和宿主 Android UI �
 VSync 从哪里进来？固定 Flutter 源码中的 `VsyncWaiterAndroid::AwaitVSync()` 会先判断 NDK `AChoreographer` 是否可用：符号可用时，它在 UI task runner 上注册 NDK frame callback；否则退回 platform task runner，调用 Java `VsyncWaiter.asyncWaitForVsync()`，再由 `Choreographer.FrameCallback` 回调 `FlutterJNI.onVsync()`。
 
 
-两条入口随后汇合到 `VsyncWaiter::FireCallback()`，由 `VsyncFireCallback` flow 关联到 UI task runner 上的 `VsyncProcessCallback`。回调再按需要进入 `Animator::BeginFrame` 或 `DrawLastLayerTrees`。固定 NDK 路径用 frame start 加当前刷新周期估计 target；我们把它当 engine 自己的时序记录来读，它离 SF App FrameTimeline token 和显示完成时间都还有距离。[来源：VsyncWaiterAndroid](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/vsync_waiter_android.cc)
+两条入口随后汇合到 `VsyncWaiter::FireCallback()`，由 `VsyncFireCallback` flow 关联到 UI task runner 上的 `VsyncProcessCallback`。回调再按需要进入 `Animator::BeginFrame` 或 `DrawLastLayerTrees`。固定 NDK 路径用 frame start 加当前刷新周期估计 target；我们把它当 engine 自己的时序记录来读，它离 SF App FrameTimeline token 和显示完成时间都还有距离。[^source-audit-note-4]
 
 可用下面这条调用关系检查 trace，箭头表示逻辑先后，不保证每个 slice 都紧挨出现：
 
@@ -314,7 +314,7 @@ VSync 从哪里进来？固定 Flutter 源码中的 `VsyncWaiterAndroid::AwaitVS
 
 `FlutterTextureView` 把底层 `SurfaceTexture` 包装成 `Surface`，再交给 `FlutterRenderer`。Flutter Raster/GPU 先生成 SurfaceTexture image，宿主 HWUI 随后把它作为 `TextureLayer` 采样并绘入 App Window buffer。
 
-`TextureView` 的 frame-available 回调标记 layer 需要更新并 `invalidate()`。宿主 Main 的 `TextureView.draw()` 通过 `RecordingCanvas.drawTextureLayer()` 记录绘制，纹理的实际消费与窗口像素的生产发生在后续的宿主 HWUI/RenderThread/GPU；Java `draw()` 返回的只是绘制记录，纹理读取要看后面几段。这也要求硬件加速窗口，软件 Canvas 下不会显示 TextureView 内容。[来源：TextureView](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/TextureView.java)
+`TextureView` 的 frame-available 回调标记 layer 需要更新并 `invalidate()`。宿主 Main 的 `TextureView.draw()` 通过 `RecordingCanvas.drawTextureLayer()` 记录绘制，纹理的实际消费与窗口像素的生产发生在后续的宿主 HWUI/RenderThread/GPU；Java `draw()` 返回的只是绘制记录，纹理读取要看后面几段。这也要求硬件加速窗口，软件 Canvas 下不会显示 TextureView 内容。[^source-audit-note-5]
 
 这条路径有两段独立的生产/消费节奏：
 
@@ -374,7 +374,7 @@ API 29+ 的固定源码会取得 `Image.getHardwareBuffer()`，再用 `Bitmap.wr
 
 `TextureRegistry.SurfaceProducer` 在 Flutter 3.22 进入源码，官方迁移文档把 3.24 定为插件可以采用的最低稳定版本。`onSurfaceAvailable()` 与 `handlesCropAndRotation()` 的新契约在 3.27 提供，`onSurfaceCleanup()` 在 3.29 取代旧的 `onSurfaceDestroyed()`。审计插件时，我们核对其声明的 Flutter 最低版本和实际实现的回调，旧插件的行为按它发布时的契约查，当前 API 文档只覆盖当前版本。
 
-`createSurfaceProducer()` 默认采用 `SurfaceLifecycle.manual`。固定实现只有请求 `resetInBackground` 且选中 ImageReader backing 时，才注册内存压力清理回调；`onSurfaceCleanup()` 在清理前通知调用方停用旧 Surface，恢复后再取得新 Surface。`SurfaceTextureSurfaceProducer.setCallback()` 是空实现。`getSurface()` 的契约要求按需重新取得，resize/重建后以重新取得的 Surface 为准；callback 出现与否跟随 backing 实现，resize 后没有 callback 也属正常。[来源：TextureRegistry](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/view/TextureRegistry.java)
+`createSurfaceProducer()` 默认采用 `SurfaceLifecycle.manual`。固定实现只有请求 `resetInBackground` 且选中 ImageReader backing 时，才注册内存压力清理回调；`onSurfaceCleanup()` 在清理前通知调用方停用旧 Surface，恢复后再取得新 Surface。`SurfaceTextureSurfaceProducer.setCallback()` 是空实现。`getSurface()` 的契约要求按需重新取得，resize/重建后以重新取得的 Surface 为准；callback 出现与否跟随 backing 实现，resize 后没有 callback 也属正常。[^source-audit-note-6]
 
 
 插件还要检查 `handlesCropAndRotation()`：ImageReader backing 返回 `false`，SurfaceTexture backing 返回 `true`。相机画面方向或裁剪出错时，我们先查插件有没有遵守该契约，再考虑 SurfaceFlinger transform。
@@ -384,7 +384,7 @@ API 29+ 的固定源码会取得 `Image.getHardwareBuffer()`，再用 `Bitmap.wr
 
 图：固定选择规则：未 forceGL、API 29+ 且无已知 AHB defect 才选 ImageReader，否则选 SurfaceTexture；独立于 root mode、renderer backend 与 HC/VD fallback。生命周期默认 `manual`；仅 ImageReader + `resetInBackground` 注册内存压力回调，cleanup 前先停旧 Surface，恢复后再 `getSurface`；`SurfaceTexture` 的 `setCallback` 为空实现，不能等待同一通知。`getSurface` 需按需重新取得，resize 或重建后使用新对象，resize 没有 callback 属正常情况。ImageReader 的 `handlesCropAndRotation=false`，插件需按传感器、设备与输出自行处理；SurfaceTexture 返回 `true`，需按其变换契约处理以避免重复变换；插件版本须匹配 `SurfaceProducer` API 回调演进，旧版本按当时契约判断。
 
-在 Perfetto 中分析 external texture 卡顿时，分别记录 texture id、插件输入队列、engine frame 与 root buffer。中间 texture 通常只在 Flutter 内部被采样，在 SF layer tree 里往往找不到对应 layer。固定 ImageReader producer 在 API 33+ 的 `acquireLatestImage()` 路径还会调用 `Image.getFence().awaitForever()`，这可能形成 Raster 调用链中的 CPU 等待；API 29–32 缺少同一 Java fence API，这个调用名只到 33+ 为止。安全读取依赖要按 backing 与 backend 分别核对。[来源：FlutterRenderer](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/embedding/engine/renderer/FlutterRenderer.java)
+在 Perfetto 中分析 external texture 卡顿时，分别记录 texture id、插件输入队列、engine frame 与 root buffer。中间 texture 通常只在 Flutter 内部被采样，在 SF layer tree 里往往找不到对应 layer。固定 ImageReader producer 在 API 33+ 的 `acquireLatestImage()` 路径还会调用 `Image.getFence().awaitForever()`，这可能形成 Raster 调用链中的 CPU 等待；API 29–32 缺少同一 Java fence API，这个调用名只到 33+ 为止。安全读取依赖要按 backing 与 backend 分别核对。[^source-audit-note-7]
 
 <!-- gracker-diagram: ed13-07-external-input-and-raster-fence-wait -->
 ![外部输入先被 Flutter 采样，ImageReader API33+ 可在 CPU 等 fence](../../assets/diagrams/ch13/ed13-07-external-input-and-raster-fence-wait.png)
@@ -401,7 +401,7 @@ Flutter 3.27 起在 Android API 29+ 默认启用 Impeller。固定源码中的�
 3. 模拟器、已知问题 SoC、缺失能力或无效 Vulkan context 会让它改用 **Impeller OpenGLES**；
 4. 默认选择中的低 API、显式关闭 Impeller 或 Vivante workaround 可进入 Skia GLES；软件渲染需按配置与 Impeller 互斥检查，两者同时打开时的回退行为要单独验证。`SLIMPELLER` 等构建条件也会改变可选路径。
 
-因此，没有 Vulkan backend 时也可能在用 Impeller GLES，报告里要分别记录 renderer 与 backend：`Impeller/Vulkan`、`Impeller/OpenGLES` 或 `Skia/OpenGLES`。还要固定 revision：本文 commit 对 MediaTek 优先读取 `ro.vendor.build.version.sdk`，缺失时用 OS API、以有效 API `< 32` 避让 Vulkan；`3.44.8` 对照则使用设备 API `< 31` 避让；vendor/engine 条件要按 revision 逐个核对，OS 版本新旧替代不了。[来源：固定 commit](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/android_context_dynamic_impeller.cc)、[3.44.8 对照](https://github.com/flutter/flutter/blob/3.44.8/engine/src/flutter/shell/platform/android/android_context_dynamic_impeller.cc)
+因此，没有 Vulkan backend 时也可能在用 Impeller GLES，报告里要分别记录 renderer 与 backend：`Impeller/Vulkan`、`Impeller/OpenGLES` 或 `Skia/OpenGLES`。还要固定 revision：本文 commit 对 MediaTek 优先读取 `ro.vendor.build.version.sdk`，缺失时用 OS API、以有效 API `< 32` 避让 Vulkan；`3.44.8` 对照则使用设备 API `< 31` 避让；vendor/engine 条件要按 revision 逐个核对，OS 版本新旧替代不了。[^source-audit-note-8]、[3.44.8 对照](https://github.com/flutter/flutter/blob/3.44.8/engine/src/flutter/shell/platform/android/android_context_dynamic_impeller.cc)
 
 <!-- gracker-diagram: ed13-07-renderer-backend-and-mediatek-revision -->
 ![Renderer 与 backend 分开选择，MediaTek 避让条件再按 revision 核对](../../assets/diagrams/ch13/ed13-07-renderer-backend-and-mediatek-revision.png)
@@ -456,7 +456,7 @@ TLHC 把 PlatformView 结果绘入中间 target，交给 Flutter Raster 采样�
 
 ### Texture Layer Hybrid Composition（TLHC）
 
-固定源码中的 `configureForTextureLayerComposition()` 将 PlatformView 放入 `PlatformViewWrapper`；wrapper 的 `draw()` 对 render target 的 Surface 调用 `lockHardwareCanvas()`，将子树画到这个 Canvas，再 `unlockCanvasAndPost()`。注意普通子树仍由 Android View traversal 驱动，draw 照常执行，只是绘制落点换成了中间 target。render target 按 API/flag 选择 SurfaceProducer、ImageReader 或 SurfaceTexture，SurfaceProducer 内部又有 backing 选择。[来源：PlatformViewWrapper](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewWrapper.java)
+固定源码中的 `configureForTextureLayerComposition()` 将 PlatformView 放入 `PlatformViewWrapper`；wrapper 的 `draw()` 对 render target 的 Surface 调用 `lockHardwareCanvas()`，将子树画到这个 Canvas，再 `unlockCanvasAndPost()`。注意普通子树仍由 Android View traversal 驱动，draw 照常执行，只是绘制落点换成了中间 target。render target 按 API/flag 选择 SurfaceProducer、ImageReader 或 SurfaceTexture，SurfaceProducer 内部又有 backing 选择。[^source-audit-note-9]
 
 <!-- gracker-diagram: ch13-07-28-tlhc-hardware-canvas -->
 ![TLHC 中间 target 的生产过程](../../assets/diagrams/ch13/ch13-07-28-tlhc-hardware-canvas.png)
@@ -486,7 +486,7 @@ HC 会把原生 View 加入 Android View hierarchy。固定源码中的 `Platfor
 
 图：本文按 Flutter 3.32 stable+ 保守默认 UI/platform 共用 Main 的模型，3.29—3.31、opt-out 与定制版需按 revision 与 tid 核对；Raster 通常独立。原始 HC 出现 platform layers 时按 merger 状态分支：未合并时走 `CancelFrame`、`MergeWithLease`、`SkipAndRetry`，同 layer tree 重试且 raster tasks 转到 platform 线程；已合并时延长 lease，必要时触发 surface 切换重提交。动态合并的是 task queue，Raster thread 不销毁；仅在默认 Main 已承载 Dart 时才形成三类竞争。HCPP 中 `SupportsDynamicThreadMerging` 为 `false`，但仍有平台协调、借用事务和首次 overlay 初始化等待。
 
-同步开启时，`finishFrame()` 还需确认本帧 root 与所有使用中的 overlay 都 acquire 到 image，才让本帧使用的原生 parent 可见；图像不齐时设为 `GONE`。这项完整性检查与 raster 动态合并是两类机制，overlay 是否准备好，看 image acquire 的结果，与线程是否合并无关。[来源：PlatformViewsController](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewsController.java)
+同步开启时，`finishFrame()` 还需确认本帧 root 与所有使用中的 overlay 都 acquire 到 image，才让本帧使用的原生 parent 可见；图像不齐时设为 `GONE`。这项完整性检查与 raster 动态合并是两类机制，overlay 是否准备好，看 image acquire 的结果，与线程是否合并无关。[^source-audit-note-10]
 
 <!-- gracker-diagram: ch13-07-32-hc-images-ready -->
 ![HC 的 root 与 overlay 图像完整性检查](../../assets/diagrams/ch13/ch13-07-32-hc-images-ready.png)
@@ -512,7 +512,7 @@ HCPP 从 Flutter 3.44 起提供，当前仍是实验性 opt-in。运行或测试
 
 图：普通原生 View 仍在宿主窗口，Impeller AHB 和内部 SurfaceView 可作为独立 Layer。 不会为每个 PlatformView 强制创建独立 Surface；Layer 存在也不保证 DEVICE composition。
 
-Impeller AHB swapchain 用 `ASurfaceTransaction_setBuffer()` 提交 root buffer 与完成 fence，Java 创建的借用 transaction 在 native `Apply()` 中只注册 completion callback，实际留给 Java 合并并通过 `applyTransactionOnDraw()` 与宿主绘制同步。条件不满足则回到原有 PlatformView 策略。[来源：PlatformViewsController2](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewsController2.java)、[SurfaceTransaction](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/impeller/toolkit/android/surface_transaction.cc)
+Impeller AHB swapchain 用 `ASurfaceTransaction_setBuffer()` 提交 root buffer 与完成 fence，Java 创建的借用 transaction 在 native `Apply()` 中只注册 completion callback，实际留给 Java 合并并通过 `applyTransactionOnDraw()` 与宿主绘制同步。条件不满足则回到原有 PlatformView 策略。[^source-audit-note-11]、[SurfaceTransaction](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/impeller/toolkit/android/surface_transaction.cc)
 
 <!-- gracker-diagram: ch13-07-35-hcpp-deferred-transaction -->
 ![HCPP 借用 transaction 的实际 apply 时机](../../assets/diagrams/ch13/ch13-07-35-hcpp-deferred-transaction.png)
@@ -521,14 +521,14 @@ Impeller AHB swapchain 用 `ASurfaceTransaction_setBuffer()` 提交 root buffer 
 
 HCPP 可以降低原始 HC 的同步负担，并避开它的动态 raster/platform 合并；等待换了位置——固定实现首次建立 overlay 时，仍会把任务投递到 platform runner 并等待 latch。
 
-当前 overlay 仅有单个顶层 Surface，用 difference clip 模拟部分叠放，透明 PlatformView 的复杂穿插可能出问题。旧 Flutter App 想用 HCPP，要自己升级 engine 并显式开启，系统升到 Android 14–17 也不会代劳。[来源：HCPP embedder](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.cc)
+当前 overlay 仅有单个顶层 Surface，用 difference clip 模拟部分叠放，透明 PlatformView 的复杂穿插可能出问题。旧 Flutter App 想用 HCPP，要自己升级 engine 并显式开启，系统升到 Android 14–17 也不会代劳。[^source-audit-note-12]
 
 <!-- gracker-diagram: ed13-07-hcpp-gates-overlay-and-init-wait -->
 ![HCPP 先过运行条件，单 overlay 与平台初始化等待仍存在](../../assets/diagrams/ch13/ed13-07-hcpp-gates-overlay-and-init-wait.png)
 
 图：HCPP 为 Flutter 3.44 实验性 opt-in，flag 与 manifest 只是请求；还须满足 API 34+、Impeller 启用、实际为 `kImpellerVulkan` 且 context 允许 SurfaceControl swapchain。条件不满足则回退到原 App 配置策略，并不存在统一的固定 fallback。满足条件时可使用 embedder 2，避开原始 HC 的动态 raster/platform merge，但仍有平台事务同步。当前只有一个顶层 overlay，以 difference clip 处理后续 PlatformView 矩形，透明复杂穿插可能受限。首次 overlay 创建会投递 platform 任务并等待初始化 latch；这并不代表消除了 CPU 等待，也不要和 SF buffer latch 混为一谈。普通 PlatformView 仍可在 host window 中，实际 child Surface 需另行确认，Layer 存在也不保证 DEVICE 合成。
 
-AHB 池复用还要分清当前与上一块 buffer：提交 B 的 completion 中查询 previous A 的 release fence，将旧 A 连同 fence 放回池；以后重新取得 A 时把该 fd 导入 Vulkan semaphore，GPU 写入前遵守 Consumer 最后使用依赖。一块 buffer 能否覆写，看它的 release 依赖是否满足；当前 B 自己的提交 callback、Producer 完成依赖说的都只是写入一侧。[来源：AHB swapchain](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/impeller/renderer/backend/vulkan/swapchain/ahb/ahb_swapchain_impl_vk.cc)
+AHB 池复用还要分清当前与上一块 buffer：提交 B 的 completion 中查询 previous A 的 release fence，将旧 A 连同 fence 放回池；以后重新取得 A 时把该 fd 导入 Vulkan semaphore，GPU 写入前遵守 Consumer 最后使用依赖。一块 buffer 能否覆写，看它的 release 依赖是否满足；当前 B 自己的提交 callback、Producer 完成依赖说的都只是写入一侧。[^source-audit-note-13]
 
 <!-- gracker-diagram: ch13-07-36-hcpp-ahb-reuse -->
 ![HCPP AHB 池复用的 fence 依赖](../../assets/diagrams/ch13/ch13-07-36-hcpp-ahb-reuse.png)
@@ -567,7 +567,7 @@ Flutter widget tree 与 Android View hierarchy 是两套不同的对象树。Pla
 - external texture：实际读取必须满足插件 Producer 的写入依赖，究竟在 CPU 等待还是 GPU 同步由 backing/backend 决定；CPU submit 只说明提交动作完成，写入是否结束看依赖；
 - HCPP：Flutter root、PlatformView 与 overlay 可能各自拥有 SurfaceControl layer 和 transaction。
 
-FrameTimeline 要按实际输出对象与覆盖解释。Perfetto 官方仍列出 SurfaceView 覆盖限制，独立 Flutter root/HCPP child 有没有标准 HWUI App Expected/Actual，要以目标 Layer 的实际时间线为准；engine frame number、`PlatformVsync` target 与 SF token 是三套体系各自的 id。external texture 的中间 image 通常没有独立显示帧。我们先检查目标 Layer 是否有完整时间线，再按 engine frame、texture id、buffer id、layer id、明确依赖与时间窗口补证；slice 缺失时，回到这些同帧标识与依赖补齐判断。[来源：FrameTimeline](https://perfetto.dev/docs/data-sources/frametimeline)
+FrameTimeline 要按实际输出对象与覆盖解释。Perfetto 官方仍列出 SurfaceView 覆盖限制，独立 Flutter root/HCPP child 有没有标准 HWUI App Expected/Actual，要以目标 Layer 的实际时间线为准；engine frame number、`PlatformVsync` target 与 SF token 是三套体系各自的 id。external texture 的中间 image 通常没有独立显示帧。我们先检查目标 Layer 是否有完整时间线，再按 engine frame、texture id、buffer id、layer id、明确依赖与时间窗口补证；slice 缺失时，回到这些同帧标识与依赖补齐判断。[^source-audit-note-14]
 
 <!-- gracker-diagram: ch13-07-40-frametimeline-coverage -->
 ![先确认 Layer 的 FrameTimeline 覆盖](../../assets/diagrams/ch13/ch13-07-40-frametimeline-coverage.png)
@@ -641,7 +641,7 @@ Flutter trace event 会随 build mode、engine revision 和 trace 配置变化�
 
 ### DevTools：先区分 Framework 与 Raster
 
-性能对比使用 Profile 或 Release：DevTools Performance view 主要在 Profile 采集；Release 的系统 trace 能力须另行配置，Profile 同款的 VM service/时间线在 Release 里要按实际配置重新确认。固定 Android engine 在启动时检测 ATrace，也可用 systrace 配置转发 Flutter/Dart 事件；Release 的 timeline handler 取决于 `trace_systrace`。Debug 的 JIT、assert 和工具开销会改变时序。[来源：DevTools](https://docs.flutter.dev/tools/devtools/performance)、[FlutterMain](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/flutter_main.cc)
+性能对比使用 Profile 或 Release：DevTools Performance view 主要在 Profile 采集；Release 的系统 trace 能力须另行配置，Profile 同款的 VM service/时间线在 Release 里要按实际配置重新确认。固定 Android engine 在启动时检测 ATrace，也可用 systrace 配置转发 Flutter/Dart 事件；Release 的 timeline handler 取决于 `trace_systrace`。Debug 的 JIT、assert 和工具开销会改变时序。[^source-audit-note-15]、[FlutterMain](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/flutter_main.cc)
 
 DevTools 适合回答：
 
@@ -655,7 +655,7 @@ DevTools 的“帧完成”停在 Framework/Raster 这一段，panel 是否已�
 
 ### 自定义 Trace：关联 Dart、Native 与系统事件
 
-Dart 可用 `dart:developer` 标注业务阶段。同一同步调用栈内用 `Timeline.startSync()` / `finishSync()` 并以 `try/finally` 保证配对；跨 `await` 的任务使用 `TimelineTask` 的异步语义，同步 slice 只留在同一同步调用栈内。标记覆盖解析、模型生成或插件往返等可核对边界，再用 request/frame id 关联其他语言和线程。[来源：Timeline.startSync](https://api.dart.dev/dart-developer/Timeline/startSync.html)、[TimelineTask](https://api.dart.dev/dart-developer/TimelineTask-class.html)
+Dart 可用 `dart:developer` 标注业务阶段。同一同步调用栈内用 `Timeline.startSync()` / `finishSync()` 并以 `try/finally` 保证配对；跨 `await` 的任务使用 `TimelineTask` 的异步语义，同步 slice 只留在同一同步调用栈内。标记覆盖解析、模型生成或插件往返等可核对边界，再用 request/frame id 关联其他语言和线程。[^source-audit-note-16]、[TimelineTask](https://api.dart.dev/dart-developer/TimelineTask-class.html)
 
 
 事件名保持稳定，并附 request/frame id，才能与 native callback、buffer id 和 FrameTimeline 对齐——它们正是把同一次业务请求和同一帧跨语言关联起来的标识。整次交互包成一个大 slice 会掩盖内部等待，拆到可核对的边界才看得清。
@@ -728,7 +728,7 @@ Raster thread 上的长 slice（trace 中的一段持续事件）里，线程可
 
 ### Platform Channel 与 plugin
 
-标准 MethodChannel 的 Dart 调用走异步消息/返回值，“同步 Platform Channel”这个叫法会把排查带偏。消息编解码与平台 handler 仍有真实执行成本：默认 handler 在平台 Main，配置 TaskQueue 后可在后台线程，FFI 则通常占用调用它的 Dart isolate 所在线程。在默认 UI/platform 合并模型中，Main 上执行的插件代码与 Dart frame work 会竞争；native callback 落在哪条线程，按它的执行者逐个确认。[来源：Platform channels](https://docs.flutter.dev/platform-integration/platform-channels)
+标准 MethodChannel 的 Dart 调用走异步消息/返回值，“同步 Platform Channel”这个叫法会把排查带偏。消息编解码与平台 handler 仍有真实执行成本：默认 handler 在平台 Main，配置 TaskQueue 后可在后台线程，FFI 则通常占用调用它的 Dart isolate 所在线程。在默认 UI/platform 合并模型中，Main 上执行的插件代码与 Dart frame work 会竞争；native callback 落在哪条线程，按它的执行者逐个确认。[^source-audit-note-17]
 
 <!-- gracker-diagram: ch13-07-51-channel-executors -->
 ![Channel、TaskQueue 与 FFI 的执行线程](../../assets/diagrams/ch13/ch13-07-51-channel-executors.png)
@@ -815,4 +815,20 @@ Flutter 页面要按三组对象展开：
 
 我们用 Perfetto 分析时，先固定 Android 与 Flutter 两套版本，再确认 View/Surface/layer 对象树；随后对齐 VSync、platform/Dart UI work、Raster、GPU fence、root/host queue、SurfaceFlinger latch 和 Display present。走完这条对齐链，Flutter framework、Raster/GPU、插件 Producer、宿主消费和系统合成各自慢在哪一段，就能分开回答。
 
-
+[^source-audit-note-1]: [来源：线程合并说明](https://github.com/flutter/flutter/issues/150525)
+[^source-audit-note-2]: [来源：Animator](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/common/animator.cc)
+[^source-audit-note-3]: [来源：Rasterizer](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/common/rasterizer.cc)
+[^source-audit-note-4]: [来源：VsyncWaiterAndroid](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/vsync_waiter_android.cc)
+[^source-audit-note-5]: [来源：TextureView](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/TextureView.java)
+[^source-audit-note-6]: [来源：TextureRegistry](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/view/TextureRegistry.java)
+[^source-audit-note-7]: [来源：FlutterRenderer](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/embedding/engine/renderer/FlutterRenderer.java)
+[^source-audit-note-8]: [来源：固定 commit](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/android_context_dynamic_impeller.cc)
+[^source-audit-note-9]: [来源：PlatformViewWrapper](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewWrapper.java)
+[^source-audit-note-10]: [来源：PlatformViewsController](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewsController.java)
+[^source-audit-note-11]: [来源：PlatformViewsController2](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/io/flutter/plugin/platform/PlatformViewsController2.java)
+[^source-audit-note-12]: [来源：HCPP embedder](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/shell/platform/android/external_view_embedder/external_view_embedder_2.cc)
+[^source-audit-note-13]: [来源：AHB swapchain](https://github.com/flutter/flutter/blob/8a9f61cfd67396fb2f9afc3cd7854035e9cd6fc2/engine/src/flutter/impeller/renderer/backend/vulkan/swapchain/ahb/ahb_swapchain_impl_vk.cc)
+[^source-audit-note-14]: [来源：FrameTimeline](https://perfetto.dev/docs/data-sources/frametimeline)
+[^source-audit-note-15]: [来源：DevTools](https://docs.flutter.dev/tools/devtools/performance)
+[^source-audit-note-16]: [来源：Timeline.startSync](https://api.dart.dev/dart-developer/Timeline/startSync.html)
+[^source-audit-note-17]: [来源：Platform channels](https://docs.flutter.dev/platform-integration/platform-channels)

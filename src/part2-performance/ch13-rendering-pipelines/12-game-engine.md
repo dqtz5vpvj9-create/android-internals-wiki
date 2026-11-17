@@ -516,9 +516,9 @@ API 37 新增的 `Surface.setProducerThrottlingEnabled(boolean)` 默认开启：
 `Surface::setBufferCount(N)` 在 N>0 时先查询 `NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS`，再把参数转换成 `setMaxDequeuedBufferCount(N - minUndequeued)`；N=0 是把 max-dequeued 恢复为 1 的分支。`BufferQueueProducer::setMaxDequeuedBufferCount()` 会检查当前已 dequeued 的 buffer 数、最小 slot 数和总上限，不满足就返回 `BAD_VALUE`。所以在 resize、折叠/分屏切换或 Surface 重建期间，如果旧 image 仍被 producer / GPU / HWC 使用，直接反复改队列深度，可能只是在制造新的拒绝路径和额外重建工作。[^source-audit-note-2]
 
 
-分辨率调整先区分内部 render scale 与输出 Surface/swapchain 尺寸。只改变离屏渲染区域时，native window 与 swapchain image count 都可以维持原状；Unity 6.0 的公开动态分辨率实现甚至继续保留完整尺寸 render target、只使用其中一部分，降低 render scale 也就未必伴随显存释放。实际呈现尺寸或 image count 需要改变时，再交给引擎处理旧资源依赖，按 WSI/EGL 协议调整或按需重建目标。[来源：Unity 动态分辨率](https://docs.unity3d.com/6000.0/Documentation/Manual/DynamicResolution-introduction.html)、[Android Vulkan WSI](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/vulkan/libvulkan/swapchain.cpp)。
+分辨率调整先区分内部 render scale 与输出 Surface/swapchain 尺寸。只改变离屏渲染区域时，native window 与 swapchain image count 都可以维持原状；Unity 6.0 的公开动态分辨率实现甚至继续保留完整尺寸 render target、只使用其中一部分，降低 render scale 也就未必伴随显存释放。实际呈现尺寸或 image count 需要改变时，再交给引擎处理旧资源依赖，按 WSI/EGL 协议调整或按需重建目标。[^source-audit-notex-1]、[Android Vulkan WSI](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/vulkan/libvulkan/swapchain.cpp)。
 
-以 1080p RGBA8 为例，单张 color buffer 的裸像素是 1920×1080×4 = 8,294,400 bytes（约 7.91 MiB）；真实分配还含 gralloc 对齐、metadata、depth/MSAA attachment 和实现开销，并需按真实 allocation 去重。要不要减少一张 image，须同时用 allocator 统计、queue/事务、fence 和显示节奏验证，不能只按像素尺寸推断内存收益。[来源：Surface 数量协商](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/libs/gui/Surface.cpp)、[WSI image count](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/vulkan/libvulkan/swapchain.cpp)。
+以 1080p RGBA8 为例，单张 color buffer 的裸像素是 1920×1080×4 = 8,294,400 bytes（约 7.91 MiB）；真实分配还含 gralloc 对齐、metadata、depth/MSAA attachment 和实现开销，并需按真实 allocation 去重。要不要减少一张 image，须同时用 allocator 统计、queue/事务、fence 和显示节奏验证，不能只按像素尺寸推断内存收益。[^source-audit-notex-2]、[WSI image count](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/vulkan/libvulkan/swapchain.cpp)。
 
 
 ### slot 上限与实际 image 数量
@@ -898,3 +898,6 @@ OEM 策略、画质、thermal、frame-rate vote 与引擎上限都可能限制�
 
 [^source-audit-note-1]: 来源: DeepResearch/2026-07-17-game-engine-resolution-memory-allocation.md; 已验证: android-17.0.0_r1 `frameworks/native/libs/gui/BufferQueueCore.cpp`:120-149, 238-266
 [^source-audit-note-2]: 来源: DeepResearch/2026-07-17-game-engine-resolution-memory-allocation.md; 已验证: android-17.0.0_r1 `frameworks/native/libs/gui/Surface.cpp`:2601-2624, `frameworks/native/libs/gui/BufferQueueProducer.cpp`:183-271
+
+[^source-audit-notex-1]: [来源：Unity 动态分辨率](https://docs.unity3d.com/6000.0/Documentation/Manual/DynamicResolution-introduction.html)
+[^source-audit-notex-2]: [来源：Surface 数量协商](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/libs/gui/Surface.cpp)

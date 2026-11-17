@@ -188,7 +188,7 @@ WebView 出问题时，常把三类不同归属方的机制混在一起，排查
 
 ## 进程模型与宿主线程
 
-Android 12–17 上的现代 provider 把网页 renderer 放在沙箱进程，browser code 与 GPU/network 服务仍留在宿主 App 内；Android 5–7.1 的历史版本默认是进程内 renderer，所以下面的现代模型只覆盖 API 21+ 里较新的部分。[来源：Chromium renderer 说明](https://chromium.googlesource.com/chromium/src/+/4e18c703f7cd950c890e14105da8eff42192af6a/android_webview/renderer/README.md)
+Android 12–17 上的现代 provider 把网页 renderer 放在沙箱进程，browser code 与 GPU/network 服务仍留在宿主 App 内；Android 5–7.1 的历史版本默认是进程内 renderer，所以下面的现代模型只覆盖 API 21+ 里较新的部分。[^source-audit-note-1]
 
 
 1. 宿主 App 进程：framework WebView、provider glue、browser code，以及进程内 GPU/network 服务。Main 做 View 协调与绘制记录，HWUI RenderThread 执行 functor，Viz 线程协调 Chromium 显示工作；这些服务名只是逻辑划分，未必对应独立进程或唯一执行线程。
@@ -244,7 +244,7 @@ Log.i(
 )
 ```
 
-PackageInfoCompat 来自 `androidx.core.content.pm`，兼容 API 28 以前的 versionCode 读取。固定 WebKit 1.16.0 的 getCurrentWebViewPackage() 契约明确：此查询不会使 WebView 被加载；若尚未加载，返回的是“此刻会选用的包”，之后可以变化。返回值仍可能为 null。用户代理查询、构造或其他 WebView API 则可能触发启动，冷启动基准应区分这些调用与版本查询本身。[来源：WebViewCompat](https://android.googlesource.com/platform/frameworks/support/+/5744fa6296a0f6147952e836b3d92dd87ff7d4dd/webkit/webkit/src/main/java/androidx/webkit/WebViewCompat.java)
+PackageInfoCompat 来自 `androidx.core.content.pm`，兼容 API 28 以前的 versionCode 读取。固定 WebKit 1.16.0 的 getCurrentWebViewPackage() 契约明确：此查询不会使 WebView 被加载；若尚未加载，返回的是“此刻会选用的包”，之后可以变化。返回值仍可能为 null。用户代理查询、构造或其他 WebView API 则可能触发启动，冷启动基准应区分这些调用与版本查询本身。[^source-audit-note-2]
 
 <!-- gracker-diagram: ch13-09-08-provider-query -->
 ![查询已加载包与当前候选包](../../assets/diagrams/ch13/ch13-09-08-provider-query.png)
@@ -267,7 +267,7 @@ PackageInfoCompat 来自 `androidx.core.content.pm`，兼容 API 28 以前的 ve
 AndroidX WebKit 1.16.0 把带 WebViewOutcomeReceiver 的 startUpWebView 重载转为稳定 API，旧 callback 重载已弃用。它把允许的启动工作安排到配置的 executor，其余任务按 provider 能力与配置处理；回调完成时，renderer、网络或页面首帧可能都还没就绪。
 
 
-WebViewStartUpConfig 默认允许执行 UI 启动任务；设为 false 时，回调只说明本次允许的启动部分结束，全部 UI 初始化是否完成要看后续。固定兼容实现按 ASYNC_WEBVIEW_STARTUP_V2 / V1 / fallback 分流，旧 provider 可能只有加载 class loader 等收益、没有完整诊断数据。立刻访问其他 WebView API 仍可阻塞 Main；预热收益和内存驻留，要按真实关键路径评估。[来源：WebKit 发布记录](https://developer.android.com/jetpack/androidx/releases/webkit#1.16.0)
+WebViewStartUpConfig 默认允许执行 UI 启动任务；设为 false 时，回调只说明本次允许的启动部分结束，全部 UI 初始化是否完成要看后续。固定兼容实现按 ASYNC_WEBVIEW_STARTUP_V2 / V1 / fallback 分流，旧 provider 可能只有加载 class loader 等收益、没有完整诊断数据。立刻访问其他 WebView API 仍可阻塞 Main；预热收益和内存驻留，要按真实关键路径评估。[^source-audit-note-3]
 
 <!-- gracker-diagram: ed13-09-startup-capability-and-config -->
 ![启动能力分支与 UI 启动配置分别核对](../../assets/diagrams/ch13/ed13-09-startup-capability-and-config.png)
@@ -319,7 +319,7 @@ sequenceDiagram
     end
 ```
 
-HardwareRenderer::OnViz::DrawAndSwapOnViz 中的 Swap 属于 Chromium 内部 Display 语义，看到它时宿主窗口未必已经 queueBuffer。固定 DrawAndSwap 还会在 CPU 路径用 TimeTicks::Now() 构造 MaybeDidPresent 反馈，但真实显示的 present fence 仍以 SF/HWC 为准。普通主体的 Android 窗口提交由宿主 HWUI 完成。[来源：HardwareRenderer](https://chromium.googlesource.com/chromium/src/+/4e18c703f7cd950c890e14105da8eff42192af6a/android_webview/browser/gfx/hardware_renderer.cc)
+HardwareRenderer::OnViz::DrawAndSwapOnViz 中的 Swap 属于 Chromium 内部 Display 语义，看到它时宿主窗口未必已经 queueBuffer。固定 DrawAndSwap 还会在 CPU 路径用 TimeTicks::Now() 构造 MaybeDidPresent 反馈，但真实显示的 present fence 仍以 SF/HWC 为准。普通主体的 Android 窗口提交由宿主 HWUI 完成。[^source-audit-note-4]
 
 
 ### GL 与 Vulkan 的分支识别
@@ -433,7 +433,7 @@ Android 10—11 固定 tag 的现代 functor header 尚无 WebViewOverlayData �
 标准 Chromium 本身也可能使用 ImageReader。固定 ImageReaderGLOwner 建立 private-format reader，根据 TextureOwner mode 选择 sampled-image、protected 或 composer-overlay usage。UpdateTexImage 选择 acquireNextImageAsync 或 acquireLatestImageAsync，取得 image 与完成 fence，再提供 AHardwareBuffer；CPU acquire 返回时，生产侧 GPU 可能还没写完，这一步也未必发生 CPU 图像复制。
 
 
-ImageReader 只划出中间消费这一段，最终落到哪个 SF layer 由后续使用决定：所得资源可以再被采样进宿主窗口，或进入 SurfaceControl overlay。可用 image 额度不足会影响 acquire；固定 max_images == 1 分支还会先释放当前 image，再尝试取新 image，所以取图失败时未必还持有旧图。接下来继续核对 mode、usage、image 引用释放、DrawFn、overlay 与 fence。[来源：ImageReaderGLOwner](https://chromium.googlesource.com/chromium/src/+/4e18c703f7cd950c890e14105da8eff42192af6a/gpu/command_buffer/service/image_reader_gl_owner.cc)
+ImageReader 只划出中间消费这一段，最终落到哪个 SF layer 由后续使用决定：所得资源可以再被采样进宿主窗口，或进入 SurfaceControl overlay。可用 image 额度不足会影响 acquire；固定 max_images == 1 分支还会先释放当前 image，再尝试取新 image，所以取图失败时未必还持有旧图。接下来继续核对 mode、usage、image 引用释放、DrawFn、overlay 与 fence。[^source-audit-note-5]
 
 
 判断 image 的最终去向时，沿 AHardwareBuffer 的后续使用继续追：进入 Chromium/HWUI 采样就回到宿主窗口，成为提升候选则追独立 child SurfaceControl。中间 reader 的类名替代不了这一步。
@@ -741,3 +741,9 @@ Chromium provider 可更新。本文仅用固定 revision `4e18c703f7cd950c890e1
 SurfaceControl 能力服务于被提升的 overlay 候选，常见于媒体或受保护内容，由此推不出整页 WebView 独立出图。`onShowCustomView()` 是宿主全屏托管协议，第三方 Texture-like 则属于 SDK 扩展。三者的 owner、producer 和 consumer 不同。
 
 我们排障时先同时固定 Android build 和 provider revision，再依次核对 renderer、host DrawFn、host window、可选 child layer 和 Display present，这样就能区分网页计算、资源准备、宿主消费、overlay 同步和系统显示分别在哪一阶段迟到。
+
+[^source-audit-note-1]: [来源：Chromium renderer 说明](https://chromium.googlesource.com/chromium/src/+/4e18c703f7cd950c890e14105da8eff42192af6a/android_webview/renderer/README.md)
+[^source-audit-note-2]: [来源：WebViewCompat](https://android.googlesource.com/platform/frameworks/support/+/5744fa6296a0f6147952e836b3d92dd87ff7d4dd/webkit/webkit/src/main/java/androidx/webkit/WebViewCompat.java)
+[^source-audit-note-3]: [来源：WebKit 发布记录](https://developer.android.com/jetpack/androidx/releases/webkit#1.16.0)
+[^source-audit-note-4]: [来源：HardwareRenderer](https://chromium.googlesource.com/chromium/src/+/4e18c703f7cd950c890e14105da8eff42192af6a/android_webview/browser/gfx/hardware_renderer.cc)
+[^source-audit-note-5]: [来源：ImageReaderGLOwner](https://chromium.googlesource.com/chromium/src/+/4e18c703f7cd950c890e14105da8eff42192af6a/gpu/command_buffer/service/image_reader_gl_owner.cc)
