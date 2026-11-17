@@ -329,7 +329,7 @@ CameraCaptureSessionImpl 把调用交给 CameraDeviceImpl.updateOutputConfigurat
 <!-- gracker-diagram: ed13-10-dynamic-output-and-old-surface-return -->
 ![新目标提交与旧 Surface 回收分支分别推进](../../assets/diagrams/ch13/ed13-10-dynamic-output-and-old-surface-return.png)
 
-图：固定API37 updateOutputConfigurations需output数量不变、size/format等可映射现有配置，允许补deferred Surface或替换/退回deferred，不允许任意增删output或改属性。CameraDeviceImpl映射已有stream id并更新，针对旧目标active request停止；应用重新提交新Surface目标，同时旧在途buffer依原Surface队列/fence归还后再断连接。mReplacedOutputs的WeakReference只辅助旧目标识别，native引用/旧队列管理在途对象，不靠Java弱引用保活。新提交与旧回收无固定先后，也不保证零停顿。
+图：固定 API 37 `updateOutputConfigurations` 要求 output 数量不变、size/format 等可映射到现有配置，允许补充 deferred Surface、替换或退回 deferred，不允许任意增删 output 或修改属性。`CameraDeviceImpl` 映射已有 stream id 并更新，针对旧目标的 active request 停止；应用需重新提交新 Surface 目标，同时旧在途 buffer 依原 Surface 队列与 fence 归还后再断开连接。`mReplacedOutputs` 的 `WeakReference` 只辅助旧目标识别，native 引用和旧队列管理在途对象，不靠 Java 弱引用保活。新提交与旧回收无固定先后，也不保证零停顿。
 
 ### Stream Use Case 与 capture intent
 
@@ -426,7 +426,7 @@ consumer acquire/wait/read
 <!-- gracker-diagram: ed13-10-fence-cycle-and-async-return -->
 ![槽位借还与前后两次访问的完成依赖分开看](../../assets/diagrams/ch13/ed13-10-fence-cycle-and-async-return.png)
 
-图：同一输出buffer复用：consumer可先归还slot并附未signal release fence，dequeue取回slot与依赖后作为HAL acquire交接；HAL读写前必须等待。HAL result归还buffer可携尚未signal release fence，CameraService按状态queue/cancel仍传依赖；正常queue下它成为新consumer acquire，实际读前满足写完成；consumer归还后下轮复用。空fence按接口表示无需等待/已结束访问，错误未等待acquire须原样退依赖。图示阶段可交叠，dequeue/result/queue/inflight移除都不替代signal；不是同fd数即同对象，cancel不交付有效新图。
+图：同一输出 buffer 的复用周期：consumer 可先归还 slot 并附未 signal 的 release fence，dequeue 取回 slot 与依赖后作为 HAL acquire 交接；HAL 读写前必须等待。HAL result 归还 buffer 时可携带尚未 signal 的 release fence，CameraService 按状态执行 queue 或 cancel 时仍传递该依赖；正常 queue 下它成为新 consumer acquire，实际读取前须满足写完成；consumer 归还后进入下一轮复用。空 fence 按接口约定表示无需等待或已结束访问，出错未等待 acquire 时须原样退回依赖。图中阶段可交叠，dequeue、result、queue 与 inflight 移除都不替代 signal；并非同一 fd 数值就是同一对象，cancel 不交付有效新图。
 
 ### HAL buffer management：request 先走，buffer 按需借
 
@@ -454,7 +454,7 @@ CameraService 会逐条流检查：
 <!-- gracker-diagram: ed13-10-buffer-management-request-timing -->
 ![按流管理模式决定 request 何时携带真实 buffer](../../assets/diagrams/ch13/ed13-10-buffer-management-request-timing.png)
 
-图：固定r1未启用HAL管理的流先getBuffer并随request带真实buffer/acquire；启用输出流的request先带stream占位bufferId0/空handle与acquire，HAL接近输出时同步requestStreamBuffers。CameraService检查流/管理模式/重复id/连接/配额/configure，返回的buffer不预先绑定capture，HAL之后选择frame；多流批量或失败须单独处理，专用线程建议不表示固定开销。SESSION_CONFIGURABLE逐流选，AIDL_DEVICE管理全部输出。空handle也可能缓存省略，不能只看空句柄判占位；所有真实访问遵守fence，已使用与额外buffer归还路径另核。
+图：固定 r1 下，未启用 HAL 管理的流先 `getBuffer` 并随 request 携带真实 buffer 与 acquire；启用输出流的 request 先带 stream 占位（`bufferId=0`、空 handle 与 acquire），HAL 接近输出时同步调用 `requestStreamBuffers`。CameraService 检查流、管理模式、重复 id、连接、配额与 configure 状态，返回的 buffer 不预先绑定 capture，由 HAL 之后选择 frame；多流批量请求或失败须单独处理，专用线程建议不表示固定开销。`SESSION_CONFIGURABLE` 逐流选择，`AIDL_DEVICE` 管理全部输出。空 handle 也可能来自缓存省略，不能只看空句柄判为占位；所有真实访问均须遵守 fence，已使用与额外 buffer 的归还路径需另核。
 
 - 流是否存在且启用了 HAL 缓冲区管理；
 - 是否重复请求同一个流 ID；
@@ -511,7 +511,7 @@ camera_stream::max_buffers 在 Camera3Stream 构造时为 0，configure 之后�
 <!-- gracker-diagram: ed13-10-capacity-and-handout-limits -->
 ![基础队列容量、HAL 持有与 framework 暂存分别计算](../../assets/diagrams/ch13/ed13-10-capacity-and-handout-limits.png)
 
-图：固定r1：Consumer最小不可出队保留量由NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS查询，基础mTotalBufferCount加HAL逐stream声明max_buffers；显示同步/PreviewFrameSpacer等路径可再加缓冲或framework暂存。HAL outstanding是交给HAL尚未归还，framework cached image是未queue最终consumer的图像，两类进入相应handout/组合上限判断；普通归还或cached实际queue才通知相应等待。bufferId→handle映射不等持有图像数，ImageReader.maxImages另有独立额度。
+图：固定 r1：Consumer 最小不可出队保留量由 `NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS` 查询，基础 `mTotalBufferCount` 加上 HAL 逐 stream 声明的 `max_buffers`；显示同步或 `PreviewFrameSpacer` 等路径可再追加缓冲或 framework 暂存。HAL outstanding 是交给 HAL 尚未归还的 buffer，framework cached image 是尚未 queue 给最终 consumer 的图像，两类分别进入对应的 handout 上限或组合上限判断；普通归还或 cached 实际 queue 后才通知相应等待方。`bufferId` → handle 映射不等于持有图像数，`ImageReader.maxImages` 另有独立额度。
 
 input stream 也按 HAL 返回的 `max_buffers` 控制 handout（已交出但尚未收回）的数量。这里的 `maxBuffers` 属于 HAL stream 配置，`ImageReader.maxImages` 则限制应用可同时取得且尚未关闭的 `Image` 数量，二者会相互影响，却是两个独立的参数。某台设备或某个 CameraX 版本上的观察值，只代表那台设备；要推 HAL3 通用规则，或估算另一台设备的 ZSL 内存，还得按它自己的配置重新算。
 
@@ -614,7 +614,7 @@ TextureView 的 frame-available 回调先标记更新并 invalidate；Main draw 
 <!-- gracker-diagram: ed13-10-texture-input-and-app-output -->
 ![TextureView 与自研 GPU 都要区分 Camera 输入和 App 输出](../../assets/diagrams/ch13/ed13-10-texture-input-and-app-output.png)
 
-图：Camera是第一Producer，queue相机图像及HAL完成fence。TextureView路线先SurfaceTexture消费输入，frameavailable只标记更新/invalidate，Main draw记录drawTextureLayer，RT DeferredLayerUpdater::apply经ASurfaceTexture_dequeueBuffer取image/AHB并处理fence，GPU满足输入依赖后采样进HWUI宿主窗口；Java栈不必有updateTexImage。自研GL/Vulkan可从OES/AHB/ImageReader导入，满足输入依赖后做滤镜/分割/AR等App GPU pass，再向自己的output Surface生产。二者都另有App输出buffer/完成fence及显示反馈，相机输入到达不等App已绘制/显示，不能将App GPU等待全归ISP；不保证逐输入对应逐显示帧。
+图：Camera 是第一 Producer，负责 queue 相机图像及 HAL 完成 fence。TextureView 路线先由 `SurfaceTexture` 消费输入，`frameAvailable` 只标记更新与 `invalidate`，Main 线程 draw 记录 `drawTextureLayer`，RT `DeferredLayerUpdater::apply` 经 `ASurfaceTexture_dequeueBuffer` 取得 image/AHB 并处理 fence，GPU 满足输入依赖后采样进 HWUI 宿主窗口；Java 栈不必出现 `updateTexImage`。自研 GL/Vulkan 可从 OES、AHB 或 ImageReader 导入，满足输入依赖后执行滤镜、分割或 AR 等 App GPU pass，再向自己的 output Surface 生产。二者都另有 App 输出 buffer、完成 fence 及显示反馈，相机输入到达不等于 App 已绘制或显示，不能将 App GPU 等待全归因于 ISP；也不保证逐个输入对应逐个显示帧。
 
 ### Recording：MediaCodec 是独立 consumer
 
@@ -651,7 +651,7 @@ imageReader.setOnImageAvailableListener({ reader ->
 <!-- gracker-diagram: ed13-10-analysis-quota-and-image-owner -->
 ![先核对 acquire 额度，再把 close 交给真正完成方](../../assets/diagrams/ch13/ed13-10-analysis-quota-and-image-owner.png)
 
-图：ImageReader.maxImages限制同时acquired且未close的Image；达到上限再acquire抛IllegalStateException，不是保证返回null或HAL立刻停流。latest按预期丢旧要求maxImages-当前已持有>=2，maxImages1无此效果；next逐帧需持续吞吐。正文监听串行、consume同步有界、无其他并发acquire，故finally close；异步接管则真实任务结束后close，正常/异常均唯一owner，提前close使planes失效，无界排队把压力移到线程池。CameraX应close ImageProxy本身。持续不归还会耗尽底层队列并可能反压上游，增加额度只缓冲不提高长期消费速度。
+图：`ImageReader.maxImages` 限制同时 acquired 且未 close 的 `Image` 数量；达到上限后再 acquire 会抛 `IllegalStateException`，并不能保证返回 `null` 或触发 HAL 立刻停流。`latest` 按预期丢弃旧图要求 `maxImages - 当前已持有 >= 2`，`maxImages = 1` 无此效果；`next` 逐帧消费需要持续吞吐。正文示例中监听串行、consume 同步有界且无其他并发 acquire，因此在 `finally` 中 close；异步接管时则在真实任务结束后 close，无论正常还是异常路径都保持唯一 owner，提前 close 会使 planes 失效，无界排队则会把压力移到线程池。CameraX 场景下应 close `ImageProxy` 本身。持续不归还会耗尽底层队列并可能反压上游，增加额度只起缓冲作用，不能提高长期消费速度。
 
 ## ZSL 的两种机制
 
@@ -726,7 +726,7 @@ CameraX 对这条路径的 1.6.1 实现、三帧 ring、禁用条件和 CameraPi
 <!-- gracker-diagram: ed13-10-zsl-pairing-ring-and-quotas -->
 ![图像与 metadata 配对、状态过滤、FIFO 取帧分别发生](../../assets/diagrams/ch13/ed13-10-zsl-pairing-ring-and-quotas.png)
 
-图：固定CameraX1.6.1 PRIVATE image与TotalCaptureResult按timestamp配对后由ZslRingBuffer检查AF已对焦、AE/AWB收敛，合格才进入容量3的ring，不合格/淘汰图像close。ArrayRingBuffer addFirst/removeLast取当前最旧合格帧，不按快门时间全局搜索最近帧。该reader MAX_IMAGES9限制acquire，可有未配对及在途持有；HAL maxBuffers逐stream由HAL声明，三层不等于总驻留/实际分配数。HAL不执行App三帧策略；支持、当前允许使用ZSL、这次候选可用仍分别核对，具体flash/Video/Extensions影响见正文。
+图：固定 CameraX 1.6.1 下，`PRIVATE` image 与 `TotalCaptureResult` 按 timestamp 配对后由 `ZslRingBuffer` 检查 AF 已对焦、AE/AWB 收敛，合格帧才进入容量为 3 的 ring，不合格或淘汰图像执行 close。`ArrayRingBuffer` 通过 `addFirst`/`removeLast` 取出当前最旧合格帧，不按快门时间全局搜索最近帧。该 reader 的 `MAX_IMAGES=9` 限制 acquire 数量，可能包含未配对及在途持有图像；HAL `maxBuffers` 逐 stream 由 HAL 声明，三层参数并不等同于总驻留或实际分配数。HAL 不执行 App 三帧策略；支持性、当前是否允许使用 ZSL 以及本次候选是否可用仍需分别核对，flash、VideoCapture 与 Extensions 的具体影响见正文。
 
 #### HAL 以 `inputBuffer` 识别重处理请求
 
@@ -754,7 +754,7 @@ AIDL CaptureRequest 的有效 input 表示已有图像重处理，没有 input �
 <!-- gracker-diagram: ed13-10-cached-ids-and-valid-input -->
 ![有效 ID 的缓存省略与没有 input 分别识别](../../assets/diagrams/ch13/ed13-10-cached-ids-and-valid-input.png)
 
-图：固定StreamBuffer首次交接携streamId/bufferId+handle，HAL保存映射；重复有效buffer可只传ID省handle，CaptureResult通常只回已知标识，framework按frame/stream/buffer记录找回对象。cachesToRemove、移除流/关闭按契约失效，不能跨会话复用。识别input还看原生input_buffer与输入流：AIDL无input用streamId=-1/bufferId=0，有效缓存input可无handle仍是reprocess；没有appinput是采集类但deviceZSL仍可能选历史图像。实际input读取前等acquire、随result归还；缓存记录本身不是图像占用或访问权限证明。
+图：固定 `StreamBuffer` 首次交接携带 `streamId`/`bufferId` 与 handle，HAL 保存映射；重复有效 buffer 可只传 ID 省去 handle，`CaptureResult` 通常只回已知标识，framework 按 frame、stream 与 buffer 记录找回对象。`cachesToRemove`、移除流或关闭会话按契约使映射失效，不能跨会话复用。识别 input 还要看原生 `input_buffer` 与输入流：AIDL 无 input 时使用 `streamId=-1`、`bufferId=0`，有效缓存 input 可以不带 handle 但仍属于 reprocess；没有 app input 属于采集类请求，但 device ZSL 仍可能选中历史图像。实际 input 读取前须等 acquire，随 result 归还；缓存记录本身不代表图像占用或访问权限证明。
 
 - 无有效 inputBuffer：采集类请求，设备内部仍可按 CONTROL_ENABLE_ZSL 策略使用历史图像；
 - 有有效 `inputBuffer`：重处理该图像；
@@ -783,7 +783,7 @@ ImageWriter.queueInputImage() 将已有图像交给 session input Surface，下�
 <!-- gracker-diagram: ed13-10-reprocess-handoff-and-image-validity -->
 ![先创建请求，再交接 input；原 Image 有效期到此结束](../../assets/diagrams/ch13/ed13-10-reprocess-handoff-and-image-validity.png)
 
-图：固定CameraX/CameraPipe1.6.1从合格图像及FrameInfo形成InputRequest，先基于TotalCaptureResult创建reprocess builder并设置已有output target，再queueInputImage交接到session input Surface，之后提交capture request。queueInputImage可能因输入额度阻塞；交接后原Image不可访问，HAL读取前满足input acquire fence，再随result/release fence归还。后续复用须池中正确归还后重新取得，不会因fence signal恢复原Java Image。input已交接后的失败不保证透明重试普通拍照；reprocess不为该输出采集新sensor数据，但仍可等input/输出/JPEG/fence。
+图：固定 CameraX/CameraPipe 1.6.1 从合格图像及 `FrameInfo` 形成 `InputRequest`，先基于 `TotalCaptureResult` 创建 reprocess builder 并设置已有 output target，再通过 `queueInputImage` 交接到 session input Surface，之后提交 capture request。`queueInputImage` 可能因输入额度阻塞；交接后原 `Image` 不可访问，HAL 读取前满足 input acquire fence，再随 result/release fence 归还。后续复用须在池中正确归还后重新取得，不会因 fence signal 恢复原 Java `Image`。input 已交接后的失败不保证透明重试普通拍照；reprocess 不为该输出采集新 sensor 数据，但仍可能等待 input、输出、JPEG 或 fence。
 
 内核的 `dma-fence` 和 `sync_file` 只提供同步原语，CameraX 的三帧策略、AF、AE、AWB 过滤、降级条件和重处理元数据都在用户空间。所以我们分析 ZSL 失败时，先在用户空间找原因，别急着归因于内核。
 
@@ -821,14 +821,14 @@ timestamp base 表示时间戳采用哪一套参考时钟；参考时钟不同�
 <!-- gracker-diagram: ed13-10-metadata-inflight-and-device-completion -->
 ![metadata、request 收尾与图像完成是三组证据](../../assets/diagrams/ch13/ed13-10-metadata-inflight-and-device-completion.png)
 
-图：固定HAL3同frame partial/final metadata和各stream buffer可分批返回，仍遵守相应FIFO及ZSL/错误例外契约。mInFlightMap按frame跟踪metadata/shutter/input-output归还和请求类型，满足源码条件可移除，此时带回buffer的HAL release fence仍可能未signal。onCaptureStarted/ReadoutStarted描述sensor阶段，onCaptureCompleted是final metadata，buffer实际读取须满足依赖；只有进入显示的输出另追present，analysis/record/still可能完全不进SF。轨道仅普通成功预览一种允许样例，不能推所有callback固定先后或ZSL源图时刻，其他分支各自取证。
+图：固定 HAL3 同 frame 的 partial/final metadata 和各 stream buffer 可分批返回，仍遵守相应 FIFO 及 ZSL、错误例外契约。`mInFlightMap` 按 frame 跟踪 metadata、shutter、input/output 归还和请求类型，满足源码条件即可移除，此时带回 buffer 的 HAL release fence 仍可能未 signal。`onCaptureStarted` 与 `onReadoutStarted` 描述 sensor 阶段，`onCaptureCompleted` 是 final metadata，buffer 实际读取前仍须满足依赖；只有进入显示的输出才另追 present，analysis、record 与 still 可能完全不进入 SF。图中轨道仅展示普通成功预览的一种允许样例，不能推出所有 callback 有固定先后或 ZSL 源图时刻，其他分支须各自取证。
 
 复原单帧至少保留 frame number、request id、sensor / readout timestamp、stream、buffer 标识、result 到达、queue / acquire / release 和显示关联对象。换算只用于可校准的时钟域差异；遇到 CHOREOGRAPHER_SYNCED 改写时间的输出，我们改用 buffer、stream 与 trace flow 关联帧，单凭时间值相等认不出帧。Camera frame number、BufferQueue frame number 和显示 token 是三套编号，相互对应要靠证据关联。
 
 <!-- gracker-diagram: ed13-10-timestamp-policy-and-frame-association -->
 ![先按输出选择 time base，再区分校准时钟与图像时间重写](../../assets/diagrams/ch13/ed13-10-timestamp-policy-and-frame-association.png)
 
-图：固定r1默认策略：SurfaceView用CHOREOGRAPHER_SYNCED，固定fps时改写图像时间为显示节奏相关值，非单纯偏移；SurfaceTexture可调整交付间隔但timestamp保留sensor域；MediaCodec/Recorder或video-encode usage目标用MONOTONIC；其他通常SENSOR。sensor真实域查询SENSOR_INFO_TIMESTAMP_SOURCE，REALTIME对应elapsed，UNKNOWN按契约检查精度/范围；可校准时钟域差异才按单位和依据换算，改写的图像时间不能用固定偏移还原曝光。Camera frame number、BufferQueue frame number、显示token也不直接相等，需stream/buffer/flow关联。
+图：固定 r1 默认策略：SurfaceView 用 `CHOREOGRAPHER_SYNCED`，固定 fps 时改写图像时间为显示节奏相关值，并非单纯时钟偏移；SurfaceTexture 可调整交付间隔但 timestamp 保留 sensor 域；MediaCodec、MediaRecorder 或带 video-encode usage 的目标用 `MONOTONIC`；其他输出通常使用 `SENSOR`。sensor 真实域查询 `SENSOR_INFO_TIMESTAMP_SOURCE`，`REALTIME` 对应 elapsed，`UNKNOWN` 按契约检查精度与范围；可校准时钟域差异才按单位和依据换算，改写后的图像时间不能用固定偏移还原曝光时刻。Camera frame number、BufferQueue frame number 与显示 token 也不直接相等，需通过 stream、buffer 与 flow 关联。
 
 ## Secure Camera Path
 
@@ -941,7 +941,7 @@ CameraService 源码包含以下可核对点：
 <!-- gracker-diagram: ed13-10-cross-stream-pressure-and-anr-proof -->
 ![跨流反压与 App ANR 要用两组依赖分别证明](../../assets/diagrams/ch13/ed13-10-cross-stream-pressure-and-anr-proof.png)
 
-图：consumer处理/归还变慢导致某stream图像滞留，可耗尽可用buffer并出现get/request buffer等待。只有目标设备共享ISP stage、request多目标、带宽/内部池等实际耦合被证实时，才能关联其他stream迟到；独立队列不证明隔离，也不意味着一定全局堵塞。App ANR还需主线程/广播/服务/输入等关键路径实际依赖该相机操作，调用栈/Binder等待与buffer/fence阻塞区间对齐并满足对应detector超时。两种后果分开取证，CameraService线程等待本身不足以证明AppANR或ISP硬件根因。
+图：consumer 处理或归还变慢导致某 stream 图像滞留，可能耗尽可用 buffer 并出现 get/request buffer 等待。只有目标设备共享 ISP stage、request 多目标、带宽或内部池等实际耦合被证实时，才能关联其他 stream 的迟到；独立队列不证明完全隔离，也不意味着一定会全局堵塞。App ANR 还需主线程、广播、服务或输入等关键路径实际依赖该相机操作，使调用栈与 Binder 等待同 buffer/fence 阻塞区间对齐并达到对应 detector 超时。两种后果分开取证，CameraService 线程等待本身不足以证明 App ANR 或 ISP 硬件根因。
 
 ## 常见掉帧场景与修复方向
 

@@ -161,7 +161,7 @@ Compose for XR beta02 的 release notes 要求 Kotlin 2.2，实际 POM 使用 Ko
 <!-- gracker-diagram: ch13-13-04-known-dependency -->
 ![测资源前先修正已知依赖问题](../../assets/diagrams/ch13/ch13-13-04-known-dependency.png)
 
-图：beta02 的 SceneCore rc01 依赖有官方已知泄漏说明。 按 release notes 显式采用 SceneCore 1.0.0，再测业务资源常驻量。
+图：beta02 的 SceneCore rc01 依赖有官方已知泄漏说明。按 release notes 显式采用 SceneCore 1.0.0，再测业务资源常驻量。
 
 构建条件同样按实际 artifact 核对：alpha14 release notes 中的 compileSdk 37 / AGP 9.2.0 是历史变更记录；本次解包 beta02 AAR，其 metadata 声明 `minCompileSdk=36`、`minAndroidGradlePluginVersion=8.9.1`，manifest 为 `minSdk=24`。这组数字是该 AAR 声明的最低条件，说明的是编译与安装下限：生产时用的 compileSdk、其余传递依赖的要求，都还要另行核对。安装范围、编译要求、设备 XR runtime 与 capability 是各自独立的条件；从 minSdk 24 推不出“普通手机可运行所有空间功能”这样的结论。
 
@@ -213,7 +213,7 @@ Host Activity/Compose → projected session/transport → glasses display/input
 <!-- gracker-diagram: ed13-13-producers-and-xr-evidence -->
 ![按生产对象补齐各自证据，再追 XR runtime 与显示](../../assets/diagrams/ch13/ed13-13-producers-and-xr-evidence.png)
 
-图：compatible/SpatialPanel由UI/HWUI生产Surfacebuffer，按覆盖记录Choreographer/RenderThread/queue/fence；external Surface由codec/Camera等生产，独立追媒体/相机buffer与fence，API类名不保证对应SF Layer。SceneCore model为资源/entity/layout/animation，不套doFrame。三者可共享GPU/带宽/runtime预算，进入XR scene后的pose、合成、reprojection、显示需runtime/设备证据；公开API不固定compositor进程/线程/latch/fence名，AppSurfaceFrame不等最终光学显示。
+图：compatible panel 与 SpatialPanel 由 UI/HWUI 生产 Surface buffer，按实际覆盖情况记录 Choreographer、RenderThread、queue 与 fence；external Surface 由 codec/Camera 等生产，须独立追踪媒体/相机 buffer 与 fence，单靠 API 类名不能保证对应可见的 SurfaceFlinger Layer。SceneCore model 侧重资源、entity、layout 与 animation，不可套用 doFrame。三者可能共享 GPU、带宽与 runtime 预算，进入 XR scene 后的 pose、合成、reprojection 与显示仍需要 runtime 或设备证据；公开 API 未固定 compositor 进程、线程、latch 或 fence 名称，App SurfaceFrame 也并不等于最终光学显示。
 
 ## Jetpack XR SDK 的 UI 栈边界
 
@@ -234,7 +234,7 @@ Jetpack XR SDK 由一组覆盖 UI、scene、感知和 projected device 的库组
 <!-- gracker-diagram: ch13-13-11-spatialization-gate -->
 ![Subspace 的运行条件与内容选择](../../assets/diagrams/ch13/ch13-13-11-spatialization-gate.png)
 
-图：先确认 spatialization，再分别核算面板、实体和外部 Surface。 Home Space / 非 XR 会忽略 Subspace 代码，适用的 2D 内容要先备好。
+图：先确认 spatialization，再分别核算面板、实体和外部 Surface。Home Space / 非 XR 会忽略 Subspace 代码，适用的 2D 内容要先备好。
 
 Compose beta02 里 `SpatialGltfModel` / `SpatialGltfModelState` 仍标记 `ExperimentalSpatialGltfModelApi`，源码暂未重新加入模型动画 API，旧 alpha 的动画示例就此作废。动画要走 SceneCore 这条线：stable 1.0.0 的 `getAnimations()` 仍需 `ExperimentalGltfAnimationApi` opt-in，到 1.1.0-alpha01 相关动画 API 才转正，并新增 `stopAllAnimations()`。stable 1.0.0 的公开 `GltfModelEntity.create()` 仍默认 `parent = null`。
 
@@ -242,14 +242,14 @@ Compose beta02 里 `SpatialGltfModel` / `SpatialGltfModelState` 仍标记 `Exper
 scene graph（用父子关系组织空间实体的场景树）里，只有挂入可见根节点的实体才会参与对应场景；要显示模型，就在创建时传入 `session.scene.activitySpace` 等 parent，或随后设置 `entity.parent`。entity 创建成功，说明的是对象存在，资源是否已挂入可见 scene graph 还要另看。我们同时核对 entity 及祖先 enabled、空间 capability、视野和实际可见结果；挂到根只是必要条件之一。
 
 
-资源生命周期按所有者处理：`rememberSpatialGltfModelState()` 由 Compose 的 remember 生命周期持有并调用 `close()`；手工构造 state 的调用方按契约自己负责关闭。⚠️ beta02 源码里的 state `close()` 还是 reserved-for-future 的空实现，图上先别把它画成确定的 GPU 资源释放点。SceneCore `GltfModel` / `ImageBasedLightingAsset` 则各自提供主线程 `close()` 并有 GC 清理后备，宜明确唯一所有者，在全部使用结束后关闭，避免重复关闭与关闭后继续使用。
+资源生命周期按所有者处理：`rememberSpatialGltfModelState()` 由 Compose 的 remember 生命周期持有并调用 `close()`；手工构造 state 的调用方按契约自己负责关闭。还要留意，beta02 源码里的 state `close()` 仍只是 reserved-for-future 的空实现，不要把它当成确定的 GPU 资源释放点。SceneCore `GltfModel` / `ImageBasedLightingAsset` 则各自提供主线程 `close()` 并有 GC 清理后备，宜明确唯一所有者，在全部使用结束后关闭，避免重复关闭与关闭后继续使用。
 
 `entity.parent = null` 只是把实体移出场景树，清理强引用和关闭资产是另一层工作；stable 1.0.0 的 `Entity.dispose()` 为 library-group 限制且已废弃，业务代码别照旧示例调用。这些操作的返回只代表调用完成；GPU 常驻内存是否随之归零，单凭 CPU 事件看不出来。
 
 <!-- gracker-diagram: ch13-13-14-asset-owner -->
 ![资源清理由谁负责](../../assets/diagrams/ch13/ch13-13-14-asset-owner.png)
 
-图：remember state、手工 state 与 SceneCore 资产按各自契约管理。 beta02 的 state close 是空实现；显存是否即时归零，CPU 清理调用说了不算。
+图：remember state、手工 state 与 SceneCore 资产按各自契约管理。beta02 的 state close 是空实现；显存是否即时归零，CPU 清理调用说了不算。
 
 业务代码要锁定具体依赖版本；写诊断记录时，我们把 `xr.compose`、`xr.runtime`、`xr.scenecore`、`xr.arcore`、`xr.projected` 与 `xr.glimmer` 的完整版本一并写明。
 
@@ -265,7 +265,7 @@ passthrough 是相机画面构成的现实世界视图，开到 full opacity 时
 <!-- gracker-diagram: ch13-13-16-environment-apply -->
 ![环境偏好、生效与遮挡](../../assets/diagrams/ch13/ch13-13-16-environment-apply.png)
 
-图：配置偏好离实际显示还有几步，空间能力、active 与 passthrough 都要核对。 null preference 与空 geometry 是两种含义；passthrough 能力另查。
+图：配置偏好离实际显示还有几步，空间能力、active 与 passthrough 都要核对。null preference 与空 geometry 是两种含义；passthrough 能力另查。
 
 从 Jetpack XR alpha04 起，官方建议把可见环境与 IBL 数据拆开：
 
@@ -283,9 +283,9 @@ passthrough 是相机画面构成的现实世界视图，开到 full opacity 时
 <!-- gracker-diagram: ed13-13-visible-environment-and-ibl-build -->
 ![用户看到的 geometry 与照明 IBL 分别制作和加载](../../assets/diagrams/ch13/ed13-13-visible-environment-and-ibl-build.png)
 
-图：SceneCore stable1.0一份environmentPreference最多一份geometry和一份lightingasset；用户看到的skybox在geometry，独立IBLZIP用于lighting/reflection/specular。可见纹理与lighting分辨率可独立选择；HDR EXR经cmgen预处理成IBLZIP，blackPNG参与优化预处理用户不可见；示例cmgen未执行，旧指南EXR说法不能替代现行loader契约。preference只表达期望，FullSpace/APP_ENVIRONMENT/active与passthrough另核，缺IBL可使自定义对象光照不匹配。
+图：SceneCore stable 1.0 中，一份 environmentPreference 最多包含一份 geometry 和一份 lighting asset；用户直接看到的 skybox 放在 geometry 中，独立 IBL ZIP 则用于 lighting、reflection 与 specular。可见纹理与 lighting map 可分别选择分辨率；HDR EXR 经 cmgen 预处理生成 IBL ZIP，black PNG 仅参与优化预处理而对用户不可见；示例脚本中 cmgen 步骤尚未执行时，切勿拿旧指南的 EXR 说法替代现行 loader 契约。preference 本身只表达期望，Full Space、APP_ENVIRONMENT capability、active 状态与 passthrough 需另行核对；缺少匹配 IBL 时，自定义 3D 对象的光照效果可能与环境不匹配。
 
-⚠️ 这里文档表述有出入：添加环境指南仍保留 EXR 作 skybox 的旧说法，当前环境优化指南与 `SpatialEnvironmentPreference.geometry` API 则明确把用户可见 skybox 放进 geometry、把预处理 IBL ZIP 用于光照。我们按后两者及 stable 1.0.0 源码来区分，免得加载一个 EXR 就以为可见环境与 IBL 一次到位。
+这里的公开文档表述仍有出入：添加环境指南里还保留着拿 EXR 作 skybox 的旧说法，但当前环境优化指南与 `SpatialEnvironmentPreference.geometry` API 已经明确把用户可见 skybox 放进 geometry，把预处理 IBL ZIP 用于光照。实际工程应以后两者和 stable 1.0.0 源码为准，不要加载一个 EXR 就以为可见环境与 IBL 已同时就绪。
 
 官方把环境 view distance 写为距用户 200 m，并建议把用户放在约 1.5 m 高的位置。这两个数的身份要摆正：200 m 是环境制作与渲染的可见距离指导，感知传感器量程是另一回事；1.5 m 用来减少较大 UI 与地面穿插，同样只是建议，平台 API 并没有设这样的上限。
 
@@ -321,14 +321,14 @@ Jetpack XR 的内容规范支持 glTF 2.0，作者工具常输出 `.gltf` 或 `.
 <!-- gracker-diagram: ed13-13-loading-priority-and-residency -->
 ![先安排近期可见内容，再分别观测交付、加载与常驻](../../assets/diagrams/ch13/ed13-13-loading-priority-and-residency.png)
 
-图：可见优先级先交互面板必要模型、再近期纹理动画、远处低概率内容分批异步预取，离场按所有者释放/降级cache。四类成本I/O、解析对象、纹理转码上传、attach首次可见是观测分类，可重叠或由runtime内部完成，不是四个串行区间。压缩GLB/KTX2文件大小不等CPU工作集或GPU resident，实际GPU转码格式、mips、双眼targets、材质与cache改变常驻；同时测启动、峰值内存、首次可见和热，不从包体换算显存。
+图：按可见优先级依次异步预取“可交互面板与必要模型 → 近期可见纹理与动画 → 远处或低概率内容”，离开场景后再按所有者释放或降级 cache。I/O、解析与对象创建、纹理转码上传、attach 与首次可见这四类成本只是观测分类，实际过程可相互重叠或由 runtime 内部完成，并非四个严格串行区间。压缩 GLB/KTX2 文件大小并不等于 CPU 工作集或 GPU resident 大小，实际 GPU 转码格式、mipmaps、双眼 targets、材质与 cache 都会改变常驻内存；测量时应同时记录启动耗时、峰值内存、首次可见时间与热状态，切勿从包体大小直接换算显存。
 
 资源加载、scene attach 与首帧 present 要分别打点。`GltfModel.create()` 返回，只说明这个加载 API 本身完成了；GPU upload 是否都在返回之后、首次 shader 是否就绪、本帧是否已被 runtime 采用，都要另行确认。我们结合 CPU/GPU 和首次可见的证据，去查实际的重叠加载、延后工作和缓存。解除 parent 只改变挂载关系；资产关闭按上一节的所有者、线程和版本契约执行。
 
 <!-- gracker-diagram: ed13-13-glb-load-attach-and-visibility -->
 ![资源返回、实体挂载与首次可见分别确认](../../assets/diagrams/ch13/ed13-13-glb-load-attach-and-visibility.png)
 
-图：固定SceneCore stable1.0 GltfModel.create只支持binaryGLB，@MainThread suspend仍在主线程调用并遵守path/URI契约。create返回只说明加载API完成，不能预设GPUupload全在返回后或shader全部ready。GltfModelEntity.create默认parentnull，须设activitySpace等可见parent；挂入还需entity与祖先enabled、SPATIAL_3D_CONTENT等当前capability及视野/runtime采用。capability随空间模式变，非一次检查即永久有效；detach/close依版本所有者另管，CPU返回不证明GPU内存归零。
+图：SceneCore stable 1.0 的 GltfModel.create 只支持 binary GLB，且作为 @MainThread suspend API 仍须在主线程调用并遵守 path/URI 契约。create 返回仅说明加载 API 完成，不能预设 GPU upload 全在返回后完成或 shader 已全部就绪。GltfModelEntity.create 默认 parent 为 null，须显式设置 activitySpace 等可见 parent；真正挂入并显示还取决于 entity 及祖先的 enabled 状态、SPATIAL_3D_CONTENT 等当前 capability、视野范围以及 runtime 是否采用。capability 会随空间模式变化，并非一次检查就永久有效；detach 与 close 须按对应版本与所有者契约执行，CPU 调用返回不代表 GPU 内存立即归零。
 
 ## 视点、姿态与显示配置对帧时间的影响
 
@@ -347,7 +347,7 @@ XR 需要同时观察四条时间线：
 <!-- gracker-diagram: ch13-13-27-cadence -->
 ![App 帧与显示帧的节奏分开](../../assets/diagrams/ch13/ch13-13-27-cadence.png)
 
-图：重投影可复用已有图像，Spacewarp 另用 motion vector / depth。 轨道只示意一种交替合成情况；刷新率、占空比或通用 reprojection 输入都不在其规定之内。
+图：重投影可复用已有图像，Spacewarp 另用 motion vector / depth。轨道只示意一种交替合成情况；刷新率、占空比或通用 reprojection 输入都不在其规定之内。
 
 ARCore 1.0.0 的 `ArDevice` state 提供 `devicePose` 与 `trackingState`；`RenderViewpoint.left(session)` / `right(session)` 仅适用于 STEREO，`mono(session)` 在 MONO 时是单视图、在 STEREO 时位于双眼显示中心。其 state 的 `pose` 是 perception space 中的视点位姿，`localPose` 是相对设备中心 tracking point 的局部偏移，`fieldOfView` 以弧度表示。
 
@@ -359,7 +359,7 @@ tracking mode 为 DISABLED 时，设备 pose 不再跟随运动，可能保留�
 <!-- gracker-diagram: ed13-13-viewpoint-transform-and-pose-age -->
 ![位姿空间组合与本帧姿态采用是两组问题](../../assets/diagrams/ch13/ed13-13-viewpoint-transform-and-pose-age.png)
 
-图：ARCore stable1.0 ArDevice.devicePose为perception-space设备位姿，RenderViewpoint.localPose为设备中心trackingpoint到视点偏移，变换组合得到viewpoint.pose，不能逐分量相加。left/right仅STEREO，mono在MONO单视图或STEREO双眼中心，FOV为弧度。DISABLEDtracking数值可冻结原点/旧状态，存在数值非仍更新。应用读取、render实际使用、runtime后段latch与光学输出分别取证；精确poseage/MTP需公开时间戳和有误差界限的clock映射，不由平均FPS或read数值推断。
+图：ARCore stable 1.0 中，ArDevice.devicePose 是 perception-space 下的设备位姿，RenderViewpoint.localPose 是设备中心 tracking point 到视点的局部偏移，通过变换组合才能得到 viewpoint.pose，不可逐分量直接相加。left/right 仅适用于 STEREO，mono 在 MONO 下为单视图、在 STEREO 下位于双眼显示中心，FOV 以弧度表示。tracking 为 DISABLED 时数值可能冻结在原点或旧状态，有数值不代表仍在更新。应用读取、render 实际使用、runtime 后段 latch 与光学输出须分别取证；精确测量 pose age 与 MTP 需要公开时间戳和带误差界限的 clock 映射，无法由平均 FPS 或读取到的数值推断。
 
 Unity Android XR Extensions 提供三类不同优化：
 
@@ -394,7 +394,7 @@ Unity Android XR Extensions 提供三类不同优化：
 <!-- gracker-diagram: ch13-13-33-resolution-work -->
 ![推荐分辨率与实际着色量](../../assets/diagrams/ch13/ch13-13-33-resolution-work.png)
 
-图：获取 runtime 推荐目标后，还需核对实际渲染配置与 GPU 工作。 双眼目标并不自动折算成两次完整 pass；实际支持和画质需设备测量。
+图：获取 runtime 推荐目标后，还需核对实际渲染配置与 GPU 工作。双眼目标并不自动折算成两次完整 pass；实际支持和画质需设备测量。
 
 ## 工具与验证入口
 
@@ -426,7 +426,7 @@ Unity Android XR Extensions 提供三类不同优化：
 <!-- gracker-diagram: ch13-13-36-trace-missing -->
 ![XR 关键字缺失时怎样补证](../../assets/diagrams/ch13/ch13-13-36-trace-missing.png)
 
-图：先核对目标对象、采集支持与权限，再解释缺失事件。 XR slice 缺席说明不了 runtime 没在工作；未知阶段就明确标成未知。
+图：先核对目标对象、采集支持与权限，再解释缺失事件。XR slice 缺席说明不了 runtime 没在工作；未知阶段就明确标成未知。
 
 每份报告至少保留设备类型、系统 build、Jetpack XR/Unity package、refresh mode、空间模式、passthrough、模型/环境版本、纹理上限、采集工具版本与复现动作。
 
@@ -447,7 +447,7 @@ XR 还带来姿态新鲜度和用户舒适度上的约束。Unity Profiler 的�
 <!-- gracker-diagram: ed13-13-openxr-running-and-frame-loop -->
 ![running 时继续帧同步，再按 shouldRender 选择内容路径](../../assets/diagrams/ch13/ed13-13-openxr-running-and-frame-loop.png)
 
-图：示例OpenXR frame loop在running时waitframe取得predictedtime/period/shouldRender，beginframe后按shouldRender决定重渲染。true路径acquire并成功wait后才能提交写image，release前也须成功wait并遵守graphicsbindingGPU同步，再endframe提交layers；false可避重GPU并提交空layers，但running仍继续必要begin/end。xrWaitFrame可独立线程但外部同步，多线程同帧目标displaytime一致；predicted period非硬件刷新保证。OpenXR image协议非AndroidBQslot，release/endCPU返回不代表GPU或光学完成。
+图：示例 OpenXR frame loop 在 running 状态下调用 waitFrame 取得 predicted display time、period 与 shouldRender，随后进入 beginFrame 并按 shouldRender 决定是否执行重渲染。shouldRender 为 true 时，须 acquire 并成功 wait 到 image 后才能提交写入命令，release 前也须成功 wait 并遵守所选 graphics binding 的 GPU 同步规则，最后经 endFrame 提交 layers；为 false 时可省去重 GPU 渲染并提交空 layers，但处于 running 状态仍应继续必要的 begin/end 循环。xrWaitFrame 可在独立线程调用但必须由外部保证同步，多线程处理同一应用帧时应传递一致的目标 display time；predicted period 只是预测值，并非硬件刷新周期保证。OpenXR swapchain image 是 runtime 协议对象，不同于 Android BufferQueue slot，release 或 endFrame 的 CPU 返回也不代表 GPU 或光学显示完成。
 
 ## 眼镜形态下 host device 的功耗边界
 
@@ -471,7 +471,7 @@ host 上按时生成帧，只说明第一段顺利；传输和 glasses present �
 <!-- gracker-diagram: ed13-13-projected-devices-and-clock-mapping -->
 ![Host 与眼镜分别记工作，用共同事件和时钟映射连接](../../assets/diagrams/ch13/ed13-13-projected-devices-and-clock-mapping.png)
 
-图：ProjectedActivity在companionhost运行，Glimmer提供透明displayglassesUI；host记录Activity/Compose/CPU/GPU/codec/camera/network/thermal，glasses记录连接/display/input/sensor/power/cadence，按capability选择功能，audio无display可降级。host产帧准时不证明transport和remote present准时，两端功耗分别归因。两端事件id只关联，精确跨端分段需要有误差界限clockmapping；未同步rawtimestamp不可直接相减，RTT观察不能自动拆单向时延，无法映射时用共同事件/往返而非伪造精确oneway。
+图：Projected Activity 运行在 companion host 上，Compose Glimmer 提供透明 display glasses 的 UI；host 端记录 Activity、Compose、CPU/GPU、codec、camera、network 与 thermal，glasses 端记录连接状态、display、input、sensor、功耗与显示 cadence，两边按当前 capability 选择功能，audio 眼镜无可视 display 时应做降级处理。host 按时生成帧不证明传输与远端 present 也按时，两端功耗须分别归因。两边通过事件 id 可以建立关联，但要做精确跨端分段仍需带误差界限的 clock mapping；未同步的原始 timestamp 不可直接相减，RTT 往返观测也不能自动拆出单向传输时延，无法完成映射时应采用共同事件与往返测量，切勿伪造精确的 one-way 时延。
 
 ## 复核清单
 

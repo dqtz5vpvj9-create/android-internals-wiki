@@ -320,7 +320,7 @@ void nativeCreateChild(JNIEnv* env, jobject javaSurface) {
 <!-- gracker-diagram: ed13-06-host-queue-child-and-references -->
 ![向宿主队列生产与创建 child Layer 分别持有资源](../../assets/diagrams/ch13/ed13-06-host-queue-child-and-references.png)
 
-图：Java Surface 桥接增加 ANativeWindow 引用。向现有 window 的 EGL/Vulkan/codec 队列生产，与 createFromWindow 另建 child 是不同操作；后者新 client/child，create(parentControl) 使用 parent client。公开 NDK 创建 buffer-state 节点，无 Java Builder layer-type 选择；setColor 只设置透明区域后的背景，不新建 Color Layer。临时 window 引用可释放，child 新引用要另配 control release；本地 release 不等移出显示树。宿主 Surface 重建时旧 parent 不能对应新树根，须串行移除/释放旧 child 并清空句柄后重建。
+图：Java Surface 桥接会增加 `ANativeWindow` 引用。向现有 window 的 EGL、Vulkan 或 codec 队列生产，与 `createFromWindow` 另建 child 是不同操作；后者会建立新的 client 与 child，而 `create(parentControl)` 复用 parent 的 client。公开 NDK 只创建 buffer-state 节点，不提供 Java Builder 的 layer-type 选择；`setColor` 只设置透明区域后的背景，不会新建 Color Layer。临时 window 引用可随后释放，child 新引用要另配 control release；本地 release 不等于移出显示树。宿主 Surface 重建时旧 parent 无法对应新树根，须串行移除并释放旧 child、清空句柄后再重建。
 
 #### 提交 buffer 和几何状态
 
@@ -544,7 +544,7 @@ VSync callback 会提供多条候选 timeline。每条包含：
 callback data 只在回调执行期间有效，但从中取出的 `AVsyncId`、时间戳和索引值可以保存。选择 timeline 时，我们既看业务期望的展示时刻，也估算渲染能否赶上 deadline。
 
 
-下面的示例从 preferred 及后面的候选中选取一条不早于业务目标、且 deadline 不早于预计完成时间的 timeline；挑不到时跳过本轮生产——最后一个已错过 deadline 的候选，同样算不上满足条件。所有预测完成时间和展示目标都使用绝对的 `CLOCK_MONOTONIC` 纳秒时间，要传的是时间点，一段 duration 在这里派不上用场。代码省略了 GPU 提交，只展示选择和事务绑定位置。
+下面的示例从 preferred 及后面的候选中选取一条不早于业务目标、且 deadline 不早于预计完成时间的 timeline；挑不到时跳过本轮生产——最后一个已错过 deadline 的候选同样不算满足条件。所有预测完成时间和展示目标都使用绝对的 `CLOCK_MONOTONIC` 纳秒时间点，不能传入相对的 duration。代码省略了 GPU 提交，只展示选择和事务绑定位置。
 
 ```c
 #include <android/choreographer.h>
@@ -871,7 +871,7 @@ HBR 把一棵 `RenderNode` 场景树光栅化到**调用方拥有的 `HardwareBu
 
 先看基线 `Surface.lockCanvas()`。它让 CPU 直接绘制到 `Surface`：调用方从 `BufferQueue` 取得可写 buffer，Skia software backend 在 CPU 上完成光栅化（把矢量绘制命令转成像素），`unlockCanvasAndPost()` 再把 buffer 提交回队列。复杂 Path、大尺寸缩放、滤镜或高分辨率离屏内容会吃掉不少 CPU 时间，这正是 HBR 要接手的场景之一。
 
-把 HBR 当成 `lockCanvas()` 的硬件加速开关是常见误会——硬件加速的 Canvas 另有入口：`Surface.lockHardwareCanvas()` 已经用上 HWUI/GPU，输出目标仍是 `Surface`。三者的分工如下：
+HBR 并不只是把 `lockCanvas()` 换成硬件加速：如果需要面向 `Surface` 的硬件加速 Canvas，应使用 `Surface.lockHardwareCanvas()`，它已经走上 HWUI/GPU，输出目标仍然是 `Surface`。三者的分工如下：
 
 | API | 光栅化执行者 | 输出目标 | 提交与 buffer 复用 |
 | --- | --- | --- | --- |
@@ -884,7 +884,7 @@ HBR 把一棵 `RenderNode` 场景树光栅化到**调用方拥有的 `HardwareBu
 <!-- gracker-diagram: ed13-06-canvas-targets-content-and-fallback -->
 ![先选输出目标，再选 Surface Canvas 或独立共享 buffer](../../assets/diagrams/ch13/ed13-06-canvas-targets-content-and-fallback.png)
 
-图：lockCanvas为CPUsoftware光栅到Surface的BufferQueue，dirtyregion按Surface契约；lockHardwareCanvas为HWUI/GPU写同类Surface目标，每帧完整覆盖。HBR34+把RenderNode写调用方HardwareBuffer，Consumer/同步/池自行管理，draw前不自动清空；完整帧须完整覆盖或clear，局部更新维护该slot的历史，不能借另一slot内容，surface damage不是清屏。已有Surface只需GPUCanvas可用lockHardwareCanvas/HardwareRenderer；API34以下独立GPUbuffer可EGL/Vulkan或兼容封装，CPU可接受时software。降级必须保留颜色、consumer、fence与资源所有权，NDK没有公开AHardwareBufferRenderer。
+图：`lockCanvas` 为 CPU software 光栅到 `Surface` 的 BufferQueue，dirty region 按 Surface 契约处理；`lockHardwareCanvas` 为 HWUI/GPU 写入同类 Surface 目标，要求每帧完整覆盖。HBR（API 34+）把 `RenderNode` 写入调用方 `HardwareBuffer`，Consumer、同步与池均由调用方管理，draw 前不自动清空；完整帧须完整覆盖或 clear，局部更新需维护该 slot 的历史，不能借另一 slot 的内容，surface damage 不等同于清屏。已有 `Surface` 且只需 GPU Canvas 时可用 `lockHardwareCanvas` 或 `HardwareRenderer`；API 34 以下需要独立 GPU buffer 可用 EGL/Vulkan 或兼容封装，CPU 开销可接受时用 software。降级方案必须保留颜色、consumer、fence 与资源所有权语义，NDK 没有公开 `AHardwareBufferRenderer`。
 
 如果已经有一个正常消费的 `Surface`，需求只是 GPU Canvas，`lockHardwareCanvas()` 或面向 Surface 的 `HardwareRenderer` 通常更合适。
 
@@ -922,14 +922,14 @@ HBR 是 Android 14 / API 34 加入的 Java API。它复用 HWUI 的基础设施�
 <!-- gracker-diagram: ed13-06-hbr-native-host-and-gpu-boundaries -->
 ![draw 的 host 同步、RT 提交与 GPU 完成由不同边界表达](../../assets/diagrams/ch13/ed13-06-hbr-native-host-and-gpu-boundaries.png)
 
-图：draw通过nRender配置HardwareBufferRenderParams尺寸/transform/color/callback，再RenderProxy.syncAndDrawFrame；DrawFrameTask同步RenderNode并写构造固定AHB，持AHB目标时pipeline.flush导Producerfd，JNI adopt为SyncFence后executor交RenderResult。draw不是纯投递立即返，host可在场景同步后较早唤醒，仍非GPU完成；callback也可早于fence signal。图中边为调用和工作发起关系，不规定callback必先于或后于GPU结束；轨道示允许提前unblock的一种正常依赖，条长非测量。
+图：`draw` 通过 `nRender` 配置 `HardwareBufferRenderParams` 的尺寸、transform、color 与 callback，再进入 `RenderProxy::syncAndDrawFrame`；`DrawFrameTask` 同步 RenderNode 并写入构造固定的 AHB，持有 AHB 目标时 `pipeline.flush()` 导出 Producer fd，JNI adopt 为 `SyncFence` 后由 executor 交付 `RenderResult`。`draw` 并非纯异步投递后立即返回，host 可在场景同步后较早唤醒，仍不代表 GPU 完成；callback 也可早于 fence signal。图中边表示调用与工作发起关系，不规定 callback 必先于或后于 GPU 结束；轨道展示允许提前 unblock 的一种正常依赖，条长非实测。
 
 HBR 的 JNI 在构造 `UiFrameInfo` 时使用 `INVALID_VSYNC_ID`，因此一次 HBR draw 本身没有关联到有效的 App FrameTimeline VSync。若结果需要按 VSync 上屏，我们仍要通过 Choreographer 选择目标帧，并在 Java API 35+ 的 `SurfaceControl.Transaction` 或 NDK API 33+ transaction 上设置对应 FrameTimeline。固定 r1 的 Java `setFrameTimeline()` 与 `setDesiredPresentTimeNanos()` 还带 `sdkDesiredPresentTime` flag 检查，关闭时原样返回；请求是否真的被目标设备应用了，还要回到设备上确认。
 
 <!-- gracker-diagram: ed13-06-hbr-buffer-and-display-target -->
 ![HBR 产出 buffer，显示事务另接 Choreographer 目标](../../assets/diagrams/ch13/ed13-06-hbr-buffer-and-display-target.png)
 
-图：HBR JNI UiFrameInfo 使用 INVALID_VSYNC_ID，一次离屏draw自身不关联有效AppVSync。Choreographer选候选并按预计就绪/业务展示预算取token；无可行候选应跳过，实际选择见保留分支图。NDK33/Java35 transaction关联vsyncId，过期无效忽略；Java35timeline/desiredtime固定r1有sdkDesiredPresentTime flag关闭即返回。setFrameTimeline已含expected/deadline，不机械重复desiredtime；desiredtime是独立不早于绝对单调时间请求，两者共用时目标一致。frameRate是内容帧率投票，不触发draw，不保证实际刷新率；token不补齐独立HBR/SurfaceView完整FrameTimeline覆盖。
+图：HBR JNI 的 `UiFrameInfo` 使用 `INVALID_VSYNC_ID`，一次离屏 draw 自身不关联有效 App VSync。Choreographer 选择候选并按预计就绪与业务展示预算取 token；无可行候选时应跳过，实际选择见保留分支图。NDK 33 与 Java 35 的 transaction 关联 `vsyncId`，过期或无效则忽略；Java 35 的 timeline 与 desired time 在固定 r1 带有 `sdkDesiredPresentTime` flag，关闭即返回。`setFrameTimeline` 已含 expected/deadline，不机械重复 `desiredTime`；`desiredTime` 是独立的“不早于”绝对单调时间请求，两者共用时目标须一致。`frameRate` 是内容帧率投票，不触发 draw，不保证实际刷新率；token 也不补齐独立 HBR 或 SurfaceView 的完整 FrameTimeline 覆盖。
 
 ### 从 RenderNode 到屏幕的完整路径
 
@@ -1045,14 +1045,14 @@ request.draw(callbackExecutor, result -> {
 <!-- gracker-diagram: ed13-06-rendernode-bounds-and-request-reset -->
 ![RenderNode 的 bounds、显示列表与每轮 request 各管一层](../../assets/diagrams/ch13/ed13-06-rendernode-bounds-and-request-reset.png)
 
-图：root.setPosition设置实际bounds/宽高，默认clipToBounds=true；beginRecording(width,height)只是录制viewport，不替节点改bounds。clear/draw/endRecording更新displaylist，setContentRoot让内部根记录drawRenderNode；之后同树displaylist或属性变更下一request同步，只有换根需再setContentRoot。obtainRenderRequest返回内部复用对象并重置sRGB/identity，逐轮显式设置所需colorSpace/transform；非线程安全，draw后不能继续修改或长期保留。HBR不自动清屏，局部更新要维护本slot历史。
+图：`root.setPosition` 设置实际 bounds 与宽高，默认 `clipToBounds=true`；`beginRecording(width, height)` 只是录制 viewport，不会替节点改 bounds。clear、draw 与 `endRecording` 更新 display list，`setContentRoot` 让内部根记录 `drawRenderNode`；之后同树的 display list 或属性变更会在下一 request 同步，只有换根时才需再调用 `setContentRoot`。`obtainRenderRequest` 返回内部复用对象并重置 sRGB 与 identity，需逐轮显式设置所需 `colorSpace` 与 `transform`；该对象非线程安全，draw 后不能继续修改或长期保留。HBR 不自动清屏，局部更新要维护本 slot 历史。
 
 `android_view_SurfaceControl.cpp` 会让 transaction 通过 `sp<Fence>` 持有 native fence 引用，所以成功分支把 presentation fence 交给 `setBuffer()` 后就可以关闭 Java wrapper；继续保留 wrapper 只会额外占用一个 fd / native 资源。
 
 <!-- gracker-diagram: ed13-06-result-status-and-fence-ownership -->
 ![成功交给 Consumer，渲染失败也须处理 Producer fence](../../assets/diagrams/ch13/ed13-06-result-status-and-fence-ownership.png)
 
-图：先检查RenderResult.status；SUCCESS才Java setBuffer(buffer,SyncFence)并apply，native transaction增持sp<Fence>，交接后可close原Javawrapper，close非等待。ERROR未交Consumer也要回收线程处理返回Producerfence，await失败隔离，成功才按slot状态归还。未来release callback交回Consumer最后使用依赖，移交专用executor，等待成功且全部refs完成再IDLE。新返回无效fence按API约定已完成，不可把主动close制造的无效状态当证据。NDK setBuffer接管传入fd，传后不得再close/复用，诊断须事前dup；create返回transaction仍由调用方apply后delete，fromJava借用者不delete。
+图：先检查 `RenderResult.status`；为 `SUCCESS` 才执行 Java `setBuffer(buffer, SyncFence)` 并 `apply`，native transaction 增持 `sp<Fence>`，交接后可 `close` 原 Java wrapper，close 不等于等待。`ERROR` 未交 Consumer 时也要由回收线程处理返回的 Producer fence，await 失败则隔离，成功才按 slot 状态归还。未来 release callback 交回 Consumer 最后使用依赖，移交专用 executor，等待成功且全部 refs 完成后再置为 IDLE。新返回的无效 fence 按 API 约定视为已完成，不可把主动 close 制造的无效状态当证据。NDK `setBuffer` 接管传入 fd，传入后不得再 close 或复用，诊断须事前 dup；`create` 返回的 transaction 仍由调用方 `apply` 后 `delete`，`fromJava` 借用指针不得 `delete`。
 
 三个 usage flag 声明不同的访问方式，allocator 会据此判断格式和内存配置是否可用：
 
@@ -1101,7 +1101,7 @@ IDLE -> HBR_DRAW_SUBMITTED -> RESULT_WITH_PRODUCER_FENCE
   -> ALL_REFS_RELEASED_AND_WAIT_SUCCEEDED -> IDLE
 ```
 
-池中使用两块还是三块 buffer，由目标帧率、GPU 时间、合成延迟和允许的排队深度决定，“高帧率必须三缓冲”这样的预设只是想当然。池太小时，producer 会频繁等待 release；池更大会增加可用内存占用；只有 Producer 实际提前填满更多待展示工作时，排队深度和延迟才随之上升。
+池中使用两块还是三块 buffer，由目标帧率、GPU 时间、合成延迟和允许的排队深度决定，并不存在“高帧率必须三缓冲”的固定规则。池太小时，producer 会频繁等待 release；池更大会增加可用内存占用；只有 Producer 实际提前填满更多待展示工作时，排队深度和延迟才随之上升。
 
 
 每个 slot 建议一起保存：

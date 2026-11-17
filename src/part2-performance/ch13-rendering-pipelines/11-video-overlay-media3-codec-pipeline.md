@@ -387,7 +387,7 @@ sequenceDiagram
 <!-- gracker-diagram: ed13-11-output-time-gates -->
 ![目标时间先传到事务，再由实际调用关口判断](../../assets/diagrams/ch13/ed13-11-output-time-gates.png)
 
-图：releaseOutputBuffer(index,renderTimestampNs)提交Surface渲染请求并放弃App对该输出控制；时间是纳秒的系统目标时间，媒体PTS须先映射。显式timestamp写BufferItem.mTimestamp，常见BLAST expectedPresent=0、waitForFence=false，随后setBuffer/acquire与非自动desiredPresentTime事务。SF过早且处于约一秒保护窗口内可延后，时间门不是BLAST调用BQC等视频时间；通用BQC非零expectedPresent或latest-ready相应分支才可能PRESENT_LATER/丢旧帧。所有调用返回均不证明present或像素可见。
+图：releaseOutputBuffer(index, renderTimestampNs) 提交 Surface 渲染请求并放弃 App 对该输出的控制权；时间参数是纳秒级系统目标时间，媒体 PTS 须先映射。显式 timestamp 写入 BufferItem.mTimestamp，常见 BLAST 路径传入 expectedPresent=0、waitForFence=false，随后走 setBuffer/acquire，且不会自动填入 desiredPresentTime 事务；SurfaceFlinger 若判断过早且处于约 1 秒保护窗口内可延后提交，时间门控也不靠 BLAST 调用 BQC 等视频时间，只有通用 BQC 走非零 expectedPresent 或 latest-ready 对应分支时才可能返回 PRESENT_LATER 或丢弃旧帧。所有这些调用返回都不证明已完成 present 或像素已经可见。
 
 - 队首帧尚未到目标时间时可返回 `PRESENT_LATER`，表示该 Consumer 本次没有 acquire；BLAST 的常见调用传 0，不用这一时间门控；
 - 队列中存在更合时的后续帧时，旧帧可能被丢弃；
@@ -404,12 +404,12 @@ requested present timestamp 只表达期望时间，离显示完成凭据还远�
 | Display present fence | 本次显示提交 → 对应显示呈现边界 | 物理显示通常对应开始出现或开始向面板内存传输的 VSync；虚拟显示对应输出写完。不是整个面板扫描、像素响应完成；可靠性还受 `PRESENT_FENCE_IS_NOT_RELIABLE` 影响 |
 
 
-acquire 与 release 描述的是某次 buffer 所有权交接的两端；离开具体的交接关系，单看名称定位不了等待落在 codec、GPU 还是显示端。Android 的 fence 最终由内核 `dma_fence` 表示，跨进程传递靠 `sync_file` 提供的 fd（文件描述符） 封装。`PRESENT_FENCE_IS_NOT_RELIABLE` 表示设备声明 present fence 不适合用作精确显示时刻；Composer3 还允许特定 TV picture-profile 路线提供额外的 LayerPresentFence，表示该层内容可能晚于整屏 present，遇到这种设备例外要追层级反馈。排查时我们无须记忆 fd 编号，沿生产者、SurfaceFlinger、Composer HAL、显示驱动逐段确认等待关系即可；否则解码慢、排队晚、fence 晚和显示提交晚很容易被一起归成“视频掉帧”。同一 buffer 上还可能有 GPU client composition、多个输出或其他消费者，最终归还要合并相应完成依赖。HWC 返回 fence 对象和该 fence 后来 signal 是两个事件：拿到 fd 只说明拿到了句柄，内容可读、可覆盖要等 signal。
+acquire 与 release 描述的是某次 buffer 所有权交接的两端；离开具体的交接关系，单看名称定位不了等待落在 codec、GPU 还是显示端。Android 的 fence 最终由内核 `dma_fence` 表示，跨进程传递靠 `sync_file` 提供的 fd（文件描述符）封装。`PRESENT_FENCE_IS_NOT_RELIABLE` 表示设备声明 present fence 不适合用作精确显示时刻；Composer3 还允许特定 TV picture-profile 路线提供额外的 LayerPresentFence，表示该层内容可能晚于整屏 present，遇到这种设备例外要追层级反馈。排查时我们无须记忆 fd 编号，沿生产者、SurfaceFlinger、Composer HAL、显示驱动逐段确认等待关系即可；否则解码慢、排队晚、fence 晚和显示提交晚很容易被一起归成“视频掉帧”。同一 buffer 上还可能有 GPU client composition、多个输出或其他消费者，最终归还要合并相应完成依赖。HWC 返回 fence 对象和该 fence 后来 signal 是两个事件：拿到 fd 只说明拿到了句柄，内容可读、可覆盖要等 signal。
 
 <!-- gracker-diagram: ed13-11-buffer-fences-and-present -->
 ![当前图像读取、旧图像复用与本轮显示各有依赖](../../assets/diagrams/ch13/ed13-11-buffer-fences-and-present.png)
 
-图：当前Layer acquire保护生产写入到读取，实际GPU/HWC读前满足；当前CPU present调用可带未signal的release/present对象返回，device-layer release通常对应上一帧旧buffer，旧图像复用须满足所有使用方依赖。物理present一般是开始出现/开始传面板内存的VSync边界，虚拟显示是输出写完，不等整个panel扫描/像素响应；PRESENT_FENCE_IS_NOT_RELIABLE与TV LayerPresentFence另核对。对象回传顺序不强制硬件访问已结束。
+图：当前 Layer acquire 保护“生产者写入完成”到“消费者读取”，须在实际 GPU/HWC 读取前满足；当前 CPU present 调用可带着尚未 signal 的 release/present 对象返回，device-layer release 通常对应上一帧旧 buffer，旧图像复用前仍须满足所有使用方依赖。物理 present 一般对应开始出现或开始向面板内存传输的 VSync 边界，虚拟显示对应输出写完，并不代表整个 panel 扫描或像素响应完成；PRESENT_FENCE_IS_NOT_RELIABLE 与 TV LayerPresentFence 需另行核对。对象回传顺序也不强迫硬件访问已经结束。
 
 ### SurfaceView、TextureView 与自定义 GPU 路径
 
@@ -447,7 +447,7 @@ acquire 与 release 描述的是某次 buffer 所有权交接的两端；离开�
 <!-- gracker-diagram: ed13-11-texture-and-final-output -->
 ![codec 输入图像与 App 最终输出分两段追踪](../../assets/diagrams/ch13/ed13-11-texture-and-final-output.png)
 
-图：TextureView外部视频经SurfaceTexture成为App输入，frameavailable标记更新和invalidate，Main记录drawTextureLayer不等RT的DeferredLayerUpdater/ASurfaceTexture_dequeueBuffer原生取图；实际GPU读前满足fence，再生产最终AppWindow。自研GL/Vulkan须按实际AHB导入和同步，各API不通用；最终画到AppWindow则通常与UI合并，画到独立Surface则仍有独立Layer候选，二者都由HWC对最终Layer协商，AppGPU与SFRenderEngine不同。
+图：TextureView 外部视频经 SurfaceTexture 成为 App 输入，frame available 回调标记更新并触发 invalidate；Main 记录 drawTextureLayer，不等 RenderThread 里的 DeferredLayerUpdater/ASurfaceTexture_dequeueBuffer 原生取图。实际 GPU 读取前仍须满足 fence，随后生产最终 AppWindow。自研 GL/Vulkan 须按实际 AHardwareBuffer 导入和同步，各 API 互不通用；最终画到 AppWindow 通常与 UI 合并，画到独立 Surface 则仍有独立 Layer 候选，二者最终都由 HWC 对合并后的 Layer 协商，且 App GPU 与 SurfaceFlinger RenderEngine 分工不同。
 
 ### HWC 负责什么
 
@@ -491,14 +491,14 @@ validate 是 SurfaceFlinger 与 HWC 对本帧合成分工的确认过程；非 s
 在 `HWComposer::getDeviceCompositionChanges()` 中，设备声明 capability 并不会让 `canSkipValidate` 自动成立；framework 还要过两个前置条件：
 
 - 本帧此刻尚未需要 client composition；
-- 若存在 `earliestPresentTime`，当前 steady clock（单调递增的稳定时钟） 必须已到达该时间；如果 Composer 支持 expected present time，framework 可以把期望时间交给 Composer，因而不必在这里等待。
+- 若存在 `earliestPresentTime`，当前 steady clock（单调递增的稳定时钟）必须已到达该时间；如果 Composer 支持 expected present time，framework 可以把期望时间交给 Composer，因而不必在这里等待。
 
 条件满足后，SurfaceFlinger 调用 `presentOrValidate()`。返回 `PresentSucceeded` 表示这次调用已成功执行 present 提交；此时拿到的 fence 可能尚未 signal，硬件显示完成的凭据要等 fence signal。framework 保存 release/present fence 并跳过后续重复的 `presentDisplay()`。若返回 validate 结果，framework 仍要处理 changed types，并在需要时执行 client composition。
 
 <!-- gracker-diagram: ed13-11-mixed-composition-and-fast-path -->
 ![快路径结果与普通混合合成分别收尾](../../assets/diagrams/ch13/ed13-11-mixed-composition-and-fast-path.png)
 
-图：framework需要本帧此刻无client composition，并满足earliestPresentTime或由Composer expected-present支持接管时序，才可尝试presentOrValidate；不是能力位自动命中。PresentSucceeded已完成提交，保存release/present fence并跳过后续重复presentDisplay，signal仍可能未来。返回validate或未满足快路径就处理changed types、按需RenderEngine生成client target，再HWC提交。视频DEVICE可与其他CLIENT和GPU client target并存，GPU工作不能替代视频Layer本身composition证据。
+图：framework 需确认本帧此刻无 client composition，并满足 earliestPresentTime 或由 Composer expected-present 支持接管时序，才可尝试 presentOrValidate，能力位并不会自动命中快路径。PresentSucceeded 表示已完成提交，保存 release/present fence 并跳过后续重复 presentDisplay，但 signal 仍可能尚未到来。返回 validate 或未满足快路径时，会处理 changed types、按需由 RenderEngine 生成 client target 再做 HWC 提交。视频 DEVICE 可与其他 CLIENT 层和 GPU client target 并存，GPU 工作本身不能替代视频 Layer 的 composition 证据。
 
 Composer3 AIDL 已将 `Capability.SKIP_VALIDATE` 标记为 deprecated，并注明该行为默认可用。这里的“默认可用”只说明接口不再依赖显式 capability 位；某台设备的快路径命中率，仍取决于帧状态、时序与 HAL 返回结果。
 
@@ -886,7 +886,7 @@ val player = ExoPlayer.Builder(context)
 <!-- gracker-diagram: ed13-11-sideband-control-clock-and-data -->
 ![sideband 绑定控制对象，设备侧按同步时钟更新帧](../../assets/diagrams/ch13/ed13-11-sideband-control-clock-and-data.png)
 
-图：音频时钟点播共享AudioTrack和video的Java audio session；MediaCodec经AudioSystem.getAudioHwSyncForSession转native audio-hw-sync，二者不可混同。CCodec视频decoder/输出Surface/显式tunnel满足后配置SIDEBAND和实际sync类型，查询component整数handle，本tag分支不含fd，不是逐帧dma-buf。native_window绑定sideband并经BLAST/SF转状态，退出tunnel需清空。SF仍管位置尺寸层级；codec/HWC/设备按audio或tunerclock更新帧，不再靠普通逐帧BufferTX。音频点播静音仍持续PTS audio feed；underrun/pause/route变化可停钟停视频，tuner另查。
+图：音频时钟点播中，AudioTrack 与 video 共享 Java audio session；MediaCodec 经 AudioSystem.getAudioHwSyncForSession 转为 native audio-hw-sync，两者不可混同。CCodec 在视频 decoder、输出 Surface 与显式 tunnel 条件均满足后配置 SIDEBAND 及实际 sync 类型，再查询 component 的整数 handle；该 tag 分支不含 fd，也不传逐帧 dma-buf。native_window 绑定 sideband 后经 BLAST/SF 转换状态，退出 tunnel 须清空。SF 仍负责位置、尺寸与层级；codec/HWC/设备则按 audio 或 tuner 时钟更新帧，不再依赖普通逐帧 BufferTX。音频点播静音时仍会持续提供带 PTS 的 audio feed；underrun、pause 或 route 变化可导致停钟停视频，tuner 场景需另查。
 
 ACodec/OMX 也有对应路径：读取 `feature-tunneled-playback` 和 `audio-hw-sync`，调用 OMX tunnel extension，取得 sideband window，再绑定到 native window。配置成功后，`ACodec` 把输出端口的 `nBufferCountActual` 设为 0，跳过普通 native window buffer 分配。Android 17 仍保留该实现，运行时应通过实际 codec 名称和日志判断走哪条路径。
 
@@ -920,7 +920,7 @@ Codec2 侧的对应路径是：
 <!-- gracker-diagram: ed13-11-held-ready-render-and-visibility -->
 ![首帧 ready 之后仍可能 held，render 样本另有边界](../../assets/diagrams/ch13/ed13-11-held-ready-render-and-visibility.png)
 
-图：显式peek模式下首个非CSD/非decode-only输入标tunnel-first-frame，CCodecBufferChannel转C2StreamTunnelHoldRender。component解码并hold，以INCOMPLETE work update报告ready，work可后续更新。peek0且AudioTrack暂停可继续held；peek开启或音频播放时进入render。ready且peek启用时framework发内部trigger映射TunnelStartRender；component用C2PortTunnelSystemTime给MONOTONIC ns样本。render样本非回调到达/面板扫描完成，回调可延迟批量缺失，普通CCodec还可使用SF present或latch样本。
+图：显式 peek 模式下，首个非 CSD 且非 decode-only 输入会标记 tunnel-first-frame，CCodecBufferChannel 将其转为 C2StreamTunnelHoldRender。component 解码后先 hold，以 INCOMPLETE work update 报告 ready，work 后续仍可更新。peek 设为 0 且 AudioTrack 暂停时可继续保持 held；peek 开启或音频恢复播放时则进入 render。处于 ready 且启用 peek 时，framework 下发内部 trigger 映射到 TunnelStartRender；component 通过 C2PortTunnelSystemTime 给出 MONOTONIC 纳秒样本。需要说明的是，render 样本并不等于回调到达或面板扫描完成，回调可能延迟、批量上报甚至缺失；普通 CCodec 还可使用 SF present 或 latch 样本。
 
 peek 的默认行为需要同时对照公开文档与兼容实现。`MediaCodec.java` 的 API 注释写着 peek 默认开启；Android 17 的 native `MediaCodec.cpp` 在应用未显式设置时仍保留 `kLegacyMode`，`start` 后把 `android._tunnel-peek-set-legacy=1` 传给 component。`CCodecConfig` 将其映射为 `UNSPECIFIED_PEEK`，decoder 可以忽略 hold/start-render 协议。官方设备实现文档也说明，应用未设置 `PARAMETER_KEY_TUNNEL_PEEK` 时，行为由 OEM 决定。
 
@@ -930,7 +930,7 @@ peek 的默认行为需要同时对照公开文档与兼容实现。`MediaCodec.
 <!-- gracker-diagram: ed13-11-peek-policy-and-instance-reset -->
 ![显式 peek 的策略位与首帧状态分别管理](../../assets/diagrams/ch13/ed13-11-peek-policy-and-instance-reset.png)
 
-图：公开MediaCodec.java注释写peek默认开启，但未显式设置时native保留LegacyMode并传UNSPECIFIED_PEEK，OEM可决定行为。依赖暂停首帧或seek预览时，在第一次start后、第一块有效视频输入前显式0/1。同实例flush或stop/start保留已显式enable bit，但重置尚无首帧；欲改策略在重置后下一有效输入前设置。新codec实例不继承旧bit，应重新显式设置，不能把公开注释当所有OEMlegacy表现。
+图：公开 MediaCodec.java 注释写明 peek 默认开启，但未显式设置时 native 会保留 LegacyMode 并传入 UNSPECIFIED_PEEK，具体行为由 OEM 决定。如果业务依赖暂停首帧或 seek 预览，应在首次 start 之后、第一块有效视频输入之前显式设为 0 或 1。同一实例 flush 或 stop/start 会保留已显式设置的 enable bit，但会重置为“尚无首帧”状态；若要更改策略，须在重置后的下一次有效输入前重新设置。新创建的 codec 实例不会继承旧 bit，需重新显式设置，不可将公开注释直接当作所有 OEM 的 legacy 表现。
 
 点播 tunnel 通常以音频时钟推进视频。AudioTrack underrun（音频数据供应不足）、pause 或路由切换让时钟停走时，视频也可能跟着停住。即使业务处于静音状态，也要按官方实现要求继续提交带 PTS 的音频数据；audio feed 一停，时钟跟着停。
 
@@ -957,7 +957,7 @@ Media3 1.10.1 的 `DefaultBandwidthMeter` 在符合计量条件的网络传输�
 <!-- gracker-diagram: ed13-11-bandwidth-window-and-weighted-estimate -->
 ![并行字节先汇入计量窗口，再更新加权估计](../../assets/diagrams/ch13/ed13-11-bandwidth-window-and-weighted-estimate.png)
 
-图：Media3 1.10.1 DefaultBandwidthMeter按符合full-network-speed条件的传输结算窗口，sampleBytes可含并行传输。符合条件传输结束时，正elapsed将bytes*8000/ms按sqrt(bytes)权重加SlidingPercentile，累计时间>=2s或字节>=512KiB才以0.5加权分位数更新estimate；零耗时字节留后续窗口。初值按网络类型/地区选，未知离线初值1Mbps；已运行后切未知/离线可保留旧estimate，不能把默认初值画成所有切网必重置值。
+图：Media3 1.10.1 的 DefaultBandwidthMeter 按符合 full-network-speed 条件的传输结算窗口，sampleBytes 可包含并行传输字节。符合条件的传输结束且 elapsed 为正时，会将 bytes * 8000 / ms 按 sqrt(bytes) 权重加入 SlidingPercentile，累计时间 >= 2s 或累计字节 >= 512 KiB 时，才以 0.5 加权分位数更新 estimate；零耗时字节则留待后续窗口结算。初值按网络类型和地区选取，未知或离线网络的初值为 1 Mbps；已经运行后再切换到未知或离线状态时可保留旧 estimate，切勿把默认初值画成所有切网场景都会重置的值。
 
 这些阈值属于 Media3 1.10.1 库实现，和 Android 17 平台常量是两回事。更换 Media3 版本后应重新核对源码；设备 API level 在这里帮不上忙。
 
@@ -995,19 +995,19 @@ Media3 1.10.1 的 `AdaptiveTrackSelection` 默认值为：
 <!-- gracker-diagram: ed13-11-abr-budget-and-shared-checkpoints -->
 ![先修正总预算，再把带宽分给各 selection](../../assets/diagrams/ch13/ed13-11-abr-budget-and-shared-checkpoints.png)
 
-图：固定Media3 1.10.1 cautious=B*0.7；TTFB或下一chunk时长未知时allocatable=cautious/speed，DefaultBandwidthMeter默认TTFB为TIME_UNSET。两者均已知时allocatable=cautious*max(d/speed-TTFB,0)/d，d和TTFB同单位。多adaptive selection经factory adaptation checkpoints相邻插值分配，再用每路预算选允许track，不能把0.7*B看作所有路最终预算，Experimental或自定义meter另说明构造。
+图：Media3 1.10.1 默认配置下 cautious = B * 0.7；当 TTFB 或下一 chunk 时长未知时，allocatable = cautious / speed，而 DefaultBandwidthMeter 默认将 TTFB 设为 TIME_UNSET。两者均已知时，allocatable = cautious * max(d / speed - TTFB, 0) / d，其中 d 与 TTFB 使用同一单位。多路 adaptive selection 会经 factory adaptation checkpoints 做相邻插值分配，再用各路预算筛选允许的 track，因此不能把 0.7 * B 当作所有分路的最终预算；Experimental 或自定义 meter 需另行说明其构造方式。
 
 `updateSelectedTrack()` 先根据当前带宽预算求出理想档位，再用 buffer 健康度抑制过快切换：
 
 <!-- gracker-diagram: ed13-11-abr-candidates-and-hysteresis -->
 ![候选过滤、理想档位与保留当前档分开判断](../../assets/diagrams/ch13/ed13-11-abr-candidates-and-hysteresis.png)
 
-图：DefaultTrackSelector先按renderer/codec、viewport、用户/MIME/HDR等过滤。AdaptiveTrackSelection按预算求理想档；首次选择或原档已排除直接采用，不套当前档保留条件。其他升档buffer不足10s默认点播门槛时保留，直播结合available duration、下一chunk和0.75比例修正；降档且buffer仍>=25s可暂缓。默认ABR不读HWCcomposition或decoder掉帧，约束解码能力需应用另做候选策略。
+图：DefaultTrackSelector 先按 renderer/codec、viewport、用户偏好/MIME/HDR 等条件过滤候选。AdaptiveTrackSelection 再按预算求解理想档位；若是首次选择或原档位已被排除，则直接采用，不套用当前档保留条件。其余情况下，升档时若 buffer 不足 10s（默认点播门槛）则保留当前档，直播场景会结合 available duration、下一 chunk 与 0.75 比例修正；降档时若 buffer 仍 >= 25s 也可暂缓。默认 ABR 不会读取 HWC composition 状态或 decoder 掉帧数，若要约束解码能力须由应用另行设计候选策略。
 
 - 升档时 buffer 不足，保留当前档位。点播默认门槛为 10 秒；直播会结合到 live edge 的可用时长和下一 chunk 时长降低门槛。
 - 降档时 buffer 仍有 25 秒或更多，可以暂缓降档。
 
-这种设计减少了短时带宽抖动引起的频繁切档，也意味着网络样本变差后不一定立刻降档。分析一次 rebuffer（播放数据耗尽导致停顿）时，必须把传输完成时间、BandwidthMeter 更新、下一次 track 决策和 buffer 消耗放到同一时间轴。 首次选档直接采用理想档位；上一档已被临时排除时也不会套用上述保留条件。25 秒和 10 秒是默认库参数，不是所有切档都必须等待的固定时长。
+这种设计减少了短时带宽抖动引起的频繁切档，也意味着网络样本变差后不一定立刻降档。分析一次 rebuffer（播放数据耗尽导致停顿）时，必须把传输完成时间、BandwidthMeter 更新、下一次 track 决策和 buffer 消耗放到同一时间轴。首次选档直接采用理想档位；上一档已被临时排除时也不会套用上述保留条件。25 秒和 10 秒是默认库参数，并非所有切档都必须等待的固定时长。
 
 #### 默认主线的缓存与预测组件
 
@@ -1342,7 +1342,7 @@ fun findApvEncoders(
 <!-- gracker-diagram: ed13-11-complete-probe-and-input-validation -->
 ![基础查询之后仍需按实际输入与完整目标模式验证](../../assets/diagrams/ch13/ed13-11-complete-probe-and-input-validation.png)
 
-图：示例基础检查MIME/size/fps/profile/level/bitrate并与colorFormats交叉检查Surface/P210，未把bitrate mode/quality/HDR keys全加目标format。独立CQ/performance flag不能相与证明完整Surface/HDR/CQ可配置。实际构造完整format configure后Surface路线createInputSurface让Camera等生产；P210路线按Image/ByteBuffer和plane stride供帧，不用createInputSurface替代。两路均需短录stop、重新解封装/抽样decode，并以目标Camera/存储/热状态长时验证，资源与session可失败。
+图：示例中的基础检查会校验 MIME、size、fps、profile、level 与 bitrate，并与 colorFormats 交叉核对 Surface/P210 支持，但并未把 bitrate mode、quality 和 HDR keys 全部填入目标 format。单独的 CQ 或 performance flag 并不能简单相与来证明完整 Surface/HDR/CQ 组合可配置。实际仍需构造完整 format 完成 configure，Surface 路线再通过 createInputSurface 让 Camera 等生产；P210 路线则按 Image/ByteBuffer 与 plane stride 送帧，不能用 createInputSurface 替代。两路均需做短录 stop、重新解封装与抽样 decode 校验，并在目标 Camera、存储与热状态下长时验证，因为资源与 session 均可能失败。
 
 ### AOSP 软件 APV 的启用条件与规格上限
 
@@ -1367,14 +1367,14 @@ fun findApvEncoders(
 <!-- gracker-diagram: ed13-11-software-apv-gates-and-limits -->
 ![软件 APV 是否可枚举与可用规格分别过关](../../assets/diagrams/ch13/ed13-11-software-apv-gates-and-limits.png)
 
-图：固定android17r1软件APV encoder/decoder受apv_software_codec只读flag和>=API36 factory gate，关闭factory返回nullptr。媒体XML默认enabled false、minsdk36、variant !slow-cpu，组件存在不等产品枚举。XML仅422-10最大1920x1920/240Mbps；encoder C2接口尺寸可到4096x4096，实际能力仍受更严格XML/产品/运行约束。2Gbps/4K8K标准设计范围不能由此软件参考兜底，runtime查MediaCodecList完整组合。
+图：android17r1 固定规则下，软件 APV encoder/decoder 受只读 flag apv_software_codec 与 >= API 36 的 factory gate 控制，关闭时 factory 返回 nullptr。媒体 XML 默认为 enabled=false、minsdk=36、variant=!slow-cpu，组件存在并不等于产品一定会枚举出来。XML 仅开放 422-10，最高 1920x1920 / 240 Mbps；虽然 encoder C2 接口尺寸可支持到 4096x4096，实际能力仍受限于更严格的 XML、产品或运行约束。2 Gbps / 4K 8K 标准设计范围无法依靠这套软件参考兜底，runtime 须查询 MediaCodecList 核验完整组合。
 
 XML 为软编码器声明 VBR（Variable Bitrate，可变码率）、CQ 和 `quality=0..100`。编码器代码要等另一个固定只读 flag `android.media.swcodec.flags.apv_software_codec_cq` 开启，才加入 CQ 对应的 C2 `bitrate-mode` 参数。静态 XML 的 `bitrate-modes` 单独说明不了 `MediaRecorder.setVideoEncodingQuality()` 可用；应用应以 `EncoderCapabilities.isBitrateModeSupported(BITRATE_MODE_CQ)`、`getQualityRange()` 和一次真实 `configure()` 的结果为准。
 
 <!-- gracker-diagram: ed13-11-cq-choice-and-runtime-gates -->
 ![CQ 声明先核对实际参数，再选择质量或码率路线](../../assets/diagrams/ch13/ed13-11-cq-choice-and-runtime-gates.png)
 
-图：固定软件APV XML声明VBR/CQ与quality0..100，实际C2 CQ bitrate-mode参数还受apv_software_codec_cq只读flag控制。运行时以所选EncoderCapabilities CQ/qualityRange和真实configure/prepare确认。API37 setVideoEncodingQuality需prepare前且encoder支持CQ，不与video bitrate同时设置，组合行为未指定；质量不跨codec可比。实际format需包含目标输入/HDR等，不用基础supports&&cq布尔值证明完整组合。
+图：软件 APV XML 默认声明了 VBR/CQ 与 quality 0..100，但实际 C2 的 CQ bitrate-mode 参数还受只读 flag apv_software_codec_cq 控制。运行时应以所选 EncoderCapabilities 的 CQ/qualityRange 以及真实 configure/prepare 结果为准。API 37 的 setVideoEncodingQuality 须在 prepare 前且 encoder 支持 CQ 时调用，且不可与 video bitrate 同时设置，组合行为未作规定；quality 数值也不具备跨 codec 可比性。实际 format 须包含目标输入、HDR 等参数，不能只拿基础 supports && cq 布尔值来证明完整组合可用。
 
 2 Gbps、4K 和 8K 需要具备相应能力的 vendor 实现，AOSP 软件 codec 顶不上这个后备。`MediaCodecInfo.java` 映射了 APV level/band 的理论采样率与码率；高等级码率超过 Java `int` 的表达范围时，内部上限会限制为 `Integer.MAX_VALUE`。应用的 `KEY_BIT_RATE` 同样是 `int`，2,000,000,000 bit/s 还表示得下，但已经贴近上界。
 
@@ -1399,7 +1399,7 @@ P010 是 4:2:0 10-bit 半平面 YUV，P210 是 4:2:2 10-bit，YV12 通常是 4:2
 <!-- gracker-diagram: ed13-11-source-information-and-apv-conversion -->
 ![422-10 容器不会恢复输入已缺失的像素信息](../../assets/diagrams/ch13/ed13-11-source-information-and-apv-conversion.png)
 
-图：固定软APV编码输入支持的implementation-defined/420/P010/P210/RGBA1010102等以实际平台为准，map后转换内部P210；即便已P210仍可逐行复制，Surface减少AppCPU拷贝不保证组件内部零拷贝。8bit/420转42210不恢复源缺色度/位深。APV码流42210也不证明decoder最终像素仍42210，应查output format/Image/HardwareBuffer；P210、P010、YV12、RGBA1010102各有采样/位深边界，HDR metadata另验收。
+图：软件 APV 编码输入支持的 implementation-defined、420、P010、P210、RGBA1010102 等格式以实际平台为准，map 后会在内部转换为 P210；即便输入已是 P210 仍可能逐行复制，Surface 只能减少 App CPU 拷贝，并不保证组件内部零拷贝。8bit/420 转为 42210 也无法恢复源端本就缺失的色度或位深。同样，APV 码流标称 42210 不证明 decoder 输出的最终像素仍然是 42210，应检查 output format、Image 或 HardwareBuffer；P210、P010、YV12、RGBA1010102 各有采样与位深边界，HDR metadata 需另行验收。
 
 ### 码率、内存带宽和存储要用同一组规格计算
 
@@ -1415,7 +1415,7 @@ Camera 到 encoder 的输入流量同样不容小看。P210 分配 32 bit/pixel�
 <!-- gracker-diagram: ed13-11-p210-layout-and-read-bandwidth -->
 ![P210 的两平面决定有效数据量，再乘画面规格估算读取](../../assets/diagrams/ch13/ed13-11-p210-layout-and-read-bandwidth.png)
 
-图：P210为4:2:2半平面，Y每像素一个16bit样本，CbCr交错、水平两像素共享一对色度，平均另16bit/pixel，样本高10bit有效低6bit为0，紧密payload总32bpp。3840*2160*4byte*60约1.99GB/s十进制单遍读，未含stride/对齐、Camera写入、内部转换、预览等；实际allocator和带宽需读返回布局/计数器。编码2Gbps=250MB/s是另一段压缩输出，不等总内存流量。
+图：P210 为 4:2:2 半平面格式，Y 每像素占一个 16-bit 样本，CbCr 交错存放且水平每两像素共享一对色度，平均再占 16-bit/pixel，样本高 10-bit 有效、低 6-bit 置 0，紧密 payload 总计 32 bpp。3840 * 2160 * 4 byte * 60 约为十进制 1.99 GB/s 的单遍读流量，这尚未计入 stride/对齐、Camera 写入、内部转换与预览等开销；实际 allocator 布局和带宽须读取返回的布局与计数器确认。编码输出的 2 Gbps = 250 MB/s 属于另一段压缩数据流量，切勿将其等同于整条链路的总内存流量。
 
 允许开始录制前，我们至少检查四组条件：
 
@@ -1492,7 +1492,7 @@ APV 是帧内格式，但录制过程中更换 codec 通常仍要结束当前文
 <!-- gracker-diagram: ed13-11-bounded-queue-and-segment-policy -->
 ![存储反压以有界队列收敛，规格切换落在独立录制段](../../assets/diagrams/ch13/ed13-11-bounded-queue-and-segment-policy.png)
 
-图：记录encoder output PTS/bytes，muxer或FS变慢会积压；限制条目与总字节，按实际写入、thermal、空间信号设降档/停止及不同恢复门槛。策略需产品实现，不是Android自动固定阈值或无缝降档。同一track不静默换codec：结束当前codec/muxer、完成校验或标为失败待恢复，再按已验证Camera/codec组合起新segment；项目保存每段时间、规格、PTS映射、原因，导出组织连续时间线。
+图：持续记录 encoder output 的 PTS 与 bytes，muxer 或文件系统变慢时会立刻造成积压；应限制排队条目数与总字节数，依据实际写入速率、thermal 与剩余空间信号设置降档或停止阈值，并配置不同的恢复门槛。这类策略需要产品侧自行实现，Android 不会提供自动固定阈值，也不会执行无缝降档。同一 track 不应静默更换 codec：须先结束当前 codec/muxer、完成校验或标为失败待恢复，再按已验证的 Camera/codec 组合开启新 segment；项目侧记录每段时间范围、规格、PTS 映射与切换原因，导出时再组织成连续时间线。
 
 用户界面还要区分三种状态：设备不支持、当前温控或存储条件暂时不允许、本次运行失败。设备能力通常不会在同一软硬件组合内改变；温控或存储限制可能在条件改善后解除；运行失败则要保留 codec、Camera 与 I/O 诊断。三者对应不同的提示和恢复操作。
 

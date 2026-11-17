@@ -299,7 +299,7 @@ CPU 的提交调用返回时，GPU 往往还在异步执行，buffer 也可能�
 <!-- gracker-diagram: ch13-12-07-cross-frame-overlap -->
 ![跨帧并行与在途深度](../../assets/diagrams/ch13/ch13-12-07-cross-frame-overlap.png)
 
-图：提高流水线吞吐时还要控制同一输入的在途等待。 N+1/N/N−1 只展示一种可能重叠，不是固定引擎帧差。
+图：提高流水线吞吐时还要控制同一输入的在途等待。N+1/N/N−1 只展示一种可能重叠，并非固定引擎帧差。
 
 ## 多线程架构：职责比线程名更可靠
 
@@ -341,7 +341,7 @@ Unreal 常见 Game Thread、Rendering Thread、可选 RHI Thread 与 Task Graph 
 <!-- gracker-diagram: ed13-12-engine-markers-and-system-correlation -->
 ![先识别引擎交接，再用同帧标识与时钟连接系统证据](../../assets/diagrams/ch13/ed13-12-engine-markers-and-system-correlation.png)
 
-图：Unity Main PlayerLoop包含Update/FixedUpdate等，Gfx.WaitForPresentOnGfxThread在Main，名称描述等待Render目标；Render包含Gfx.ProcessCommands/Gfx.PresentFrame，具体嵌套按版本。Unreal Game通过状态副本/command queue交Render与可选RHI/Task，不能无同步共享可变状态，Game帧边界限制领先但不是每帧等GPU全部完成。采集Unity Profiler/Insights及Perfetto，关键阶段ATrace/TrackEvent带统一frame id并校准时钟；默认OS trace不保证有引擎marker，统一id也不消除clock偏移。
+图：Unity Main 的 PlayerLoop 包含 Update/FixedUpdate 等阶段，Gfx.WaitForPresentOnGfxThread 位于 Main，名称表示等待 Render 目标；Render 线程包含 Gfx.ProcessCommands/Gfx.PresentFrame，具体嵌套以对应版本为准。Unreal 的 Game 线程通过状态副本或 command queue 交给 Render 与可选 RHI/Task，不可无同步共享可变状态，Game 帧边界只限制领先距离，并不要求每帧等待 GPU 全部完成。采集 Unity Profiler/Insights 与 Perfetto 时，在关键阶段通过 ATrace/TrackEvent 写入统一 frame id 并校准时钟；默认 OS trace 不保证包含引擎 marker，统一 id 本身也不会消除 clock 偏移。
 
 在 Perfetto 里，我们通常能按 OS 线程名找到 Game、Render、RHI 和 worker 轨道；名称会受引擎版本、平台封装和 Linux 线程名长度影响。`GameThread::Tick`、render pass、RHI command 这些细节属于 Unreal 的引擎 trace 语义，完整证据通常来自 Unreal Insights 的 `.utrace`。建议同时保留：
 
@@ -377,10 +377,10 @@ Unreal 常见 Game Thread、Rendering Thread、可选 RHI Thread 与 Task Graph 
 - 在 acquire 路径调用 `dequeueBuffer()`；
 - 在 present 路径把 GPU release fence 随 `queueBuffer()` 交给 BufferQueue。
 
-acquire 方向还要把 Android fence 接入 Vulkan 同步对象。普通非 shared swapchain 的 `vkAcquireNextImageKHR()` 对应实现从 `dequeueBuffer()` 取得 `ANativeWindowBuffer` 和 native fence fd（文件描述符），随后调用 driver 的 `AcquireImageANDROID()`，把该 fence 的复制 fd 导入应用提供的 Vulkan semaphore / fence；acquire 同步对象满足之后，应用才能安全改写这块 image。 shared present mode 使用另一分支，不会每帧重复 dequeue；这时即使拿到了 image index，写 image 之前仍要先满足 acquire semaphore/fence 的访问同步。
+acquire 方向还要把 Android fence 接入 Vulkan 同步对象。普通非 shared swapchain 的 `vkAcquireNextImageKHR()` 对应实现从 `dequeueBuffer()` 取得 `ANativeWindowBuffer` 和 native fence fd（文件描述符），随后调用 driver 的 `AcquireImageANDROID()`，把该 fence 的复制 fd 导入应用提供的 Vulkan semaphore / fence；acquire 同步对象满足之后，应用才能安全改写这块 image。shared present mode 使用另一分支，不会每帧重复 dequeue；这时即使拿到了 image index，写 image 之前仍要先满足 acquire semaphore/fence 的访问同步。
 
 
-present 方向则把链路接回 BufferQueue：`vkQueuePresentKHR()` 或 `SwappyVk_queuePresent()` 最终进入 `PresentOneSwapchain()`，平台先调用 `QueueSignalReleaseImageANDROID()`，把 Vulkan wait semaphore 转换成代表 GPU 完成的 sync fd，再把 buffer 与该 fd 一起交给 `ANativeWindow::queueBuffer()`。Vulkan swapchain image 与 Android BufferQueue buffer 由此建立明确的映射。我们还要留意，present 调用走完这条路径时，该帧可能尚未被 SurfaceFlinger latch，后面仍有显示呈现和像素响应等阶段。 这里函数名中的 release image fence 对下游读取方起的是 acquire 依赖的作用；显示端稍后释放旧 buffer 的 release fence 属于显示尾链那一环，两个名字相近的信号各管一段。
+present 方向则把链路接回 BufferQueue：`vkQueuePresentKHR()` 或 `SwappyVk_queuePresent()` 最终进入 `PresentOneSwapchain()`，平台先调用 `QueueSignalReleaseImageANDROID()`，把 Vulkan wait semaphore 转换成代表 GPU 完成的 sync fd，再把 buffer 与该 fd 一起交给 `ANativeWindow::queueBuffer()`。Vulkan swapchain image 与 Android BufferQueue buffer 由此建立明确的映射。我们还要留意，present 调用走完这条路径时，该帧可能尚未被 SurfaceFlinger latch，后面仍有显示呈现和像素响应等阶段。这里函数名中的 release image fence 对下游读取方起的是 acquire 依赖的作用；显示端稍后释放旧 buffer 的 release fence 属于显示尾链那一环，两个名字相近的信号各管一段。
 
 
 ### 游戏 Layer 仍要经过 SurfaceFlinger
@@ -401,14 +401,14 @@ present 方向则把链路接回 BufferQueue：`vkQueuePresentKHR()` 或 `Swappy
 <!-- gracker-diagram: ed13-12-game-render-and-display-composition -->
 ![游戏 GPU 渲染已发生，显示合成再决定是否采样](../../assets/diagrams/ch13/ed13-12-game-render-and-display-composition.png)
 
-图：游戏GLES/Vulkan产生场景像素，SurfaceView可以绕过AppHWUI但仍经SF/HWC。游戏LayerDEVICE只省该Layer被RenderEngine再采样，其他CLIENT和游戏自身GPU仍存在。SF写buffer/acquire/几何/请求类型后协商；无CLIENT且时间允许才可presentOrValidate，成功保存fences后不重复present，返回validate继续changedtypes与clienttarget；常规CLIENT时RE生成target交HWC。预测合成可能并行，此为主要依赖简化，CPU返回非signal或面板发光。
+图：游戏先由 GLES/Vulkan 产生场景像素，SurfaceView 可以绕过 App HWUI，但仍要经过 SF/HWC。游戏 Layer 拿到 DEVICE 只省去该 Layer 被 RenderEngine 再采样，其他 CLIENT 层与游戏自身的 GPU 工作依然存在。SF 写入 buffer、acquire fence、几何和请求类型后再协商；只有无 CLIENT 且时间允许才可走 presentOrValidate，成功后保存 fences 且不再重复 present，返回 validate 则继续处理 changed types 与 client target；常规 CLIENT 场景仍由 RE 生成 target 交给 HWC。预测合成可能并行，这里只给出主要依赖简化，CPU 返回也不代表 fence 已 signal 或面板已发光。
 
 函数返回时间只能说明调用结束，vblank 与 fence signal 要以 fence 对象为准。物理显示的 present fence 契约通常指画面开始出现（video mode）或开始传入面板内存（command mode）的 VSync；虚拟显示则指输出写完，面板此后的扫描与像素响应都在这份契约之外。HWC 的旧 buffer release 与 SF 合并的最终访问依赖满足后，下一次写入才安全；FREE slot 里也可能带着尚未 signal 的 release fence。
 
 <!-- gracker-diagram: ed13-12-vulkan-buffer-access-cycle -->
 ![同一 image 的旧访问、GPU 写入与下游读取按 fence 交接](../../assets/diagrams/ch13/ed13-12-vulkan-buffer-access-cycle.png)
 
-图：普通非shared swapchain dequeue取得native buffer和旧访问fence，匹配image后复制fd给driver AcquireImageANDROID，导入应用semaphore/fence，满足后才可写image。GPU异步写入后present的QueueSignalReleaseImageANDROID把wait semaphore转sync fd，与buffer queue到BLAST；这里release-image是下游acquire依赖，不是显示旧buffer release。BLAST可先acquire/SF可先latch，实际RE/HWC读前满足写完成。HWC本轮device-layer release通常对应更早的旧buffer，SF合并其他使用方依赖，FREE slot仍可未signal；display present物理开始出现/传输、虚拟输出写完，不等面板扫描响应。shared mode不每帧dequeue，仍需访问同步。
+图：普通非 shared swapchain 在 dequeue 时取得 native buffer 与旧访问 fence，匹配对应 image 后复制 fd 给 driver 的 AcquireImageANDROID，导入应用 semaphore/fence，满足后才可写入 image。GPU 异步写入后，present 路径的 QueueSignalReleaseImageANDROID 把 wait semaphore 转成 sync fd，连同 buffer 一起 queue 到 BLAST；这里的 release-image fence 起的是下游 acquire 依赖作用，与显示端释放旧 buffer 的 release fence 不同。BLAST 可先 acquire、SF 也可先 latch，但真正被 RE/HWC 读取前必须满足写完成 fence。HWC 本轮返回的 device-layer release 通常对应更早的旧 buffer，SF 会合并其他使用方依赖，FREE slot 里的 fence 仍可能未 signal；display present 在物理屏对应开始出现或开始传输的边界、虚拟屏对应输出写完，并不代表面板扫描或像素响应完成。shared mode 不会每帧 dequeue，但仍须遵守访问同步。
 
 ### 生命周期和 resize
 
@@ -417,7 +417,7 @@ GameActivity 的 `onNativeWindowDestroyed` 契约要求：回调返回前，其�
 <!-- gracker-diagram: ch13-12-22-window-lifecycle -->
 ![窗口销毁与 swapchain 重建](../../assets/diagrams/ch13/ch13-12-22-window-lifecycle.png)
 
-图：销毁回调返回前，其他线程必须停止访问该 window。 GPU 使用与资源释放按 API 和引擎依赖处理，错误名本身不证明全部根因。
+图：销毁回调返回前，其他线程必须停止访问该 window。GPU 使用与资源释放按 API 和引擎依赖处理，错误名本身并不能说明全部根因。
 
 如果旧 swapchain 继续向已经销毁的 window 提交，就可能出现 `VK_ERROR_OUT_OF_DATE_KHR`、`VK_ERROR_SURFACE_LOST_KHR`、黑帧或 native crash。排查这些现象时，我们先核查 Surface/swapchain 生命周期、返回码和旧资源依赖；黑帧或某个错误名只是入口线索，渲染、资源或驱动问题还要逐项排除。
 
@@ -428,7 +428,7 @@ GameActivity 的 `onNativeWindowDestroyed` 契约要求：回调返回前，其�
 <!-- gracker-diagram: ch13-12-23-40fps-60hz-cadence -->
 ![40 FPS 与 60 Hz 的不均匀保持周期](../../assets/diagrams/ch13/ch13-12-23-40fps-60hz-cadence.png)
 
-图：60 Hz 固定刷新下，40 个均匀内容帧也无法全按整数相同周期保持。 16.7/33.3 ms 是理想量化示意，真实抖动还需测 requested/actual timing。
+图：60 Hz 固定刷新下，40 个均匀内容帧也无法全部按整数相同的周期保持。16.7/33.3 ms 是理想量化示意，真实抖动仍需实测 requested/actual timing。
 
 ### Queue-stuffing 为什么会增加延迟
 
@@ -440,7 +440,7 @@ swap 调用阻塞时，GPU 慢只是候选原因之一，下面这些因素同�
 <!-- gracker-diagram: ed13-12-wait-object-and-critical-path -->
 ![相同的等待外观，需要检查不同前驱对象](../../assets/diagrams/ch13/ed13-12-wait-object-and-critical-path.png)
 
-图：等待候选可并存，单个marker或swap耗时不证明GPU bound。Render等Game先查snapshot和logic，Game等Render/worker查barrier/future；GPU前驱查producer fence/job；Swappy/VSync主动等待看targetinterval和inflight；image仍被显示使用、queue满、resize/mode/present mode查release和生命周期。确认后续是否按预算开工，正常主动控制可降低输入延迟，不能盲删所有wait。
+图：多类等待候选可能并存，单个 marker 或 swap 耗时偏长不足以证明 GPU bound。Render 等 Game 先查 snapshot 与 logic，Game 等 Render 或 worker 先查 barrier/future；怀疑 GPU 前驱要核对 producer fence 与 job；Swappy/VSync 主动等待需看 target interval 与 in-flight 深度；image 仍被显示使用、queue 满、resize、mode 或 present mode 变化则查 release 与生命周期。判断前先确认后续阶段是否按预算开工，正常的主动等待能压低输入延迟，切勿盲目删掉所有 wait。
 
 - Swappy 或引擎 pacer 主动等待目标时刻；
 - swapchain image 仍被显示端使用；
@@ -469,7 +469,7 @@ Pipeline mode 允许 CPU 和 GPU 跨 VSync 并行，通常能稳住吞吐，代�
 <!-- gracker-diagram: ed13-12-pacing-depth-and-pipeline-mode -->
 ![主动安排提交，减少旧帧积压带来的输入等待](../../assets/diagrams/ch13/ed13-12-pacing-depth-and-pipeline-mode.png)
 
-图：尽快present可积累旧帧，input早采样后等这些在途帧，容量/image受限时在acquire/swap/present附近背压。Swappy用目标interval、Choreographer、timestamp/fence反馈限制过早提交与深度，wait可正常改善延迟。pipeline允许CPU/GPU跨周期并行提高吞吐但可能多一轮在途，nonpipeline适合CPU+GPU总量可在interval内完成轻负载，auto依工作量选。实际模式、present间隔与同输入延迟一起验收，条长和固定帧差均非承诺。
+图：尽快 present 容易在队列里积累旧帧，早先采样的 input 只能等这些在途帧消化完，一旦队列容量或 image 受限，就会在 acquire/swap/present 附近遇到背压。Swappy 利用目标 interval、Choreographer、timestamp 与 fence 反馈限制过早提交并控制队列深度，此时看到的 wait 可能正是在正常压低延迟。pipeline mode 允许 CPU/GPU 跨周期并行以提高吞吐，但可能多出一轮在途延迟；non-pipeline mode 适合 CPU+GPU 总量可在一个 interval 内完成的轻负载，auto 则依据工作量切换。最终选择仍需结合实际模式、present 间隔与同一输入的延迟一起验收，图中条长与固定帧差都不作固定承诺。
 
 ### Choreographer 与 Swappy 的分工
 
@@ -480,7 +480,7 @@ Perfetto 默认不保证存在名为 `Swappy` 的 track；想看到 `preWait`、
 <!-- gracker-diagram: ch13-12-28-swappy-tracer -->
 ![Swappy 内部阶段需要埋点](../../assets/diagrams/ch13/ch13-12-28-swappy-tracer.png)
 
-图：tracer 回调可把库内等待和提交阶段接入系统 trace。 默认 OS 轨道不能凭名称还原全部 Swappy 逻辑。
+图：tracer 回调可把库内等待和提交阶段接入系统 trace。默认 OS 轨道不能凭线程名还原全部 Swappy 逻辑。
 
 ## Android 17 的 present timing 与 producer throttling
 
@@ -491,23 +491,23 @@ Perfetto 默认不保证存在名为 `Swappy` 的 track；想看到 `preWait`、
 Android 17 支持 `VK_EXT_present_timing`，自研 Vulkan pacer 可以请求 target present time，并查询多个 present stage：queue operations end 表示相关队列操作结束，request dequeued 表示显示请求从队列取出，first pixel out / visible 则描述显示输出和可见阶段。该扩展依赖 `VK_KHR_present_id2`；应用还须在创建 device 和 swapchain 前枚举 extension、feature 与相关 flag。
 
 
-平台侧，`swapchain.cpp` 已解析 `VkPresentTimingsInfoEXT` 和 `VkPresentId2KHR`，并从 native window timestamp 填充 past presentation timing。系统版本达到 Android 17 只是第一道门槛，我们仍要逐设备检查驱动和 swapchain 的能力；扩展拿不到时，可退回 `VK_GOOGLE_display_timing` 或 Swappy。 固定 r1 的 surface capabilities 分支在 `present_timing_ext` flag 下声明的是绝对时间能力，相对时间未在其列；写时间参数前，我们先查询本 Surface 的 timing capabilities，再参考文档示例。该实现把 queue-operations-end 映射为 render-complete、request-dequeued 映射为 composition-latch，两个 first-pixel stage 都取同一个 actual-present 时间；无有效时间时可返回 0。四个 stage 名称在这里对应的是时间来源映射，与两路独立光学传感器的读数是两回事。
+平台侧，`swapchain.cpp` 已解析 `VkPresentTimingsInfoEXT` 和 `VkPresentId2KHR`，并从 native window timestamp 填充 past presentation timing。系统版本达到 Android 17 只是第一道门槛，我们仍要逐设备检查驱动和 swapchain 的能力；扩展拿不到时，可退回 `VK_GOOGLE_display_timing` 或 Swappy。固定 r1 的 surface capabilities 分支在 `present_timing_ext` flag 下声明的是绝对时间能力，相对时间未在其列；写时间参数前，我们先查询本 Surface 的 timing capabilities，再参考文档示例。该实现把 queue-operations-end 映射为 render-complete、request-dequeued 映射为 composition-latch，两个 first-pixel stage 都取同一个 actual-present 时间；无有效时间时可返回 0。四个 stage 名称在这里对应的是时间来源映射，与两路独立光学传感器的读数是两回事。
 
 <!-- gracker-diagram: ed13-12-present-timing-query-and-stage-map -->
 ![先查询可用 timing 能力，再按实际时间来源解释 stage](../../assets/diagrams/ch13/ed13-12-present-timing-query-and-stage-map.png)
 
-图：VK_EXT_present_timing依赖present_id2，创建device/swapchain前枚举扩展feature并查询Surface timing能力和flags；固定r1受present_timing_ext flag，surface声明absolute不列relative。应用请求target/presentid并取pasttiming，不支持可退GOOGLE_display_timing/Swappy。固定映射queue operations end→render complete、request dequeued→composition latch、firstpixelout与visible共用actualpresent，无有效值可0，不等独立光学测量。
+图：VK_EXT_present_timing 依赖 present_id2，创建 device 和 swapchain 前须枚举扩展 feature 并查询 Surface timing 能力与 flags；固定 r1 受 present_timing_ext flag 控制，surface 仅声明 absolute 能力而未列出 relative。应用可请求 target 与 present id 并获取 past timing，若不支持可回退到 VK_GOOGLE_display_timing 或 Swappy。固定映射中 queue operations end 对应 render complete、request dequeued 对应 composition latch、first pixel out 与 visible 共用 actual present，无有效时间时可返回 0，它并不等同于独立光学传感器的测量结果。
 
 ### `Surface.setProducerThrottlingEnabled()`
 
-API 37 新增的 `Surface.setProducerThrottlingEnabled(boolean)` 默认开启：Vulkan/EGL producer 正在 queue 新 buffer、consumer 还在处理上一帧时，系统会对 producer 施加 CPU back-pressure（隐式 queue 侧等待），阻塞可能出现在 `eglSwapBuffers()` 或 Vulkan present 附近。这个 API 对 asynchronous mode 无效，该模式下 throttling 总是开启。 这项控制与队列容量等待、GPU 显式同步是不同层次；源码还有平台 flag 边界。
+API 37 新增的 `Surface.setProducerThrottlingEnabled(boolean)` 默认开启：Vulkan/EGL producer 正在 queue 新 buffer、consumer 还在处理上一帧时，系统会对 producer 施加 CPU back-pressure（隐式 queue 侧等待），阻塞可能出现在 `eglSwapBuffers()` 或 Vulkan present 附近。这个 API 对 asynchronous mode 无效，该模式下 throttling 总是开启。这项控制与队列容量等待、GPU 显式同步是不同层次；源码还有平台 flag 边界。
 
 平台的 API 文档建议 Vulkan 应用关闭这类隐式 throttling，改用正确的显式同步。关闭之后，如果生产速度超过 GPU 或显示消费速度，等待通常会转移到 `vkAcquireNextImageKHR()` / dequeue 一侧。接入现成引擎时，我们先确认引擎版本已适配该 API，并具备完整的 semaphore、fence、in-flight frame 上限和 frame pacer 设计，避免绕过引擎直接修改 Surface。
 
 <!-- gracker-diagram: ch13-12-31-throttle-control -->
 ![Queue 侧节流与 acquire 显式同步](../../assets/diagrams/ch13/ch13-12-31-throttle-control.png)
 
-图：关闭隐式 queue throttling 后仍要控制资源和在途帧。 异步模式设置无效；关闭不会消除容量、fence 或设备约束。
+图：关闭隐式 queue throttling 后仍要控制资源和在途帧。异步模式设置无效；关闭该开关也不会消除容量、fence 或设备约束。
 
 ### BufferQueue 计数、分辨率切换与显存预算
 
@@ -528,7 +528,7 @@ API 37 新增的 `Surface.setProducerThrottlingEnabled(boolean)` 默认开启：
 <!-- gracker-diagram: ed13-12-queue-constraints-and-slot-extension -->
 ![数量接口改变约束，slot 配置不等于已分配图像](../../assets/diagrams/ch13/ed13-12-queue-constraints-and-slot-extension.png)
 
-图：内部Surface::setBufferCount N>0查询minundequeued，转N-min；N0恢复maxdequeued1不是通式。Producer校验当前已dequeued、最小slots与总上限，可能BADVALUE，不是直接分配N张。默认slot64/初始max是配置非所有队列硬上限或实际图数；Consumer连接前allowUnlimitedSlots授权，Producer extendSlotCount受控扩展。普通游戏仍按VkSurfaceCapabilities/EGL/引擎协商imagecount，resize/减少image需处理旧访问依赖，不直接用隐藏setter改活动队列。
+图：内部 Surface::setBufferCount 在 N>0 时先查询 min undequeued，再转为 N-min；N=0 则是将 max-dequeued 恢复为 1 的分支，并非通用公式。Producer 会校验当前已 dequeued 数量、最小 slots 与总上限，不满足时可能返回 BAD_VALUE，并不会直接分配出 N 张图像。默认 slot 上限 64 与初始 max 只是默认配置，并非所有队列的硬上限或实际已分配图数；Consumer 连接前可通过 allowUnlimitedSlots 授权，Producer 再调用 extendSlotCount 做受控扩展。普通游戏仍按 VkSurfaceCapabilities/EGL 与引擎规则协商 image count，resize 或缩减 image 时需妥善处理旧访问依赖，不要直接调用隐藏 setter 修改活动队列。
 
 普通应用要调整 image 数量，同样应交给协议和引擎：Vulkan 按 `VkSurfaceCapabilitiesKHR` 协商 swapchain image count，GLES 遵循 EGL/ANativeWindow 协议与引擎管理；绕开协议直接用隐藏的 `Surface::setBufferCount()` 强改活动队列，得到的多半是上一段说的拒绝路径。低内存、resize 或模式切换需要减少 image count 时，走引擎的 swapchain 重建流程，并确认旧 image 和 fence 已经退出使用。
 
@@ -558,12 +558,12 @@ Swappy、Frame Rate、ADPF、Game Mode 和 Game State 这几个名字经常一�
 - API 35 可用 `WorkDuration` 报告 CPU/GPU 分量，并可用 `setPreferPowerEfficiency()` 表示这些线程可偏向能效调度；
 - session 不受支持时，`createHintSession()` 可以返回 `null`。
 
-这类 hint 影响的是系统的线程放置和 CPU 频率决策，至于是否用到大核、固定频率或某个 GPU 档位，决定权在系统和 thermal 策略。target、线程集合或 actual duration 要认真填：填错了，系统收到的负载反馈就会失真。 Session 的 Java 方法会修改内部状态，调用方应负责线程安全；`WorkDuration` 的 start 与 total 必须大于 0，CPU/GPU 分量各自非负且要避免同时为 0，时间域按 `uptimeNanos()` 契约。两个分量允许重叠，total wall time 与二者之和是两个口径。
+这类 hint 影响的是系统的线程放置和 CPU 频率决策，至于是否用到大核、固定频率或某个 GPU 档位，决定权在系统和 thermal 策略。target、线程集合或 actual duration 要认真填：填错了，系统收到的负载反馈就会失真。Session 的 Java 方法会修改内部状态，调用方应负责线程安全；`WorkDuration` 的 start 与 total 必须大于 0，CPU/GPU 分量各自非负且要避免同时为 0，时间域按 `uptimeNanos()` 契约。两个分量允许重叠，total wall time 与二者之和是两个口径。
 
 <!-- gracker-diagram: ed13-12-hint-session-and-work-duration -->
 ![周期工作先按契约量测，再反馈给关联线程的 Hint Session](../../assets/diagrams/ch13/ed13-12-hint-session-and-work-duration.png)
 
-图：API31 HintSession关联同进程长期相关线程与正target，create可null；每周期actual报告上一轮工作，target变化update、API34setThreads，API35WorkDuration含CPU/GPU分量。start/total>0，CPU/GPU各>=0且不能同时0，按uptimeNanos；分量可重叠，total walltime不等二者和。Java session有内部状态，调用方自保线程安全，close后不继续使用。hint帮助CPU放置/频率，系统与thermal仍决定资源，不能锁核锁频。
+图：API 31 的 HintSession 关联同进程内一组长期相关的线程及正数 target，create 时可能返回 null；每周期通过 actual 报告上一轮工作耗时，target 变化调 update、API 34 起可用 setThreads 改线程集，API 35 的 WorkDuration 支持分开上报 CPU/GPU 分量。start 与 total 须大于 0，CPU/GPU 分量各自 >=0 且不可同时为 0，时间域采用 uptimeNanos；分量允许重叠，total wall time 不等于两者简单相加。Java session 维护内部状态，调用方需自行保证线程安全，close 后不可继续使用。hint 只协助系统调度 CPU 放置与频率，资源决策仍受系统与 thermal 策略控制，无法强行锁核或锁频。
 
 持续性能还要结合 Thermal API。画质调节应分别评估 render scale、阴影、后处理、粒子、LOD 和目标 FPS，并加入滞回区间与最短保持时间。滞回指升档和降档使用不同阈值，可避免热状态在边界附近反复切换，进而触发资源重建和 frame-time 尖峰。
 
@@ -572,7 +572,7 @@ Swappy、Frame Rate、ADPF、Game Mode 和 Game State 这几个名字经常一�
 
 Android 11 / API 30 起，Java 侧可调用 `Surface.setFrameRate()`，Native 侧可调用 `ANativeWindow_setFrameRate()`，API 31 又增加了 change strategy。游戏内容应使用 `FRAME_RATE_COMPATIBILITY_DEFAULT`；`FIXED_SOURCE` 面向固定帧率视频，`AT_LEAST` 明确不适合游戏。
 
-⚠️ 文档矛盾（本次核对仍存在）：游戏专用的“Optimize refresh rates”页面示例传入 `FIXED_SOURCE`，而 `Surface` API 契约和通用 Frame Rate 指南明确把 `FIXED_SOURCE` 限定给视频，游戏应传 `DEFAULT`。实现时以公开 API 契约和通用指南为准，那个示例不宜直接照抄。
+实际核对官方文档时还要注意一处现存矛盾：游戏专用的“Optimize refresh rates”页面示例传入 `FIXED_SOURCE`，而 `Surface` API 契约和通用 Frame Rate 指南明确把 `FIXED_SOURCE` 限定给视频，游戏应传 `DEFAULT`。实现时以公开 API 契约和通用指南为准，那个示例不宜直接照抄。
 
 
 我们还要清楚 Frame Rate API 提交的是刷新率偏好，系统最终可能因 thermal、battery、其他可见 Surface 或 display mode 能力选择不同刷新率。Android 15 起，游戏默认刷新率策略更偏向 60 Hz，希望使用 90/120 Hz 的游戏要显式申请，并继续通过 Swappy 或自研 pacer 控制提交节奏。
@@ -589,7 +589,7 @@ Android 11 / API 30 起，Java 侧可调用 `Surface.setFrameRate()`，Native �
 <!-- gracker-diagram: ed13-12-target-fps-budget-coordination -->
 ![目标 FPS 改变时，四组配置由应用协调](../../assets/diagrams/ch13/ed13-12-target-fps-budget-coordination.png)
 
-图：新的目标FPS应协调Surface frame-rate vote、Swappy/引擎interval、HintSessiontarget和qualitybudget。游戏按Surface公开契约DEFAULT，FIXED_SOURCE面向视频且AT_LEAST不适合游戏；专用优化页相反例子不直接照抄。vote是偏好系统可覆盖，pacer管每帧提交和inflight，hint管关联线程工作反馈不锁资源，quality管负载；四API不自动联动。只改部分会产生120Hz仍60FPS或45FPS但hint120预算冲突，须验收真实mode/interval/latency/热。
+图：调整目标 FPS 时，应用需同步协调 Surface frame-rate vote、Swappy/引擎 interval、HintSession target 与 quality budget。游戏应按 Surface 公开契约传 DEFAULT，FIXED_SOURCE 面向固定帧率视频，AT_LEAST 也不适合游戏；专用优化页上的相反示例不宜直接照抄。vote 表达偏好且系统可覆盖，pacer 负责每帧提交与 in-flight 深度，hint 反馈关联线程工作时长而不锁资源，quality 调节渲染负载；这四组机制不会自动联动。只改其中部分配置就容易出现“120 Hz 屏仍按 60 FPS 提交”或“已降到 45 FPS 却还按 120 FPS hint 申请资源”的冲突，必须实测真实 display mode、interval、延迟与热状态。
 
 ### Game Mode 与 Game State
 
@@ -606,18 +606,18 @@ Power HAL mode 还要与面向用户的 Game Mode 分开。Android 13 的 `GameS
 <!-- gracker-diagram: ed13-12-game-user-mode-and-power-signals -->
 ![用户模式、加载状态与前台游戏是独立信号入口](../../assets/diagrams/ch13/ed13-12-game-user-mode-and-power-signals.png)
 
-图：GameManager用户GameMode每次onResume重查，应用据Standard/Performance/Battery等调整FPS/quality；OEMintervention与声明另核，FPSthrottle只限不提升。GameState isLoading与gameplaymode独立可并存，label/quality开发者值，资源后台加载非App进入OS后台。isLoading可经服务触发Android13GAME_LOADING，前台游戏可触发Android14GAME，API37Mode均保留；这些PowerHALmode非用户GameMode，boost时长/档位/thermal由OEM决定，不承诺固定提升。
+图：GameManager 提供的用户 Game Mode 须在每次 onResume 重新查询，应用据此按照 Standard、Performance、Battery 等模式调整 FPS 与 quality；OEM intervention 与应用声明需另行核对，FPS throttle 只能限高、不能提频升帧。GameState 的 isLoading 与 gameplay mode 相互独立且可并存，label 和 quality 为开发者自定义值，这里的后台加载指资源后台加载，并不等于 App 退入 OS 后台。isLoading 可经系统服务触发 Android 13 的 GAME_LOADING，前台游戏可触发 Android 14 的 GAME，API 37 的 Mode.aidl 均予保留；这些 Power HAL mode 不同于用户 Game Mode，具体 boost 时长、档位与 thermal 约束由 OEM 决定，并不承诺固定幅度的性能提升。
 
 排查时看到稳定的 30、40、45、60 或 90 FPS 上限，我们先查询 Game Mode、intervention 和 frame-rate vote，再检查引擎 limiter，不要一上来就归因于 GPU。
 
 ### CPU/GPU headroom 进入低频控制回路
 
-Android 16 / API 36 起，支持设备可以通过 `SystemHealthManager.getCpuHeadroom()` 和 `getGpuHeadroom()` 返回 0～100 的余量估计；暂时算不出来时可能返回 `NaN`，设备未实现时可能抛出 `UnsupportedOperationException`。这次查询至少要走一次同步 Binder，渲染关键线程上不适合直接等待：应用应读取平台给出的最小查询间隔，在独立执行器里低频采样并缓存结果。 有效值 0 表示相应资源已无可授予的余量；NaN 表示暂不可用，要与 0 区分开。最小间隔内重复调用可能只拿到缓存值，采样按平台给的最小间隔安排即可。
+Android 16 / API 36 起，支持设备可以通过 `SystemHealthManager.getCpuHeadroom()` 和 `getGpuHeadroom()` 返回 0～100 的余量估计；暂时算不出来时可能返回 `NaN`，设备未实现时可能抛出 `UnsupportedOperationException`。这次查询至少要走一次同步 Binder，渲染关键线程上不适合直接等待：应用应读取平台给出的最小查询间隔，在独立执行器里低频采样并缓存结果。有效值 0 表示相应资源已无可授予的余量；NaN 表示暂不可用，要与 0 区分开。最小间隔内重复调用可能只拿到缓存值，采样按平台给的最小间隔安排即可。
 
 <!-- gracker-diagram: ed13-12-headroom-and-hysteresis-controller -->
 ![低频查询资源余量，缓存趋势再调节画质](../../assets/diagrams/ch13/ed13-12-headroom-and-hysteresis-controller.png)
 
-图：API36支持设备CPU/GPU headroom0..100，有效0为无可授予余量；NaN暂不可用，未实现可UnsupportedOperationException。读取平台最小查询间隔，独立执行器低频同步Binder并缓存；间隔内重复可得缓存，不在关键渲染线程等。thermalheadroom描述热趋势，是独立口径。控制器看持续趋势，按瓶颈调scale/阴影/后处理/LOD/simulation/FPS，设不同升降阈值、最短保持时间，记录资源重建和帧尖峰，平台不规定固定阈值或自动降档。
+图：API 36 起支持设备可返回 0..100 的 CPU/GPU headroom，有效值 0 表示已无可授予余量；NaN 表示暂不可用，未实现设备可能抛出 UnsupportedOperationException。应用应先读取平台给出的最小查询间隔，在独立执行器里低频走同步 Binder 查询并缓存结果；最小间隔内重复调用可能只拿到缓存值，切勿在关键渲染线程等待。thermal headroom 描述的是热趋势，属于独立口径。控制器应结合持续趋势，针对瓶颈调整 scale、阴影、后处理、LOD、simulation 或 FPS，配置不同的升降阈值与最短保持时间，同时记录资源重建与帧时间尖峰；平台本身不规定固定阈值，也不代为自动降档。
 
 headroom 适合让画质控制器判断一段时间内的资源余量趋势，单次采样只作参考。动态分辨率、阴影、后处理、simulation rate 和目标 FPS 都要设置滞回区间与最短保持时间；thermal headroom 描述的是热趋势，与当前 CPU/GPU 可用余量是两回事，要单独采集。
 
@@ -639,7 +639,7 @@ headroom 适合让画质控制器判断一段时间内的资源余量趋势，�
 - **Indirect / GPU-driven draw**：让 GPU 根据缓冲区中的参数发起绘制，把部分可见性判断与提交工作移向 GPU；
 - **缓存 render state**：减少 CPU 重建成本，不一定减少 draw call 数。
 
-Unity SRP Batcher 的主要作用是降低使用同一 shader variant 的兼容材质的 CPU 状态设置成本，把它概括成“把 Mesh 合成一次 DrawCall”就偏了；Unreal Mesh Draw Commands 还包含缓存、排序和可能的 dynamic instancing，与传统静态合批是两种不同的机制。 这两项要分别查对应引擎版本的兼容规则；启用开关本身说明不了某一帧 draw 数的变化，结论要从 trace 里拿。
+Unity SRP Batcher 的主要作用是降低使用同一 shader variant 的兼容材质的 CPU 状态设置成本，把它概括成“把 Mesh 合成一次 DrawCall”就偏了；Unreal Mesh Draw Commands 还包含缓存、排序和可能的 dynamic instancing，与传统静态合批是两种不同的机制。这两项要分别查对应引擎版本的兼容规则；启用开关本身说明不了某一帧 draw 数的变化，结论要从 trace 里拿。
 
 
 “每帧超过 1000 draw call 就有问题”这类阈值没有跨设备意义，判断要看下面这组证据：
@@ -681,7 +681,7 @@ adb shell perfetto \
 adb pull /data/misc/perfetto-traces/game.perfetto-trace
 ```
 
-命令先把 20 秒 trace 写进设备，再通过 `adb pull` 取回本机。GPU stage、counter 和 Vulkan API 细节取决于设备数据源和权限；Perfetto 数据不足时，用 AGI、GPU 厂商 profiler、Unity Profiler 或 Unreal Insights 补充。单个含义模糊的 `GPU completion` slice 离全部 GPU 阶段还很远。 `android.surfaceflinger.layers` 或游戏独立 Surface 的完整 App FrameTimeline 是否启用，同样要在采集前确认：先验证目标 Layer 的覆盖，再选择 queue/事务、fence 与引擎 marker 补证。
+命令先把 20 秒 trace 写进设备，再通过 `adb pull` 取回本机。GPU stage、counter 和 Vulkan API 细节取决于设备数据源和权限；Perfetto 数据不足时，用 AGI、GPU 厂商 profiler、Unity Profiler 或 Unreal Insights 补充。单个含义模糊的 `GPU completion` slice 离全部 GPU 阶段还很远。`android.surfaceflinger.layers` 或游戏独立 Surface 的完整 App FrameTimeline 是否启用，同样要在采集前确认：先验证目标 Layer 的覆盖，再选择 queue/事务、fence 与引擎 marker 补证。
 
 
 ### 连续三到五帧要标什么
@@ -696,7 +696,7 @@ adb pull /data/misc/perfetto-traces/game.perfetto-trace
 | SurfaceFlinger | latch、FrameTimeline、composition type | SF 沿用旧帧就代表 SF 计算慢 |
 | Display | requested/actual present、present fence | fence 一定对应精确的首像素可见时刻 |
 
-我们给同一输入和同一游戏帧分配稳定 ID，把 ID 写进 Game、Render、submit 和 present marker；这样某次触控最终对应哪一帧就有据可查，省得只凭几条相似的周期曲线猜关联。 关联 Unity/Insights 与系统 trace 时还要记录时钟域，并用共同时间锚或同步事件校准；统一 ID 解决的是关联问题，不同工具时间基准的偏移要靠这一步校准来消除。
+我们给同一输入和同一游戏帧分配稳定 ID，把 ID 写进 Game、Render、submit 和 present marker；这样某次触控最终对应哪一帧就有据可查，省得只凭几条相似的周期曲线猜关联。关联 Unity/Insights 与系统 trace 时还要记录时钟域，并用共同时间锚或同步事件校准；统一 ID 解决的是关联问题，不同工具时间基准的偏移要靠这一步校准来消除。
 
 
 ### Unity 与 Unreal 的 trace 组合
@@ -732,7 +732,7 @@ Queue / pacing bound 表现为 acquire、swap、present 或 Swappy wait 周期�
 <!-- gracker-diagram: ed13-12-bottleneck-evidence-and-draw-cost -->
 ![先确认迟到发生在哪一段，再选择提交或像素优化](../../assets/diagrams/ch13/ed13-12-bottleneck-evidence-and-draw-cost.png)
 
-图：CPU Game/Render/RHI超预算且GPU等上游可查script/prepare/driver/锁/worker，合批instancing减少部分提交但粗culling/内存成本另算；UnitySRPBatcher降低同shader variant兼容材质CPU状态，不等合mesh一次draw，UnrealMeshDrawCommands含缓存排序和条件动态实例化。GPU CPU较早submit后job/producerfence晚需stagecounter区分fragment/vertex/compute/带宽/同步，降render scale不解所有GPU瓶颈。Queue/pacingwait要查interval、release/inflight和主动pacer，不能先删wait。默认draw数阈值无跨设备意义，改变后同时看CPU/GPU和画质。
+图：CPU 侧 Game/Render/RHI 超预算且 GPU 等待上游时，可核查 script、prepare、driver、锁与 worker；合批与 instancing 能减少部分提交成本，但更粗的 culling 粒度与内存开销要另算；Unity SRP Batcher 重点降低同一 shader variant 兼容材质的 CPU 状态开销，并不等于把 Mesh 合成一次 draw，Unreal Mesh Draw Commands 则包含缓存、排序与条件化的动态实例化。GPU 侧若 CPU 较早 submit 但 job 与 producer fence 仍晚，须用 stage counter 区分 fragment、vertex、compute、带宽与同步依赖，单纯降低 render scale 并不能解决所有 GPU 瓶颈。Queue/pacing wait 须检查 interval、release/in-flight 与主动 pacer，不要贸然删去 wait。固定的 draw 数阈值没有跨设备参考意义，优化改动后须同时验收 CPU、GPU 与画质结果。
 
 ### Display bound
 
@@ -788,7 +788,7 @@ vendor GPU job 变长、GPU 频率低和 producer fence 晚，我们要在同一
 <!-- gracker-diagram: ch13-12-59-vendor-causality -->
 ![Vendor 问题也要沿同帧依赖证明](../../assets/diagrams/ch13/ch13-12-59-vendor-causality.png)
 
-图：把 job、频率和写完成 fence 放到同一帧内验证。 Render/RHI 睡眠只说明等待，不能独立证明 GPU scheduler 异常。
+图：把 job、频率和写完成 fence 放到同一帧内验证。Render/RHI 睡眠只说明线程在等待，无法独立证明 GPU scheduler 异常。
 
 ## 常见误判
 

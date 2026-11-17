@@ -175,7 +175,7 @@ WebView 同时跨越 Chromium 与 Android 两套渲染系统。网页侧负责 J
 
 ## 先分清三个边界
 
-WebView 出问题时，现场常常把三类不同 owner 的东西混在一起，我们先把它们分开。
+WebView 出问题时，常把三类不同归属方的机制混在一起，排查前先把它们分开：
 
 | 边界 | 谁负责 | 常见形态 | 不能直接推出什么 |
 | --- | --- | --- | --- |
@@ -272,7 +272,7 @@ WebViewStartUpConfig 默认允许执行 UI 启动任务；设为 false 时，回
 <!-- gracker-diagram: ed13-09-startup-capability-and-config -->
 ![启动能力分支与 UI 启动配置分别核对](../../assets/diagrams/ch13/ed13-09-startup-capability-and-config.png)
 
-图：固定WebKit1.16.0 minSdk24：稳定OutcomeReceiver重载按provider能力选择ASYNC_WEBVIEW_STARTUP_V2、V1适配或旧fallback。V2可成功/失败反馈，V1转接旧callback，fallback可仅加载class loader等。另核对runUiThreadStartUpTasks配置：默认true允许UI启动任务，false仅完成本次允许部分；实际完成范围和诊断依provider能力，不能把旧fallback当完整启动。启动回调不保证renderer、网络、页面首帧就绪，立即调用其他WebView API仍可阻塞Main。
+图：固定 WebKit 1.16.0（minSdk 24）：稳定 `OutcomeReceiver` 重载按 provider 能力选择 `ASYNC_WEBVIEW_STARTUP_V2`、V1 适配或旧 fallback。V2 可提供成功/失败反馈，V1 转接旧 callback，fallback 可能仅加载 class loader 等。另需核对 `runUiThreadStartUpTasks` 配置：默认 `true` 允许执行 UI 启动任务，`false` 仅完成本次允许部分；实际完成范围与诊断信息依 provider 能力而定，不能把旧 fallback 当成完整启动。启动回调不保证 renderer、网络或页面首帧就绪，立即调用其他 WebView API 仍可能阻塞 Main 线程。
 
 ## 官方 provider 的标准硬件路径：functor / DrawFn
 
@@ -362,7 +362,7 @@ WebView 的耗时会沿两种方式拖慢宿主帧：
 <!-- gracker-diagram: ed13-09-software-entry-and-final-window -->
 ![先判断软件入口，再确认最终由哪种窗口承接](../../assets/diagrams/ch13/ed13-09-software-entry-and-final-window.png)
 
-图：固定AwContents::OnDraw先按硬件Canvas、attached且未强制辅助bitmap判断。满足时走OnDrawHardware，返回false也直接返回，不自动落入软件分支；不满足才准备SoftwareCanvas，空尺寸或取不到Canvas可早退，成功才OnDrawSoftware→CompositeSW→DemandDrawSw。软件结果若是整个软件窗口由ViewRootImpl.drawSoftware/Surface Canvas提交，若单View软件layer则由硬件宿主继续采样。两形态不自动创建独立SF Layer，也不能仅凭DrawFn缺失或白屏判软件路径。
+图：固定 `AwContents::OnDraw` 先按硬件 Canvas、attached 且未强制辅助 bitmap 判断。满足时走 `OnDrawHardware`，返回 `false` 也直接返回，不会自动落入软件分支；不满足才准备 `SoftwareCanvas`，空尺寸或取不到 Canvas 时可早退，成功才走 `OnDrawSoftware` → `CompositeSW` → `DemandDrawSw`。软件结果若是整个软件窗口由 `ViewRootImpl.drawSoftware`/Surface Canvas 提交，若为单 View 软件 layer 则由硬件宿主继续采样。两种形态都不自动创建独立 SF Layer，也不能仅凭 DrawFn 缺失或白屏判为软件路径。
 
 - 整个窗口软件绘制时，`ViewRootImpl.drawSoftware()` 通过窗口 Surface 的 Canvas 路径提交 App Window buffer；
 - 单个 WebView 使用 software layer 时，软件结果可以先成为 bitmap/layer，再由硬件加速的宿主窗口采样。
@@ -423,7 +423,7 @@ buffer 的生产完成依赖与几何状态是两类条件，但它们未必分�
 <!-- gracker-diagram: ed13-09-overlay-transactions-and-buffer-dependencies -->
 ![几何 transaction 的应用路线与 buffer 写完成依赖合并核对](../../assets/diagrams/ch13/ed13-09-overlay-transactions-and-buffer-dependencies.png)
 
-图：固定HWUI mergeTransaction：有active CanvasContext且合并成功则合入HWUI窗口更新，没有context或merge未成功才独立apply。候选buffer携AHardwareBuffer/acquire fence，几何可随宿主更新协调，但实际读取仍须满足Producer写完成依赖；几何和buffer未必分开无同步apply。缺新buffer可继续旧内容，迟到几何或媒体更新仍可错位；独立child layer不保证HWC DEVICE，composition type另取证。
+图：固定 HWUI `mergeTransaction`：有 active `CanvasContext` 且合并成功时合入 HWUI 窗口更新，没有 context 或 merge 未成功时才独立 apply。候选 buffer 携带 `AHardwareBuffer` 与 acquire fence，几何可随宿主更新协调，但实际读取仍须满足 Producer 写完成依赖；几何和 buffer 未必分开无同步 apply。缺新 buffer 时可继续使用旧内容，迟到的几何或媒体更新仍可造成错位；独立 child layer 不保证 HWC DEVICE 合成，composition type 需另行取证。
 
 Android 10—11 固定 tag 的现代 functor header 尚无 WebViewOverlayData 的 SurfaceControl/transaction 回调；Android 12 r1 已有 getSurfaceControl / mergeTransaction。Android 17 基线也提供 rendering-thread reporting，但只检查这些 tag，定不出该能力恰好首发于哪个版本。运行设备是否使用 overlay 仍取决于 provider、开关与候选，API level 之外还要看这些条件。
 
@@ -441,7 +441,7 @@ ImageReader 只划出中间消费这一段，最终落到哪个 SF layer 由后�
 <!-- gracker-diagram: ed13-09-imagereader-quota-and-output -->
 ![ImageReader 额度选择与最终输出对象放在同一条资源链](../../assets/diagrams/ch13/ed13-09-imagereader-quota-and-output.png)
 
-图：固定ImageReaderGLOwner按TextureOwner mode设置private format和sampled/protected/composer-overlay usage。Producer写reader Surface；max_images==1时先释放当前image，再按可用额度选择Next/Latest async acquire：余量不足2用Next，足够用Latest。失败不保证保留旧图；成功取得image/AHardwareBuffer与完成fence，CPU acquire返回不保证GPU已写完，也不证明发生CPU复制。下游可采样进宿主HWUI窗口或作为合格overlay候选更新child SurfaceControl。额度、image引用/release fence和backpressure须核对，类名不识别第三方SDK、独立SF Layer或端到端零拷贝。
+图：固定 `ImageReaderGLOwner` 按 `TextureOwner` mode 设置 private format 和 sampled、protected 或 composer-overlay usage。Producer 写 reader Surface；`max_images == 1` 时先释放当前 image，再按可用额度选择 Next/Latest async acquire：余量不足 2 用 Next，足够用 Latest。失败不保证保留旧图；成功取得 image/`AHardwareBuffer` 与完成 fence，CPU acquire 返回不保证 GPU 已写完，也不证明发生 CPU 复制。下游可采样进宿主 HWUI 窗口或作为合格 overlay 候选更新 child `SurfaceControl`。额度、image 引用/release fence 和 backpressure 须逐项核对，类名不能用来识别第三方 SDK、独立 SF Layer 或端到端零拷贝。
 
 ## 宿主全屏托管：`onShowCustomView()`
 
@@ -530,9 +530,9 @@ X5、UC 或定制 Chromium 可以在包装层中采用 `TextureView`/`SurfaceTex
 <!-- gracker-diagram: ed13-09-texture-input-and-host-window -->
 ![中间纹理输入与最终窗口输出分别取证](../../assets/diagrams/ch13/ed13-09-texture-input-and-host-window.png)
 
-图：仅已由SDK版本/对象证据确认Texture-like的现场：SDK renderer/decoder向Surface/ANativeWindow生产源图像，SurfaceTexture为消费端。frame-available只标记更新/invalidate；Main TextureView.draw记录drawTextureLayer；RT DeferredLayerUpdater::apply经ASurfaceTexture_dequeueBuffer取image，满足源完成依赖后GPU采样进入宿主target；HWUI再生产App Window buffer并queue/BLAST交给SF。源swap、回调或Java draw返回均不等GPU写完/宿主采样完成；每个输入不保证对应一最终显示帧，Java栈未必出现updateTexImage。额外采样/同步成本按实际SDK/页面/设备量测。
+图：仅适用于已由 SDK 版本与对象证据确认为 Texture-like 的现场：SDK renderer/decoder 向 `Surface`/`ANativeWindow` 生产源图像，`SurfaceTexture` 作为消费端。`frame-available` 只标记更新与 `invalidate`；Main 线程 `TextureView.draw` 记录 `drawTextureLayer`；RT `DeferredLayerUpdater::apply` 经 `ASurfaceTexture_dequeueBuffer` 取得 image，满足源完成依赖后由 GPU 采样进入宿主 target；HWUI 再生产 App Window buffer 并经 queue/BLAST 交给 SF。源 swap、回调或 Java draw 返回都不代表 GPU 写完或宿主采样完成；每个输入也不保证对应一个最终显示帧，Java 栈未必出现 `updateTexImage`。额外采样与同步成本需按实际 SDK、页面和设备实测。
 
-这条路径的 Producer 是第三方内核或其 GPU 线程，Consumer 是宿主 HWUI。它会增加一次纹理采样和相应同步，具体开销必须用该 SDK 版本、页面负载和设备 trace 测量，快慢要测了才知道。
+这条路径的 Producer 是第三方内核或其 GPU 线程，Consumer 是宿主 HWUI。它会增加一次纹理采样和相应同步，具体开销必须用该 SDK 版本、页面负载和设备 trace 实测。
 
 ## 从网页更新到显示的一帧
 
@@ -551,18 +551,18 @@ X5、UC 或定制 Chromium 可以在包装层中采用 `TextureView`/`SurfaceTex
 <!-- gracker-diagram: ed13-09-internal-feedback-and-display-completion -->
 ![Chromium 内部反馈、宿主 queue 与设备完成分开判断](../../assets/diagrams/ch13/ed13-09-internal-feedback-and-display-completion.png)
 
-图：固定Chromium DrawAndSwapOnViz的Swap属于内部Display语义；CPU路径TimeTicks::Now构造MaybeDidPresent反馈不证明Android窗口已queue或实际显示。主体由宿主HWUI生产窗口buffer；queue交付与Producer GPU完成为不同观测点，SF可先组织readiness/latch，真正读取需满足对应acquire依赖，最终present fence查SF/HWC。按frame token、buffer frame number、transaction和fence关联同对象，不把相邻slice当同帧，不把DrawFn wall time当GPU设备时长，present也不是光学测量。
+图：固定 Chromium `DrawAndSwapOnViz` 的 Swap 属于内部 Display 语义；CPU 路径通过 `TimeTicks::Now` 构造的 `MaybeDidPresent` 反馈不证明 Android 窗口已 queue 或实际显示。主体由宿主 HWUI 生产窗口 buffer；queue 交付与 Producer GPU 完成是不同观测点，SF 可先组织 readiness/latch，真正读取前需满足对应 acquire 依赖，最终 present fence 须查 SF/HWC。按 frame token、buffer frame number、transaction 和 fence 关联同一对象，不把相邻 slice 当成同帧，不把 DrawFn 墙钟时长当成 GPU 设备时长，present 也不等同于光学测量。
 
 ## renderer 生命周期、启动与内存压力
 
 ### renderer 消失后的恢复
 
-renderer 可能 crash，也可能因内存压力终止。onRenderProcessGone 从 API 26 起提供恢复入口，并对共享受影响 renderer 的 WebView 分别回调；每个实例只清理自己收到的对象。返回 true 表示应用处理了终止，仍必须从 hierarchy 移除、清引用并 destroy，继续展示要新建实例；只清理其中一个，共享 renderer 下其他 WebView 是否已恢复，仍要看它们各自的回调。
+renderer 可能 crash，也可能因内存压力终止。`onRenderProcessGone` 从 API 26 起提供恢复入口，并对共享受影响 renderer 的 WebView 分别回调；每个实例只清理自己收到的对象。返回 `true` 表示应用处理了终止，仍必须从 hierarchy 移除、清引用并 destroy，继续展示要新建实例；只清理其中一个时，共享 renderer 下其他 WebView 是否已恢复，仍要看它们各自的回调。
 
 <!-- gracker-diagram: ed13-09-profile-sharing-and-renderer-loss -->
 ![先按 Profile 找共享 renderer，再逐实例恢复](../../assets/diagrams/ch13/ed13-09-profile-sharing-and-renderer-loss.png)
 
-图：固定现代provider普通同Profile共享renderer，多个Profile可各有renderer，内置错误页/webui另有例外；实例数与renderer数不换算。API26+同一受影响renderer消失时，对每个受影响WebView分别调用onRenderProcessGone；每个只处理自己收到的对象，返回true仍需从hierarchy移除、清引用/destroy，继续展示则新建实例。图下方恢复链按实际受影响renderer进入，不表示两个renderer必然同时死亡，优先级降低不保证常驻或自动恢复。
+图：固定现代 provider 普通同 Profile 共享 renderer，多个 Profile 可各有 renderer，内置错误页与 webui 另有例外；实例数与 renderer 数不按固定比例换算。API 26+ 同一受影响 renderer 消失时，对每个受影响 WebView 分别调用 `onRenderProcessGone`；每个实例只处理自己收到的对象，返回 `true` 仍需从 hierarchy 移除、清引用并 destroy，继续展示则需新建实例。图下方恢复链按实际受影响 renderer 进入，不表示两个 renderer 必然同时死亡，优先级降低也不保证常驻或自动恢复。
 
 `WebView.setRendererPriorityPolicy()` 可以调整 renderer 的进程重要性。降低不可见 WebView 的优先级会提高它被回收的概率，所以应用要先具备可靠的 process-gone 恢复路径，再谈降级策略。后台返回后出现白屏或重载时，我们先检查 renderer death/OOM，再检查绘制管线。
 

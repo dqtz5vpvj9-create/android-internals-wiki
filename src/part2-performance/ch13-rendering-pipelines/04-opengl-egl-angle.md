@@ -187,7 +187,7 @@ EGL 是 GLES 与 native window system 之间的绑定层。读代码时，我们
 <!-- gracker-diagram: ed13-04-egl-objects-current-and-sharing -->
 ![EGL 对象、current 绑定与共享资源同步分开确认](../../assets/diagrams/ch13/ed13-04-egl-objects-current-and-sharing.png)
 
-图：EGL对象与共享约束合图。EGLDisplay是实现连接句柄，非Android物理DisplayID；Context保存状态/命名空间，可共享部分GL对象；Surface是默认draw/read目标，window连接ANativeWindow、pbuffer可离屏，另绑FBO不等新EGLSurface。makeCurrent按线程/surface规则绑定，同一context同一时刻只在一条线程current。共享对象仍须管理生命周期，并建立跨context的GL/EGL完成与可见性依赖；Java先后替不了GPU同步。箭头为对象/使用关系，非完整调用程序。
+图：EGL 对象与共享约束合图。`EGLDisplay` 是实现连接句柄，不等同于 Android 物理 Display ID；Context 保存状态和命名空间，可共享部分 GL 对象；Surface 是默认 draw/read 目标，window 连接 `ANativeWindow`、pbuffer 可离屏，另绑 FBO 也不会成为新的 `EGLSurface`。`makeCurrent` 按线程与 surface 规则绑定，同一 context 同一时刻只在一条线程 current。共享对象仍须管理生命周期，并建立跨 context 的 GL/EGL 完成与可见性依赖；Java 执行先后替代不了 GPU 同步。箭头表示对象与使用关系，不代表完整调用顺序。
 
 - `EGLDisplay`：连接 EGL 实现的句柄，用于查询配置和创建资源；它对应的是 EGL display connection，Android 的物理 Display ID 要另外查询；
 - `EGLContext`：保存 GLES 状态与资源命名空间。共享 context 可以共享部分 GL 对象，但线程绑定、同步和资源生命周期仍由应用管理。
@@ -268,7 +268,7 @@ Continuous 模式下，`GLThread` 默认不会由 `Choreographer#doFrame()` 逐�
 <!-- gracker-diagram: ed13-04-glthread-readiness-and-render-modes -->
 ![GLThread 两种模式共用 Surface 与生命周期就绪条件](../../assets/diagrams/ch13/ed13-04-glthread-readiness-and-render-modes.png)
 
-图：GLThread就绪与渲染模式合图：setRenderer启动独立线程维护EGL和必要Created/Changed回调，主线程仍传Surface/pause/resume/size与业务状态。Surface有效、未暂停、尺寸非零等条件满足后，Continuous持续drawswap，非宿主Choreographer逐帧直接唤醒；WhenDirty还消费mRequestRender，初始/业务请求/恢复/resize-redraw可置位或合并。正常完成再查下一轮，错误看独立恢复分支；实际节拍受队列/driver/swapinterval/pacing约束，线程独立不等资源隔离。
+图：GLThread 就绪与渲染模式合图：`setRenderer` 启动独立线程维护 EGL 和必要的 Created/Changed 回调，主线程仍传 Surface、pause/resume、size 与业务状态。Surface 有效、未暂停、尺寸非零等条件满足后，Continuous 持续执行 draw/swap，不靠宿主 Choreographer 逐帧直接唤醒；When Dirty 还消费 `mRequestRender`，初始状态、业务请求、恢复和 resize/redraw 都可置位或合并。正常完成后再检查下一轮，错误走独立恢复分支；实际节拍受队列、driver、swap interval 和 pacing 约束，线程独立不代表资源隔离。
 
 #### 一帧的 CPU、GPU 与显示边界
 
@@ -347,7 +347,7 @@ AOSP wrapper 承担平台验证与分发，同步工作它也可能做一部分�
 <!-- gracker-diagram: ed13-04-egl-wrapper-dispatch-and-debug -->
 ![libEGL 平台分发与可叠加的调试同步](../../assets/diagrams/ch13/ed13-04-egl-wrapper-dispatch-and-debug.png)
 
-图：libEGL核心分发与调试同步合图：普通swap进零rect的damage实现，平台验证EGL对象与rect参数并按实际分支处理metadata/damage，再分发vendor或ANGLE，扩展不可用时普通swap。虚线表示可叠加职责，非互斥三选一或内部固定先后；traceGpuCompletion可创建EGLfence交完成线程，finishOnSwap可1x1glReadPixels强制完成。分支存在只说明平台具备该路径，设备是否启用、wrapper 承担多少同步、dequeue/submit 落在哪里，都以实际实现为准。
+图：libEGL 核心分发与调试同步合图：普通 swap 进入零 rect 的 damage 实现，平台验证 EGL 对象与 rect 参数并按实际分支处理 metadata/damage，再分发至 vendor 或 ANGLE，扩展不可用时走普通 swap。虚线表示可叠加职责，不代表互斥三选一或内部固定先后；`traceGpuCompletion` 可创建 EGL fence 交给完成线程，`finishOnSwap` 可通过 1×1 `glReadPixels` 强制完成。分支存在只说明平台具备该路径，设备是否启用、wrapper 承担多少同步以及 dequeue/submit 落在哪里，都以实际实现为准。
 
 调用的职责可用下面的概念骨架理解：
 
@@ -468,7 +468,7 @@ DEVICE 路径的 HWC release fence 经 SF 返回；CLIENT 路径还可能合并 
 <!-- gracker-diagram: ed13-04-async-buffer-read-reuse-and-present -->
 ![queue 可先于 GPU 完成，读取、复用与 present 各有依赖](../../assets/diagrams/ch13/ed13-04-async-buffer-read-reuse-and-present.png)
 
-图：原生GLES与ANGLE的重复异步三轨合图，非固定实现调用栈或实测时长。buffer/dmabuf共享存储，fence不传像素；驱动/WSI可在GPU尚写时queue并传完成依赖。Consumer实际读前须acquire满足，受限先latch不等提前读。release对应旧buffer，CLIENT可合RenderEngine GPU读取条件，FREE/通知不等安全覆写；present是目标Display时间基准，与buffer完成/复用依赖分开对应，也非面板光学响应。CPU返回、queue、采纳、GPU完成和显示分别按同buffer/frame/fence关联。
+图：原生 GLES 与 ANGLE 的异步三轨合图，不代表固定实现调用栈或实测时长。buffer 与 dmabuf 共享存储，fence 不传递像素；驱动和 WSI 可在 GPU 尚在写入时 queue 并传递完成依赖。Consumer 实际读取前须满足 acquire，受限先 latch 不等于提前读取。release 对应旧 buffer，CLIENT 可合并 RenderEngine GPU 读取条件，FREE 或归还通知不等于可以安全覆写；present 是目标 Display 的时间基准，与 buffer 完成及复用依赖分开对应，也不代表面板光学响应。CPU 返回、queue、采纳、GPU 完成和显示分别按同一 buffer、frame 和 fence 关联。
 
 #### EGL sync 与平台 buffer fence
 
@@ -618,9 +618,9 @@ HWC 主链路上还要区分 SF 侧的 `presentOrValidate()`、`validate()`、`p
 
 ## ANGLE 选择、翻译与同步
 
-看完 GLES 直接驱动的路径，我们再来看 ANGLE 这套另一路的实现后端：它何时被启用、把 GLES 翻译成什么、同步如何转换，这些决定了兼容性与性能。
+看完 GLES 直接驱动的路径，我们再来看 ANGLE 这套实现后端：它何时被启用、把 GLES 翻译成什么、同步如何转换，这些决定了兼容性与性能。
 
-本节讨论 Android 上最常见的组合：OpenGL ES/EGL frontend（接收并解释应用 API 的前端） 搭配 Vulkan backend，ANGLE 源码位于 AOSP `external/angle`。ANGLE 也支持其他平台和 backend，它们不属于本文的 Android runtime path。
+本节讨论 Android 上最常见的组合：OpenGL ES/EGL frontend（接收并解释应用 API 的前端）搭配 Vulkan backend，ANGLE 源码位于 AOSP `external/angle`。本文只讨论该组合在 Android 运行时的路径，不涉及 ANGLE 的其他平台与 backend。
 
 从应用接口看，代码仍调用 GLES 和 EGL；向下看驱动接口，ANGLE 会维护 GLES 状态、翻译 shader、记录 Vulkan 命令，再经 Android Vulkan WSI（Vulkan 与窗口系统的连接层）提交显示。ANGLE 减少的是 GLES frontend 的厂商实现差异，厂商 Vulkan 驱动、GPU 和显示硬件仍在执行路径里。
 
@@ -648,7 +648,7 @@ GPU、BufferQueue、SurfaceFlinger、HWC
 - ANGLE 能绕过部分厂商 GLES frontend 的问题；底层的厂商 Vulkan compiler、内核 GPU 驱动和硬件仍在执行路径上。
 - ANGLE 让 GLES 行为在不同设备上更加一致；性能则要按 workload（工作负载）逐场景测量，换过去不一定更快。
 
-使用 ANGLE 的应用仍然通过 GLES API 编程，Vulkan descriptor、render pass 或 queue 这些对象由 ANGLE backend 管理，通常不把这些内部对象作为应用可控制的原生 Vulkan 资源暴露；能控制哪些，要通过特定 interop/扩展查询确认，GLES API 这边给不出答案。如果新引擎需要完整控制 Vulkan 资源、命令和同步，应直接使用原生 Vulkan API。
+使用 ANGLE 的应用仍然通过 GLES API 编程，Vulkan descriptor、render pass 或 queue 这些对象由 ANGLE backend 管理，通常不把这些内部对象作为应用可控制的原生 Vulkan 资源暴露；能控制哪些，要通过特定 interop 或扩展查询确认，单凭 GLES API 无法查明。如果新引擎需要完整控制 Vulkan 资源、命令和同步，应直接使用原生 Vulkan API。
 
 ### 翻译层架构
 
@@ -819,7 +819,7 @@ adb shell am force-stop com.example.game
 <!-- gracker-diagram: ed13-04-deferred-dirty-state-and-cpu-cost -->
 ![后续 draw 可以支付此前积累的状态与资源准备成本](../../assets/diagrams/ch13/ed13-04-deferred-dirty-state-and-cpu-cost.png)
 
-图：dirtybits与后付CPU准备成本合图：前序GL状态/对象/资源变更可先记录，后续draw/dispatch/clear才由ContextVk同步必要状态，集中准备texture/framebuffer/shader/pipeline/descriptor/barrier与commands。阶段轨道非测量，不表示每次API即时同名vkCmd；长draw CPU墙钟可能支付既往工作或等待，需调用栈/线程状态与GPUstage/fence另查，GPU快慢由GPUstage/fence判断，draw名字定不了。具体GL_LINE_LOOP等命令形态仍见独立分支图。
+图：dirty bits 与后付 CPU 准备成本合图：前序 GL 状态、对象和资源变更可先记录，后续 draw、dispatch 或 clear 才由 `ContextVk` 同步必要状态，集中准备 texture、framebuffer、shader、pipeline、descriptor、barrier 与 commands。阶段轨道非实测，也不表示每次 API 调用都会即时生成同名 `vkCmd`；长 draw 的 CPU 墙钟时间可能是在支付既往工作或等待，需结合调用栈、线程状态与 GPU stage/fence 另查，GPU 快慢由 GPU stage 与 fence 判断，仅凭 draw 名称定不了。`GL_LINE_LOOP` 等具体命令形态仍见独立分支图。
 
 #### Swap 阶段
 
@@ -836,7 +836,7 @@ Android 上的 `WindowSurfaceVkAndroid::createSurfaceVk()` 会把 `ANativeWindow
 <!-- gracker-diagram: ed13-04-swap-wsi-and-measurement-scope -->
 ![Swappy、完整 EGL API 与 swapImpl 的计时范围不同](../../assets/diagrams/ch13/ed13-04-swap-wsi-and-measurement-scope.png)
 
-图：ANGLEWSI与计时范围合图：ANativeWindow经vkCreateAndroidSurfaceKHR建立VkSurface/swapchain，WindowSurfaceVk按实际阶段组织acquire/submit/layout/present，acquire可前移或延后。固定r1可在present后把CPUthrottle放unlockedtailcall，虽在swapImpl slice外，仍在对应EGLAPI返回前。轨道仅一种可选嵌套，Swappy可不存在；外层Swappy前后pacing算不算内层EGL，要看计时范围落在哪一层。完整API墙钟含抢占等待，不是GPUbusy；WSI请求返回不证明GPU完成、SF采纳或光学显示。
+图：ANGLE WSI 与计时范围合图：`ANativeWindow` 经 `vkCreateAndroidSurfaceKHR` 建立 VkSurface 与 swapchain，`WindowSurfaceVk` 按实际阶段组织 acquire、submit、layout 与 present，acquire 可前移或延后。固定 r1 可在 present 后把 CPU throttle 放在 unlocked tail call 中，虽在 `swapImpl` slice 外，仍在对应 EGL API 返回前。图中轨道仅展示一种可选嵌套方式，Swappy 可不存在；外层 Swappy 前后的 pacing 是否计入内层 EGL，要看计时范围落在哪一层。完整 API 墙钟时间包含抢占与等待，不等同于 GPU busy；WSI 请求返回也不证明 GPU 完成、SF 采纳或光学显示。
 
 ```mermaid
 sequenceDiagram
@@ -935,7 +935,7 @@ Vulkan **成功导入**后接管 duplicated fd，调用方不得继续操作它�
 <!-- gracker-diagram: ed13-04-native-server-wait-import-and-fd-owner -->
 ![server wait 成功导入副本后，才把依赖加入后续 submit](../../assets/diagrams/ch13/ed13-04-native-server-wait-import-and-fd-owner.png)
 
-图：固定r1 serverWait与fd所有权合图：已signal快速返，未完成才准备binarysemaphore并dup原syncfd，以SYNC_FD temporary payload导入。原mExternalFencefd仍归ANGLE；仅成功import时Vulkan接管副本，之后调用方不再操作该副本，再addWaitSemaphore(ALL_COMMANDS)交后续submit遵守。失败未成功转移，按实际错误清理路径。serverwait不要求CPU先等signal，GPU依赖照样挂在后续submit上；公开EGL扩展查询/flush/导出新fd的close契约以原文为准。
+图：固定 r1 `serverWait` 与 fd 所有权合图：已 signal 时快速返回，未完成时才准备 binary semaphore 并 dup 原 sync fd，以 SYNC_FD temporary payload 导入。原 `mExternalFence` fd 仍归 ANGLE；仅成功 import 时 Vulkan 接管副本，之后调用方不再操作该副本，再通过 `addWaitSemaphore(ALL_COMMANDS)` 交给后续 submit 遵守。导入失败则未发生所有权转移，按实际错误路径清理。server wait 不要求 CPU 先等 signal，GPU 依赖仍挂在后续 submit 上；公开 EGL 扩展查询、flush 与导出新 fd 的 close 契约以原文为准。
 
 #### client wait：调用线程仍在等待
 
@@ -1034,7 +1034,7 @@ ANGLE renderer 字符串通常包含 `ANGLE`、vendor、GPU 和 Vulkan 版本信
 <!-- gracker-diagram: ed13-04-backend-request-load-context-and-frame -->
 ![选路意图、装入实现、当前 context 与目标帧逐层取证](../../assets/diagrams/ch13/ed13-04-backend-request-load-context-and-frame.png)
 
-图：ANGLE后端证明链合图：Settings/resource/manifest是意图，目标进程初始化setupAngle才解释flags/properties；改配置须停止重启，重建context不重做Java设置。Java配置成功非loader已装入，已要求ANGLE却装入失败固定r1可fatal。maps仅证进程有库，可能共存其他图形模块，未匹配也可因权限/PID/命名；GL/EGL原字符串需正确currentcontext线程查询并保存build，格式非稳定ABI。最终再将ANGLEevent、Vulkansubmit/GPUstage与同context/frame/目标Surface的queue/latch/present对应，单VkSubmit不是ANGLE证明。
+图：ANGLE 后端证明链合图：Settings、resource 与 manifest 表达的是意图，目标进程初始化 `setupAngle` 时才解释 flags 与 properties；修改配置后须停止并重启进程，重建 context 不会重做 Java 侧设置。Java 配置成功不代表 loader 已装入，已要求 ANGLE 却装入失败时固定 r1 可触发 fatal。maps 仅证明进程内有该库，可能共存其他图形模块，未匹配也可能是权限、PID 或命名差异所致；GL/EGL 原始字符串须在正确的 current context 线程查询并保存 build，格式并非稳定 ABI。最终还需将 ANGLE event、Vulkan submit/GPU stage 与同一 context、frame 及目标 Surface 的 queue/latch/present 对应起来，单个 `VkSubmit` 不足以证明走了 ANGLE。
 
 debuggable 应用可以用下面的命令检查映射。`run-as` 失败时不要通过放宽系统安全策略来做日常验证。
 

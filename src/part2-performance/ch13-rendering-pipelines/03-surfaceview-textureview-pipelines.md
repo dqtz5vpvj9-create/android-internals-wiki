@@ -206,9 +206,9 @@ ViewRootImpl bounds layer
 <!-- gracker-diagram: ed13-03-sv-hierarchy-and-background -->
 ![SurfaceView 的内容与背景是 container 下不同 child](../../assets/diagrams/ch13/ed13-03-sv-hierarchy-and-background.png)
 
-图：对象层级与背景显隐合图。mSurfaceControl只管理几何和层级，mBlastSurfaceControl承载Producerbuffer，mBackgroundControl是同container下的辅助纯色child。实线为父子关系，虚线仅表示对已有background的条件控制：mSubLayer负、内容带OPAQUE且背景未禁用，才show，否则hide。父子关系不同于相对宿主Z；背景显示也不证明主体首buffer已经提交或present。
+图：对象层级与背景显隐合图。`mSurfaceControl` 只管理几何和层级，`mBlastSurfaceControl` 承载 Producer buffer，`mBackgroundControl` 是同 container 下的辅助纯色 child。实线为父子关系，虚线仅表示对已有 background 的条件控制：`mSubLayer` 为负、内容带 `OPAQUE` 且背景未禁用时才 show，否则 hide。父子关系不同于相对宿主 Z；背景显示也不证明主体首 buffer 已经提交或 present。
 
-Java `SurfaceView` 位于应用进程，但 buffer 填充者不一定也在该进程：应用内游戏线程可以直接使用 `Surface`，MediaCodec、Camera 或嵌入式层级也可能由系统服务和厂商组件参与生产。确认 Producer 身份时，我们沿目标 BufferQueue 的 connect、dequeue（取出）、queue（放回待消费队列）、fence 和 layer id 回溯；拿常见进程名当依据，只是猜测。
+Java `SurfaceView` 位于应用进程，但 buffer 填充者不一定也在该进程：应用内游戏线程可以直接使用 `Surface`，MediaCodec、Camera 或嵌入式层级也可能由系统服务和厂商组件参与生产。确认 Producer 身份时，我们沿目标 BufferQueue 的 connect、dequeue（取出）、queue（放回待消费队列）、fence 和 layer id 回溯，不能仅凭常见进程名下结论。
 
 #### 默认 Z-below 与透明洞
 
@@ -246,7 +246,7 @@ Z-below 的 alpha 作用于宿主透明洞与内容层之间的混合比例，�
 <!-- gracker-diagram: ed13-03-sv-z-alpha-and-hole-punch -->
 ![相对宿主的 Z 决定透明洞与 alpha 的作用位置](../../assets/diagrams/ch13/ed13-03-sv-z-alpha-and-hole-punch.png)
 
-图：相对宿主Z、打洞和alpha合图：order负在host下，draw/dispatchDraw仅在mDrawFinished且非above时经clearSurfaceViewPort/punchHole清理宿主clip/圆角/alpha区域；不把主体像素复制进host。非负在上，不打同样的host洞，宿主普通View也盖不到其上。API34alpha在下方调hole混合、在上方作用Surface内容，不改bufferalpha；下方重叠SV不等普通View逐层混合。peer order大在上、同值未定义，API36/当前flag另核。mDrawFinished只标redrawcallback结束，首queue、读前acquire和present仍分别证明。
+图：相对宿主 Z、打洞和 alpha 合图：order 为负时在 host 下方，`draw`/`dispatchDraw` 仅在 `mDrawFinished` 且非 above 时经 `clearSurfaceViewPort`/`punchHole` 清理宿主 clip/圆角/alpha 区域，不会把主体像素复制进 host。非负则在上方，不打宿主洞，宿主普通 View 也盖不到其上。API 34 的 alpha 在下方调节 hole 混合、在上方作用于 Surface 内容，均不改变 buffer 本身的 alpha；下方多个重叠 SurfaceView 的混合结果也不同于普通 View 逐层混合。peer order 数值越大越靠上、同值未定义，API 36 与当前 flag 需另行核对。`mDrawFinished` 只标记 redraw callback 结束，首帧 queue、读前 acquire 和 present 仍需分别证明。
 
 #### 生命周期是 Producer 的硬边界
 
@@ -361,7 +361,7 @@ sequenceDiagram
 <!-- gracker-diagram: ed13-03-sv-host-versus-content-binding -->
 ![事务先明确绑定宿主帧，还是 SurfaceView 内容帧](../../assets/diagrams/ch13/ed13-03-sv-host-versus-content-binding.png)
 
-图：宿主帧与内容帧绑定合图：framework位置回调取得hostframe并由ViewRoot.mergeWithNextTransaction合宿主事务，部分UI状态经applyTransactionOnDraw绑下次hostdraw。API34公开applyTransactionToFrame则合SV内容：调用前停渲染才明确调用后下一帧，持续生产哪帧未定义，无后续内容可能不apply；当前BLAST目标已acquire时可直接apply，否则保存pending。不同队列framenumber不共命名空间；绑定不替Producer产出新尺寸内容，也不保证每次固定等一次dequeue/queue。
+图：宿主帧与内容帧绑定合图：framework 位置回调取得 host frame 并由 `ViewRoot.mergeWithNextTransaction` 合入宿主事务，部分 UI 状态经 `applyTransactionOnDraw` 绑定下次 host draw。API 34 公开的 `applyTransactionToFrame` 则合入 SurfaceView 内容：调用前停止渲染才能明确绑定调用后下一帧，持续生产时对应哪帧未定义，无后续内容时甚至可能不 apply；当前 BLAST 目标已 acquire 时可直接 apply，否则保存为 pending。不同队列的 frame number 不共享命名空间；绑定不会替 Producer 产出新尺寸内容，也不保证每次调用都固定等待一次 dequeue/queue。
 
 #### fence：fd、依赖与所有权
 
@@ -442,7 +442,7 @@ TextureView 路径的附加工作，是应用 RenderThread 组织输入 image �
 <!-- gracker-diagram: ed13-03-sv-tv-pixels-and-draw-records -->
 ![SurfaceView 独立送显，TextureView 把输入采样进宿主](../../assets/diagrams/ch13/ed13-03-sv-tv-pixels-and-draw-records.png)
 
-图：两种最终像素拓扑与绘制记录合图。SV主体I保留独立BLASTchild，在SF与host汇合；TV先由外部生成输入T，应用RT取得image并组织绘制，再由GPU采样T生成宿主H，SF通常只见包含T的H。DisplayList记录TextureLayer引用，不存整帧视频像素；RT是CPU组织/提交者，采样由GPU执行。TV以硬件加速host为前提，SV可有软件host。独立layer非DEVICE保证，host DEVICE不给内部TV矩形独立overlay，两次生产非固定两帧延迟。
+图：两种最终像素拓扑与绘制记录合图。SurfaceView 主体 I 保留独立 BLAST child，在 SF 与 host 汇合；TextureView 先由外部生成输入 T，应用 RT 取得 image 并组织绘制，再由 GPU 采样 T 生成宿主 H，SF 通常只见到包含 T 的 H。DisplayList 记录 `TextureLayer` 引用，不存整帧视频像素；RT 是 CPU 侧的组织与提交者，采样由 GPU 执行。TextureView 以硬件加速 host 为前提，SurfaceView 则可有软件 host。独立 layer 不保证 DEVICE 合成，host 获得 DEVICE 也不代表内部 TextureView 矩形有独立 overlay；两次生产也不对应固定的两帧延迟。
 
 | 维度 | SurfaceView | TextureView |
 |---|---|---|
@@ -675,7 +675,7 @@ SurfaceView 改变的是内容生产和合成拓扑，不会绕过 InputDispatch
 
 ## TextureView 的 SurfaceTexture 与宿主合成
 
-SurfaceView 的 buffer 作为独立 layer 的内容提交；TextureView 的宿主 DisplayList 记录 TextureLayer 绘制引用，输入像素随后由 HWUI/GPU 采样写入宿主 buffer，不是把整帧像素塞进 DisplayList。把两者放在一起比较时，我们看的是变换需求、延迟和合成方式。
+SurfaceView 的 buffer 作为独立 layer 的内容提交；TextureView 的宿主 DisplayList 只记录 TextureLayer 绘制引用，并不会把整帧像素塞进 DisplayList，输入像素随后由 HWUI/GPU 采样写入宿主 buffer。把两者放在一起比较时，我们主要看变换需求、延迟和合成方式。
 
 
 ### 为什么要理解 TextureView 的链路
@@ -714,7 +714,7 @@ TextureView 的价值是让外部内容遵循普通 View 的合成语义。业�
 
 Producer 可以是 Camera、codec、GLES、Vulkan、Canvas 或业务引擎。它从 `SurfaceTexture` 背后的 BufferQueue 取得可写 buffer，填充内容，再随时间戳、crop、transform、dataspace、HDR metadata 和完成 fence 一起提交。从应用侧 Consumer 的角度看，这个说明写入何时完成的同步条件就是输入 acquire fence。
 
-Producer 没有统一的线程或进程模式。MediaCodec、Camera 的生产链路可能跨越应用、系统服务、provider/HAL 和厂商组件；EGL/Vulkan Producer 也可能就在应用进程内。识别责任对象时，我们沿目标 BufferQueue、frame number 和 fence 回溯；固定进程名当不了依据。
+Producer 没有统一的线程或进程模式。MediaCodec、Camera 的生产链路可能跨越应用、系统服务、provider/HAL 和厂商组件；EGL/Vulkan Producer 也可能就在应用进程内。识别责任对象时，我们沿目标 BufferQueue、frame number 和 fence 回溯，不能以固定进程名作为依据。
 
 #### 第二阶段：TextureView 与宿主 HWUI
 
@@ -724,7 +724,7 @@ Producer 没有统一的线程或进程模式。MediaCodec、Camera 的生产链
 2. `TextureView` 把 listener 绑定到 `mAttachInfo.mHandler`，也就是宿主 ViewRoot 所在线程的消息处理器。
 3. listener 调用 `updateLayer()` 与 `invalidate()`：前者设置 `mUpdateLayer` 待更新标志，后者把 View 标记为需要重绘。
 4. 宿主 `Choreographer#doFrame()` 进入 traversal；`TextureView.draw()` 在硬件 Canvas 上执行 `applyUpdate()`。
-5. `TextureLayer.updateSurfaceTexture()` 通过 `HardwareRenderer.pushLayerUpdate()`，把 native updater 加入 RenderThread 的 pending layer updates（待处理 layer 更新） 列表。
+5. `TextureLayer.updateSurfaceTexture()` 通过 `HardwareRenderer.pushLayerUpdate()`，把 native updater 加入 RenderThread 的 pending layer updates（待处理 layer 更新）列表。
 6. `DrawFrameTask::syncFrameState()` 处理待更新对象；`DeferredLayerUpdater::apply()` 只在初次取得 Consumer ownership 或 `mUpdateTexImage` 标志置位时调用 `ASurfaceTexture_dequeueBuffer()`。后者可返回输入 `AHardwareBuffer`，没有新输入时可沿用旧内容，出错也可返回空，并非每次 apply 都取到新帧。
 7. HWUI 按 slot 建立或复用 `SkImage`，应用 crop、transform、dataspace、HDR metadata、alpha 和过滤，再把内容与其他 View 一起绘入 App Window buffer。
 
@@ -733,7 +733,7 @@ Producer 没有统一的线程或进程模式。MediaCodec、Camera 的生产链
 <!-- gracker-diagram: ed13-03-tv-ui-request-and-rt-consumption -->
 ![UI 提交 updater，RenderThread 再按条件取得输入](../../assets/diagrams/ch13/ed13-03-tv-ui-request-and-rt-consumption.png)
 
-图：内部通知、UI请求和RT消费合图：frameavailable投mAttachInfo.mHandler，listener在ViewRoot线程updateLayer/invalidate并可合并traversal。硬件Canvas draw/applyUpdate经TextureLayer.updateSurfaceTexture/pushLayerUpdate送nativeupdater到RTpending；UI后的onSurfaceTextureUpdated不证明RT已acquire、GPU完成或已显示。RTsyncFrameState处理pending，DeferredLayerUpdater仅初次ownership或mUpdateTexImage置位时经ASurfaceTexture取输入，可能沿用current或失败空。公共updateTexImage是应用自管GLConsumer入口；通知、输入frame和VSync不一一对应。
+图：内部通知、UI 请求和 RT 消费合图：`frameAvailable` 投递到 `mAttachInfo.mHandler`，listener 在 ViewRoot 线程执行 `updateLayer`/`invalidate` 并可合并 traversal。硬件 Canvas 的 `draw`/`applyUpdate` 经 `TextureLayer.updateSurfaceTexture`/`pushLayerUpdate` 把 native updater 送入 RT pending 列表；UI 后的 `onSurfaceTextureUpdated` 不证明 RT 已 acquire、GPU 完成或已显示。RT `syncFrameState` 处理 pending 后，`DeferredLayerUpdater` 仅在初次获得 ownership 或 `mUpdateTexImage` 置位时经 `ASurfaceTexture` 取输入，可能沿用 current 或因失败返回空。公共 `updateTexImage` 是应用自管 GLConsumer 的入口；通知、输入 frame 和 VSync 之间并不存在一一对应关系。
 
 #### 第三阶段：宿主 BLAST、SurfaceFlinger 与 HWC
 
@@ -820,14 +820,14 @@ HWUI `TextureLayer` 属于应用内的绘制对象，SurfaceFlinger layer 则属
 <!-- gracker-diagram: ed13-03-tv-latest-loop-and-exit -->
 ![取帧循环可以追新，也会因 fence、暂空或失败停止](../../assets/diagrams/ch13/ed13-03-tv-latest-loop-and-exit.png)
 
-图：ASurfaceTexture内部循环与预览跳帧边界合图：按更新条件进入后，可继续时更新current再取，跳过旧pending；未signalacquire令outQueueEmpty成为停止保护提示，经后端fenceWait建立或等待读取依赖，成功返回后外层停止追新，不保证CPU已等GPU完成或物理队列为空。暂空已有current可沿用旧内容，失败可返回空。返回时不保证最新；预览跳中间帧不等队列坏，逐帧处理需明确acquire/队列协议而非预览回调。
+图：`ASurfaceTexture` 内部循环与预览跳帧边界合图：按更新条件进入后，可继续时更新 current 再取帧，跳过旧 pending；未 signal 的 acquire 令 `outQueueEmpty` 成为停止保护提示，经后端 `fenceWait` 建立或等待读取依赖，成功返回后外层停止追新，不保证 CPU 已等 GPU 完成或物理队列为空。暂空而已有 current 时可沿用旧内容，失败可返回空。返回时不保证最新；预览跳过中间帧不等于队列损坏，逐帧处理需使用明确 acquire 或队列协议，不要依赖预览回调。
 
 以下环节仍可能增加延迟：
 
 <!-- gracker-diagram: ch13-03-42-tv-slot-identity -->
 ![当前构建分支决定输入 image slot 的含义](../../assets/diagrams/ch13/ch13-03-42-tv-slot-identity.png)
 
-图：比较输入时必须记录构建分支、buffer 身份及实际 frame。 wb_surfacetexture 选择新旧 Consumer；image cache 编号不能与另一分支的 BQ slot 混用。
+图：比较输入时必须记录构建分支、buffer 身份及实际 frame。`wb_surfacetexture` 选择新旧 Consumer；image cache 编号不能与另一分支的 BQ slot 混用。
 
 - Producer 在目标时间之后才 queue；
 - frame-available 回调被宿主线程上的其他工作延迟；
@@ -954,7 +954,7 @@ TextureView 增加的等待有多长，取决于通知与取帧的相对时机�
 <!-- gracker-diagram: ed13-03-tv-two-queues-fences-and-backpressure -->
 ![输入 T 与宿主 H 分别周转，present 属于 Display](../../assets/diagrams/ch13/ed13-03-tv-two-queues-fences-and-backpressure.png)
 
-图：三类fence与T/H两个反馈回路合图。T由外部写、HWUI读，H由hostGPU写、SF/HWC读，各自frame/slot/acquire/release独立；hostBufferTX不能度量输入积压。外部dequeue查旧T与HWUI消费，RTinputwait/import查输入创建方及ownership，hostdequeue查旧H归还，SF等Hacquire查宿主GPU。present属于Display，不属于Tslot，旧T回收与当前Hpresent无固定先后。虚线只表达安全复用需求：固定r1 Legacy把createReleaseFence的nativefence加入旧slot；新releaseBufferLocked传NO_FENCE，须核wb_surfacetexture、配套实现与实际同步，不能凭createFence回调声称同路已传出，也不能仅据静态代码断言数据竞争。SV内容同样分acquire/release，CLIENTrelease还可合并GPU条件。
+图：三类 fence 与 T/H 两个反馈回路合图。T 由外部写、HWUI 读，H 由 host GPU 写、SF/HWC 读，各自 frame、slot、acquire 与 release 独立；host `BufferTX` 不能度量输入积压。外部 dequeue 查旧 T 与 HWUI 消费，RT input wait/import 查输入创建方及 ownership，host dequeue 查旧 H 归还，SF 等 H acquire 查宿主 GPU。present 属于 Display，不属于 T slot，旧 T 回收与当前 H present 无固定先后。虚线只表达安全复用需求：固定 r1 Legacy 把 `createReleaseFence` 的 native fence 加入旧 slot；新 `releaseBufferLocked` 传 `NO_FENCE`，须核对 `wb_surfacetexture`、配套实现与实际同步，不能凭 `createFence` 回调声称同路已传出，也不能仅据静态代码断言数据竞争。SurfaceView 内容同样分 acquire/release，CLIENT release 还可合并 GPU 条件。
 
 - 输入 acquire fence：外部 Producer 何时完成当前内容 buffer；
 - 输入 release fence：HWUI 何时不再读取旧输入 slot，Producer 何时可以复用；
@@ -963,7 +963,7 @@ TextureView 增加的等待有多长，取决于通知与取帧的相对时机�
 
 同一可见帧可能先等待外部 acquire fence，又受到宿主 GPU 和 App Window release 返回路径的约束。所以我们写报告时，把等待者、创建者和对应队列的所有权一并写清，责任才定位得下来；只写一句“GPU fence 慢”，这些信息就都丢了。
 
-⚠️ 源码分支边界：安全复用条件不等于每个实现分支都以同样方式传递 fence。当前 r1 的 [`LegacyImageConsumer`](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/libs/nativedisplay/surfacetexture/LegacyImageConsumer.cpp) 会把 `createReleaseFence` 产生的 native fence 加入旧 slot 的 release 依赖；新 [`SurfaceTexture::releaseBufferLocked()`](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/libs/nativedisplay/surfacetexture/SurfaceTexture.cpp) 则向 `BufferItemConsumer::releaseBuffer()` 传 `Fence::NO_FENCE`。因此本节时序图的输入归还按 Legacy 路径说明，不能仅凭新 `ImageConsumer` 存在 createFence 回调就断言 native fence 已沿同一路径交给 Producer，也不能从这段静态代码直接断言目标设备发生数据竞争；现场需核对 `wb_surfacetexture` 构建选择、配套同步实现与实际 fence。
+不同实现分支传递 fence 的方式并不相同，安全复用条件不等于每个分支都走同一条路。当前 r1 的 [`LegacyImageConsumer`](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/libs/nativedisplay/surfacetexture/LegacyImageConsumer.cpp) 会把 `createReleaseFence` 产生的 native fence 加入旧 slot 的 release 依赖；新 [`SurfaceTexture::releaseBufferLocked()`](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/libs/nativedisplay/surfacetexture/SurfaceTexture.cpp) 则向 `BufferItemConsumer::releaseBuffer()` 传 `Fence::NO_FENCE`。因此本节时序图的输入归还按 Legacy 路径说明，不能仅凭新 `ImageConsumer` 存在 createFence 回调就断言 native fence 已沿同一路径交给 Producer，也不能从这段静态代码直接断言目标设备发生数据竞争；现场需核对 `wb_surfacetexture` 构建选择、配套同步实现与实际 fence。
 
 这一层仍是内核里那两个文件：`drivers/dma-buf/sync_file.c` 提供 fence fd 接口，`drivers/dma-buf/dma-fence.c` 提供 signal、callback 和 wait 语义，讲的只是同步机制本身；某台设备上的 GPU、codec、camera 或 Display fence 为何迟到，还要结合驱动 timeline、vendor service 和硬件轨迹才能回答。
 
@@ -1047,7 +1047,7 @@ mUpdateListener.onFrameAvailable(surfaceTexture)
 <!-- gracker-diagram: ed13-03-tv-two-gates-and-coalescing -->
 ![本次 updater 与实际取帧，分别决定 T 能否进入 H](../../assets/diagrams/ch13/ed13-03-tv-two-gates-and-coalescing.png)
 
-图：两个门槛与通知合并合图，轨道非实测。通知赶上UIapplyUpdate且updater进入本次sync，输入还须赶上RT实际选帧并满足读取依赖；晚于UI且没有其他pending时等后续hostdraw。已有pending时外部Producer仍可并发queue，RT可能选到比通知更新的T，也可能旧/空，不保证返回时最新。正常消息循环中UI等RT时不能执行新listener。acquire未signal可触发停止追新，依赖满足与实际选中输入分别记；没有固定额外一帧或逐通知取帧承诺。
+图：两个门槛与通知合并合图，轨道非实测。通知赶上 UI `applyUpdate` 且 updater 进入本次 sync 后，输入还须赶上 RT 实际选帧并满足读取依赖；通知晚于 UI 且没有其他 pending 时，需等后续 host draw。已有 pending 时外部 Producer 仍可并发 queue，RT 可能选到比通知更新的 T，也可能取到旧帧或空，不保证返回时最新。正常消息循环中 UI 等 RT 时不能执行新 listener。acquire 未 signal 可触发停止追新，依赖满足与实际选中输入需分别记录；没有固定额外一帧或逐通知取帧的承诺。
 
 #### 尺寸、opaque 与 transform
 
