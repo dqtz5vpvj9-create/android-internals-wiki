@@ -99,7 +99,7 @@ logd 一旦来不及接收，socket 就返回 `EAGAIN`（表示“稍后再试�
 - logd 忙于接收、压缩、裁剪和服务读取客户端，增加系统负载；
 - 日志对象和中间字符串增加分配压力。
 
-在这套机制下，“socket 满后 `write()` 阻塞主线程并导致 ANR”的说法与 `android-17.0.0_r1` 的 liblog 实现不符。trace 里如果真有线程长期停在日志相关调用上，我们要查的是自建日志框架的锁、磁盘输出端（sink）、格式化、崩溃收集器或厂商改动；普通日志的非阻塞 `logdw` 过载分支会丢弃新记录，不会因为 socket 队列满而等待下游；前述 security 阻塞 socket 是另一条路径。
+在这种非阻塞设计下，`android-17.0.0_r1` 的普通 `logdw` 写入不会因为下游消费慢而阻塞调用线程并导致 ANR；当队列满时，liblog 会直接丢弃新记录并返回。因此若 trace 中看到线程长期停留在日志调用上，需要优先排查自建日志框架的锁、磁盘输出端（sink）、格式化、崩溃收集器或厂商定制改动；只有受权限控制的 `security` buffer 另行使用阻塞写入路径。
 
 对 `EAGAIN` 也不要做无间隔重试——那等于把“允许丢日志”的保护机制变成 CPU 自旋。
 
@@ -176,7 +176,7 @@ adb logcat -g
 
 `system/logging/logd/README.compression.md` 的标题就写着 Android S 的这次变化：用日志压缩取代 Chatty。到了 Android 17，logd 源码里已经没有当前默认路径所需的 `ChattyLogBuffer.cpp`，默认的 serialized buffer 也不会按旧说明插入 `uid=... expired ... lines` 来表示重复日志。
 
-旧设备的日志中仍可能看到 `chatty`，AOSP 的事件 tag 表也保留了历史名称，但这只能说明历史，说明不了 Android 17 默认还在使用旧的重复行合并策略。当前版本有两个容易混在一起的现象：
+旧设备的日志中仍可能看到 `chatty`，AOSP 的事件 tag 表也保留了历史名称，但 Android 17 默认已采用 serialized 压缩机制，不再沿用旧的重复行合并策略。当前版本需要区分两个独立现象：
 
 - buffer 超限：logd 裁剪较老 chunk；
 - writer socket 过载：liblog 遇到 `EAGAIN` 丢弃新写入，并可能用 event tag `liblog` 报告数量。
@@ -246,7 +246,7 @@ reader 要读的位置一旦落在被裁剪的数据之后，serialized buffer �
 
 `system/logging/rust/` 包含的 Rust logging API、结构化日志和 liblog 绑定等都是客户端代码，这个目录的存在说明不了 logd 守护进程已经改写为 Rust。
 
-`android-17.0.0_r1` 中，`logd/Android.bp` 构建的是 `cc_binary`，核心文件仍是 C++ 的 `main.cpp`、`LogListener.cpp`、`SerializedLogBuffer.cpp`、`LogReader.cpp` 和 `LogReaderThread.cpp`，`logd/` 下找不到承担这些核心职责的 `.rs` 实现。基于 `RwLock<VecDeque<...>>`、`mio` 或“Rust 版吞吐提升比例”的描述在这个版本的源码里都没有依据，也就写不进 Android 17 的结论。
+`android-17.0.0_r1` 中，`logd/Android.bp` 构建的是 `cc_binary`，核心文件仍是 C++ 的 `main.cpp`、`LogListener.cpp`、`SerializedLogBuffer.cpp`、`LogReader.cpp` 和 `LogReaderThread.cpp`，`logd/` 下并不存在承担这些核心职责的 `.rs` 实现，因此围绕 `RwLock<VecDeque<...>>` 或 `mio` 的分析均不适用于 Android 17 的 logd 服务端。
 
 ## 5. 应用侧怎样减少日志开销
 
@@ -327,9 +327,9 @@ adb shell pidof logd
 
 Perfetto 可同时观察应用与 logd 的线程调度、CPU 时间和频率变化。`userdebug`/`eng` 环境还可用 CPU 采样工具 simpleperf 分析应用或 logd 热点；用系统调用跟踪工具 `strace` 短时间跟踪，能验证应用是否频繁调用 `writev()`、调用是否返回 `EAGAIN`。
 
-顺带一提，Android 的 bpfloader 只加载系统批准的 BPF 程序，普通应用并不能因此随意加载自定义 BPF 程序，排障手册也不该把它写成通用方案。
+此外，Android 的 bpfloader 仅加载系统批准的 BPF 程序，普通应用无法自行向内核加载定制 BPF 探针来追踪日志路径。
 
-AOSP 自带 `system/logging/liblog/tests/liblog_benchmark.cpp`，其中有轻载写入和高压写入基准。结果取决于 SoC、内核、构建类型、buffer 和 logd 负载，跨设备固定的“单条若干微秒”给不出来。
+AOSP 自带 `system/logging/liblog/tests/liblog_benchmark.cpp`，其中有轻载写入和高压写入基准。由于结果取决于 SoC、内核、构建类型、buffer 和 logd 负载，并不存在跨设备恒定的单条写入微秒数。
 
 比较优化前后的结果时，应固定消息长度、日志级别、CPU 状态和读取客户端配置，并同时记录丢失量；只统计成功循环次数，会把日志丢弃误判为吞吐提升。
 

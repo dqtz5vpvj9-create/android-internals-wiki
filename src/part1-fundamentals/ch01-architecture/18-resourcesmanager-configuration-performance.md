@@ -119,7 +119,7 @@ ActivityManagerService.updateConfiguration()  DisplayContent / Task / ActivityRe
 - **进程级配置**：`ConfigurationChangeItem` 更新应用进程的全局资源和组件回调。
 - **Activity 级配置**：`ActivityRecord` 根据变化位、应用清单和兼容策略决定是否 relaunch；不重建时，则把新的合并后覆盖配置热派发给现有 Activity。
 
-多窗口 Activity 收到的不是一份孤立的全局配置。服务端会把全局 `Configuration` 与 Activity 的覆盖配置合并后再下发，这就是合并后配置（merged Configuration）。其中的窗口大小、`displayId`、旋转方向和应用边界都可能来自 Activity 所在的容器。
+在多窗口模式下，服务端会把全局 `Configuration` 与 Activity 的覆盖配置合并后再下发（即合并后配置，merged Configuration），其中的窗口大小、`displayId`、旋转方向和应用边界都可能来自 Activity 所在的容器。
 
 relaunch 路径还会在创建新 Activity 实例前应用待处理的进程配置，避免新实例读取旧资源。
 
@@ -178,7 +178,7 @@ ResourcesManager#applyConfigurationToResources
 ResourcesManager#updateResourcesForActivity
 ```
 
-“旋转一次就创建一个新 `ResourcesImpl`”和“拖动窗口时为每个尺寸都保留一份缓存”这两种推断都不成立。是否新建取决于资源键和覆盖配置是否改变，以及旧 `ResourcesImpl` 能否复用。
+`ResourcesImpl` 不会因为每次旋转或拖动窗口而无条件新建，也不会为每个中间尺寸都保留缓存；是否新建取决于资源键和覆盖配置是否改变，以及旧 `ResourcesImpl` 能否复用。
 
 <!-- gracker-diagram: ch01-18-global-resource-update -->
 ![全局配置更新与资源键变化的不同处理](../../assets/diagrams/ch01/ch01-18-global-resource-update.png)
@@ -309,7 +309,7 @@ DisplayContent.handleTopActivityLaunchingInDifferentOrientation()
 
 系统也能对非顶部但可见、方向不同的 Activity 调用 `applyFixedRotationForNonTopVisibleActivityIfNeeded()`。
 
-FixedRotation 不是“禁止 Activity 重建”的开关。`ActivityRecord.applyFixedRotationTransform()` 仍会调用 `ensureActivityConfiguration()`，后续是否 relaunch 继续由配置差异和 `shouldRelaunchLocked()` 决定。它主要处理旋转期间的窗口配置与 Surface 画面变换，减少画面跳变。
+FixedRotation 负责在旋转期间协调窗口配置与 Surface 画面变换以减少画面跳变，并不会跳过配置检查：`ActivityRecord.applyFixedRotationTransform()` 仍会调用 `ensureActivityConfiguration()`，后续是否 relaunch 继续由配置差异和 `shouldRelaunchLocked()` 决定。
 
 默认 Perfetto 系统轨迹中不一定有 `applyFixedRotationTransform` 这类 Java 方法区间。`activityRestart` 受 `am`（ActivityManager）轨迹类别控制；没有采集该类别、没有覆盖目标进程与完整时间窗口，或轨迹存在丢失时，都可能看不到它。单凭缺少这个区间不能认定 Activity 未重建，应结合带实例标识的生命周期日志确认。即使已确认没有重建，也不能反推 FixedRotation 一定参与；判断 FixedRotation 需要结合 WindowManager 日志、窗口状态和对应源码分支。
 
@@ -389,7 +389,7 @@ ORDER BY ts;
 
 采集时至少记录设备、系统构建指纹、刷新率、Activity、触发方式、是否重建、变化位和样本次数。
 
-重建与热更新的对比必须使用同一页面、同一窗口状态和相同数据集，并报告中位数 P50 与尾部值 P95，不能引用缺少测试条件的“快 5–10 倍”。
+重建与热更新的对比必须使用同一页面、同一窗口状态和相同数据集，并报告中位数 P50 与尾部值 P95，避免脱离具体测试条件笼统对比耗时倍数。
 
 ### 性能归因顺序
 
@@ -450,7 +450,7 @@ Android 17 中，应用没有自行处理 `Configuration` 变化、因而发生 
 
 ### Compose
 
-读取 `LocalConfiguration.current` 的 Composable 会在配置变化时重新组合。这里的重新组合只更新 Compose UI 树；它与销毁、重建整个 Activity 不是同一件事。各类状态能否保留，取决于 Activity 是否 relaunch：
+读取 `LocalConfiguration.current` 的 Composable 会在配置变化时重新组合。这里的重新组合只局部刷新 Compose UI 树，并不会销毁或重建整个 Activity。各类状态能否保留，取决于 Activity 是否 relaunch：
 
 | 边界 | `remember` | `rememberSaveable` | `ViewModel` | `SavedStateHandle` |
 |---|---|---|---|---|

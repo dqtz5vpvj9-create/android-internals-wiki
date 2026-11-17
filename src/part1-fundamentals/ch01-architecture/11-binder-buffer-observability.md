@@ -102,7 +102,7 @@ consolidated_from:
 
 # Binder 事务缓冲区与可观测性
 
-Binder 的事务上限常被简化成一句“单笔 1 MiB”，这个说法丢掉了并发、方向、异步预算和协议头这些必要条件。走 `/dev/binder` 驱动的内核 Binder 会为每个进程建立一块接收事务的映射区，在途请求、`oneway`（单向）事务、回复和 Binder 对象共同占用这块空间；RPC Binder 用另一套传输机制和协议上限，不经过这块映射区。所以一笔事务能否成功、会占掉多少空间，要看当时的并发笔数、方向、同步还是异步，以及剩余异步预算和协议头开销。
+走 `/dev/binder` 驱动的内核 Binder 会为每个进程建立一块接收事务的映射区，在途请求、`oneway`（单向）事务、回复和 Binder 对象共同占用这块空间；RPC Binder 则使用另一套传输机制和协议上限，不经过这块映射区。因此，一笔事务能否成功、会占掉多少空间，取决于当时的并发笔数、事务方向、同步还是异步，以及剩余异步预算和协议头开销，而不能简化为“单笔 1 MiB”。
 
 > 源码基线：Android 17 / API 37；AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -117,7 +117,7 @@ Binder 的事务上限常被简化成一句“单笔 1 MiB”，这个说法丢�
 | libbinder 映射请求 | `1 MiB - 2 × 页大小` | 一个使用内核 Binder 的进程接收缓冲区 |
 | Binder 驱动内存映射（mmap）上限 | `min(请求长度, 4 MiB)` | 驱动接受的单个 `binder_alloc` 映射长度 |
 | RPC Binder 协议上限 | `600 KiB`，还要扣除协议头与对象表 | 一条 RPC Binder 命令或回复包 |
-| libbinder 大事务告警线 | `300 KiB` | 内核 Binder 和 RPC Binder 的诊断告警，不是硬上限 |
+| libbinder 大事务告警线 | `300 KiB` | 内核 Binder 和 RPC Binder 的诊断告警阈值，不阻断事务执行 |
 
 前两行作用在不同层：AOSP 的 `ProcessState` 主动只映射约 1 MiB，r6 内核最多接受 4 MiB，后者是驱动对调用方请求的保护上限；驱动虽然放宽到 4 MiB，普通 AOSP 进程实际拿到的映射长度仍由 libbinder 的请求决定。RPC Binder 不经过目标进程的 `/dev/binder` 映射区传输数据，600 KiB 与内核 Binder 的约 1 MiB 接收池因此各管各的通道，谁也代替不了谁。
 
@@ -152,9 +152,9 @@ mVMStart = mmap(
 );
 ```
 
-这块用户虚拟地址用来接收驱动写入的事务。`MAP_NORESERVE` 只表示不为映射预留交换空间；从它推不出“Binder 页面不计入 RSS（进程当前驻留在物理内存中的大小）”——驱动会在事务需要覆盖相应范围时安装后备物理页，内存统计仍要以目标内核和设备实测为准。
+这块用户虚拟地址用来接收驱动写入的事务。`MAP_NORESERVE` 只表示不为映射预留交换空间，驱动仍会在事务需要覆盖相应范围时安装后备物理页，这些页面也会计入内存统计（实际 RSS 需以目标内核和设备实测为准）。
 
-16 KiB 页设备的映射长度比 4 KiB 页设备少 24 KiB，差值来自宏中扣除的“两页”。由这个差值推不出“驱动把每笔事务按 16 KiB 对齐”的结论。
+16 KiB 页设备的映射长度比 4 KiB 页设备少 24 KiB，差值来自宏中扣除的“两页”，并不表示驱动按 16 KiB 对齐每笔事务。
 
 #### 2. 驱动的 4 MiB 上限
 
@@ -316,7 +316,7 @@ debugfs（内核调试文件系统）的 `stats` 还能看到各进程的 buffer
 constexpr size_t kRpcTransactionLimitBytes = 600 * 1024;
 ```
 
-因此版本边界应写成：
+具体版本演进如下：
 
 | 版本 | RPC Binder 边界 |
 | --- | --- |
@@ -358,7 +358,7 @@ r6 内核在创建目标 `binder_buffer` 时把 `TF_CLEAR_BUF` 写入 `clear_on_
 
 同步调用中，`IPCThreadState` 会把 `TF_CLEAR_BUF` 转发给回复；`BBinder::transact()` 还会对用户态回复 Parcel 调用 `markSensitive()`，使 libbinder 在释放自己拥有的数据区前清零。因此，该标志同时覆盖接收方的内核 buffer 和相关用户态回复数据，并不只清用户态。
 
-清零成本随 buffer 覆盖范围增加，源码没有承诺固定的微秒数。这个标志承载的是敏感数据的安全语义，省耗时的正确方向是把大块敏感数据移出 Parcel，而不是去掉 `TF_CLEAR_BUF`。
+清零成本随 buffer 覆盖范围增加，源码没有承诺固定的微秒数。由于这个标志承载的是敏感数据的安全语义，降低清零开销应通过将大块敏感数据移出 Parcel（改用文件描述符或共享内存）来实现，同时保留 `TF_CLEAR_BUF` 保护。
 
 ### 九、16 KiB 页设备上的影响
 
@@ -367,7 +367,7 @@ r6 内核在创建目标 `binder_buffer` 时把 `TF_CLEAR_BUF` 写入 `clear_on_
 1. `BINDER_VM_SIZE` 从 4 KiB 页设备的 1016 KiB 变为 992 KiB；
 2. `binder_install_buffer_pages()` 和页面 LRU（按近期使用情况组织的可回收页列表） 以 16 KiB 为安装、回收粒度。
 
-事务 buffer 的逻辑大小仍按指针宽度对齐，多个小 buffer 可以共享一页。较大的页面可能改变后备物理页数量、回收时机和内存局部性；至于“每个小事务多浪费 12 KiB”这类说法，分配器实现里给不出依据，必须通过实测验证。
+事务 buffer 的逻辑大小仍按指针宽度对齐，多个小 buffer 可以共享一页。较大的页面可能改变后备物理页数量、回收时机和内存局部性，不过每个小事务仍按指针宽度切分，实际内存变化需通过实测验证。
 
 做 4 KiB / 16 KiB 对比时，我们应固定 APK、调用并发、Parcel 分布和设备内存状态，并分别报告事务大小、失败率、页面统计与端到端时延。
 
@@ -377,7 +377,7 @@ r6 内核在创建目标 `binder_buffer` 时把 `TF_CLEAR_BUF` 写入 `clear_on_
 
 固定字段、数量有界的小型请求适合 AIDL `structured` Parcelable，即在接口定义中声明固定字段结构。集合应使用有明确元素类型的 typed collection，避免通用 Bundle 携带不受控对象；服务端还要校验元素数、字符串长度和嵌套集合深度。
 
-别按“20 个操作”或“500 KB 以下”写死通用规则：同一种 `ContentProviderOperation` 的 URI、`selection`、`values` 和 `back reference`（引用批次中前一项结果）都会改变 Parcel 大小。批量接口应同时限制条目数量和预估字节数，并在压力测试中记录序列化后的大小。
+由于同一类操作携带的数据量差异很大，不宜用固定的条目数或单值阈值作为通用上限：同一种 `ContentProviderOperation` 的 URI、`selection`、`values` 和 `back reference`（引用批次中前一项结果）都会改变 Parcel 大小。批量接口应同时限制条目数量和预估字节数，并在压力测试中记录序列化后的大小。
 
 #### 2. 大块数据使用描述符协议
 
@@ -413,7 +413,7 @@ r6 内核在创建目标 `binder_buffer` 时把 `TF_CLEAR_BUF` 写入 `clear_on_
 7. Perfetto 记录 `binder_transaction_alloc_buf`，复现前后读取 debugfs 的 `stats`；
 8. 检查 300 KiB 日志、`FAILED_TRANSACTION`、`ENOSPC` 和 `oneway` spam 日志。
 
-只有把事务大小分布与并发数放在一起，才能解释“同一个调用有时成功、有时失败”。
+只有把事务大小分布与并发数放在一起，才能完整解释同一个调用在并发压力下时成功时失败的现象。
 
 ### 十一、源码核对入口
 
@@ -430,7 +430,7 @@ r6 内核在创建目标 `binder_buffer` 时把 `TF_CLEAR_BUF` 写入 `clear_on_
 | 大事务与慢事务日志 | `BpBinder.cpp`、`Binder.cpp` |
 | 请求释放与 clear 标志转发 | `IPCThreadState.cpp`：`BR_TRANSACTION` 处理分支 |
 
-分析 Transaction Buffer 时，我们应标明目标进程、事务方向、内核 Binder / RPC Binder 通道、同步 / `oneway` 和并发数；少了这些条件，“1 MiB 上限”只是容易误导的近似说法。
+分析 Transaction Buffer 时，需标明目标进程、事务方向、内核 Binder 或 RPC Binder 通道、同步或 `oneway` 类型以及并发数，仅按“1 MiB 上限”估算容易忽略并发与异步预算边界。
 
 
 ## 从 AIDL Trace 到内核事务快照
@@ -534,7 +534,7 @@ if (proc->is_frozen) {
 }
 ```
 
-查询时，驱动还会把 `binder_txns_pending_ilocked()` 的布尔结果放进 `sync_recv` 的 bit 1。所以 `sync_recv == 3` 只表示两个状态位都为 1，把它读成“发生了三次同步事务”就错了；`async_recv` 同样是状态位，拿来当单调增长的计数器也会出错。
+查询时，驱动还会把 `binder_txns_pending_ilocked()` 的布尔结果放进 `sync_recv` 的 bit 1。所以 `sync_recv == 3` 只表示两个状态位都为 1，并不代表发生了三次同步事务；`async_recv` 同样是状态位，不能当作单调增长的计数器使用。
 
 #### 3.2 `timeout_ms` 只控制等待排空
 
@@ -553,7 +553,7 @@ if (ret >= 0 && binder_txns_pending_ilocked(target_proc))
     ret = -EAGAIN;
 ```
 
-所以，`timeout_ms` 等的是旧事务排空，而非“冻结多长时间”。冻结成功后持续到调用 `freeze(pid, false, ...)`；解冻路径同时清除 `sync_recv` 和 `async_recv`。
+所以，`timeout_ms` 控制的是等待旧事务排空的超时时长；冻结状态本身会持续到调用 `freeze(pid, false, ...)` 为止，解冻路径同时清除 `sync_recv` 和 `async_recv`。
 
 冻结后的新同步事务会失败，并向发送端返回冻结相关错误。`oneway` 事务可以进入冻结进程的待处理队列，发送端还可能收到 `BR_TRANSACTION_PENDING_FROZEN`。分析长时间的异步 Binder flow 时，冻结是候选原因之一；当前内核没有名为 `binder_freeze` 的 Binder tracepoint（静态跟踪点），区间标记要用真实存在的事件。
 
@@ -585,7 +585,7 @@ struct binder_extended_error {
 
 `extended_error` 功能探测通过时，标准 libbinder 的 `waitForResponse()` 在返回失败前会通过 `logExtendedError()` 读取并消费记录。使用这条路径排查时，应先保留 `Binder transaction failure` 日志中的 ID、命令和 errno；等 `transact()` 返回后再发一次 ioctl，通常读不到同一条错误。只有自行处理驱动协议或调整底层错误处理路径时，才应在失败线程上安排这次读取。
 
-`logExtendedError()` 只为 `ENOSPC` 增加一段解释：Binder 缓冲区已满，事务过多或过大；其他 errno 仍使用通用错误字符串。不过单独一个 `ENOSPC` 也证明不了“这一条 Parcel 超过固定 1 MiB”——同一接收进程的并发同步 / 异步分配都会消耗 Binder 映射与异步预算，要结合前文的分配器与异步预算一起判断。
+`logExtendedError()` 只为 `ENOSPC` 增加一段解释：Binder 缓冲区已满，事务过多或过大；其他 errno 仍使用通用错误字符串。由于同一接收进程的并发同步和异步分配都会消耗 Binder 映射与异步预算，单独一个 `ENOSPC` 并不能证明当前这一条 Parcel 本身超过了 1 MiB，仍需结合前文的分配器与异步预算一起判断。
 
 ### 五、`oneway` 嫌疑告警发生在发送端
 
@@ -643,7 +643,7 @@ C++ 后端在 `options.GenTraces()` 开启时，会分别在代理方法和服�
 
 服务端对应名称以 `cppServer` 结尾。它们与 `BBinder::transact()` 的通用服务端时间片来自不同代码位置，同一线程轨道中因此可能出现嵌套时间片。遇到名称相近的 AIDL 时间片时，我们应检查名称后缀和所在进程 / 线程；时间片的数量推算不出调用的次数。
 
-源码没有给出“关闭时固定 10 ns”或“开启时固定多少微秒”的保证。关闭跟踪标签会绕过名称构造和 `trace_begin()`；开启后的成本与生成代码、名称处理、轨迹缓冲区和调用频率有关，应在目标设备上测量。
+关闭跟踪标签会绕过名称构造和 `trace_begin()`；开启后的实际成本取决于生成代码、名称处理、轨迹缓冲区和调用频率，需要在目标设备上实测。
 
 #### 6.3 最小 Perfetto 配置
 
@@ -704,7 +704,7 @@ ORDER BY client_dur DESC
 LIMIT 50;
 ```
 
-这个差值适合筛选服务端开始较晚的事务；直接把它叫“纯排队时间”会有偏差，其中还可能包含客户端到驱动、驱动选择线程以及调度唤醒等区间。`client_dur - server_dur` 同样混合了内核传输、等待、回复和调度开销。要区分 runnable 延迟（线程已就绪但尚未获得 CPU）、睡眠和锁阻塞，我们还得查看 `android_sync_binder_thread_state_by_txn` 或两端线程轨道。
+这个差值适合筛选服务端开始较晚的事务，其中还可能包含客户端到驱动、驱动选择线程以及调度唤醒等区间，不能直接当作纯排队时间。`client_dur - server_dur` 同样混合了内核传输、等待、回复和调度开销。要区分 runnable 延迟（线程已就绪但尚未获得 CPU）、睡眠和锁阻塞，我们还得查看 `android_sync_binder_thread_state_by_txn` 或两端线程轨道。
 
 ### 八、`binder_txn_latency_free` 记录对象释放时刻
 
@@ -716,7 +716,7 @@ LIMIT 50;
 
 触发点位于 `binder_free_transaction()`。它说明某个内核 `binder_transaction` 对象何时被释放，可借助 `debug_id` 与 `binder_transaction` 事件关联。两事件的时间差是该内核对象的存活区间，和应用看到的端到端调用耗时是两个量：服务端何时释放接收缓冲区、错误路径以及 `oneway` 处理方式都会影响对象寿命。
 
-当前 `binder_trace.h` 有 `binder_transaction` 和 `binder_transaction_received`，回复通过 `binder_transaction` 的 `reply` 字段表示；名为 `binder_reply` 的 tracepoint 并不存在，`binder_freeze` 同样没有。诊断脚本应以设备的 `/sys/kernel/tracing/events/binder/` 为准，界面里的 `binder reply` 时间片名称当内核事件名用会出错。
+当前 `binder_trace.h` 有 `binder_transaction` 和 `binder_transaction_received`，回复通过 `binder_transaction` 的 `reply` 字段表示；名为 `binder_reply` 与 `binder_freeze` 的 tracepoint 并不存在。诊断脚本应以设备的 `/sys/kernel/tracing/events/binder/` 为准，界面上显示的 `binder reply` 时间片名称不能直接当作内核事件名查询。
 
 ### 九、debugfs 的现场快照
 
@@ -724,7 +724,7 @@ debugfs 在 `/sys/kernel/debug/binder/`（或产品映射的对应调试目录�
 
 逐进程文件适合回答“目标进程当下有多少 Binder 线程、哪些线程在等待、是否存在未释放 buffer、`free async space` 是否异常”；Perfetto 适合回答“事务何时发送、服务端何时开始、线程为何没有运行”。binderfs 的 `features/*` 是第三类信息，只回答“驱动是否支持某项协议”；运行状态和调用计数，要从前面两类信息里看。
 
-出现缓冲区压力时，我们应把 `binder_transaction_alloc_buf` 的 `data_size`、`offsets_size`、`extra_buffers_size` 与目标进程的并发事务、`free async space`、`oneway` spam 告警一起看。Java 层会根据事务失败时的上下文推测并报告 `TransactionTooLargeException`，它不是驱动用于表示“这一笔精确超过 1 MiB”的专用错误。
+出现缓冲区压力时，应把 `binder_transaction_alloc_buf` 的 `data_size`、`offsets_size`、`extra_buffers_size` 与目标进程的并发事务、`free async space`、`oneway` spam 告警结合起来分析。Java 层会根据事务失败时的上下文推测并报告 `TransactionTooLargeException`，并不代表单笔事务精确超过了 1 MiB。
 
 ### 十、Parcel 与应用侧的观测范围
 
@@ -755,7 +755,7 @@ Java `Parcel` 有对象池，带明确类型的 Parcelable 由生成代码或显
 - 回复 Parcel 的数据区；
 - 调用 `timespec_get()` 时取得的时间戳。
 
-时间戳在服务端处理完成后才采集，当不了事务开始时间；AOSP 的 `BpBinder` 发送路径没有与之对称的客户端录制入口，“客户端和服务端各打开一次就得到端到端录制”的想法并不成立。端到端时间仍应由 Perfetto 的 Binder flow 解释。
+时间戳在服务端处理完成后才采集，无法作为事务开始时间；AOSP 的 `BpBinder` 发送路径也没有与之对称的客户端录制入口，因此端到端耗时仍应由 Perfetto 的 Binder flow 解释。
 
 #### 11.3 文件格式与风险
 
@@ -772,7 +772,7 @@ End
 
 `TransactionHeader` 只包含 `code`、`flags`、返回状态、RPC 版本标记、秒 / 纳秒时间戳和保留字段；接口名位于独立数据块（chunk）中。每个数据块由 `uint32_t chunkType`、`uint32_t dataSize`、数据、0～7 字节补齐和 64 位 XOR 校验值组成。未知数据块可以校验后跳过；同类数据块重复出现时，后读到的值会覆盖前值。
 
-源码明确标记该格式仍在持续开发，协议稳定性没有保证。录制内容可能包含账号标识、令牌、路径和业务数据；同时，序列化与文件写入发生在事务返回路径并受录制锁保护，会改变被测路径的时延，固定的 `100 ns–1 us` 开销在源码里也没有依据。它适合实验设备上的协议复现和离线检查，生产设备的常驻采集应该使用前面那些扰动更小的手段。
+源码明确标记该格式仍在持续开发，协议稳定性没有保证。录制内容可能包含账号标识、令牌、路径和业务数据；同时，序列化与文件写入发生在事务返回路径并受录制锁保护，会改变被测路径的时延，不适合作为生产设备的常驻采集手段。它适合实验设备上的协议复现和离线检查，生产设备的常驻采集应使用前面那些扰动更小的手段。
 
 ### 十二、一个可复用的诊断顺序
 

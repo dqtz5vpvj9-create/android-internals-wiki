@@ -236,7 +236,7 @@ init(
 );
 ```
 
-`SystemServer` 在主线程依次启动服务，随后才调用 `Looper.loop()`。所以这里的 `Looper.myLooper()` 是 `system_server` 主 Looper。常见的“NotificationManager 专用 `ServiceThread`”模型不适用于这个版本。
+`SystemServer` 在主线程依次启动服务，随后才调用 `Looper.loop()`。这里的 `Looper.myLooper()` 即 `system_server` 主 Looper，因此 NMS 的核心工作队列共享 `system_server` 主线程，并非运行在专用的 `ServiceThread` 上。
 
 `WorkerHandler` 上会运行 enqueue、post、listener dispatch runnable 以及多类 NMS 消息。耗时任务会与其他 `system_server` 主线程工作相互影响。NMS 仍有两个专用线程：
 
@@ -302,7 +302,7 @@ Android 17 对高频更新设置了两级保护，但两者的作用域和算法
 - 用户在设置中可以提高或降低 importance，应用不能覆盖用户选择；
 - sound、vibration 等多数行为在首次创建后由系统保存，后续使用同一 ID 创建不会重置。
 
-“应用不能提高渠道 importance”与“用户不能提高 importance”是两件事。后一个说法是错误的。用户拥有渠道配置的最终决定权。
+渠道创建的约束仅限制应用侧：应用无权自行提高现有渠道的 importance，但用户仍可在系统设置中自由上调或下调，拥有渠道配置的最终决定权。
 
 ### 删除留下标记，重建会恢复
 
@@ -516,9 +516,9 @@ Android 13 / API 33 起，非豁免通知受 `POST_NOTIFICATIONS` 运行时权�
 
 ## 状态栏图标与 Launcher 通知圆点
 
-### 状态栏图标不是“每包一个”
+### 状态栏图标的包级显示策略
 
-状态栏用 `Notification.smallIcon` 生成图标；`largeIcon` 则用于通知内容或通知圆点（badge）的可选展示。Android 17 没有“同一个包最多显示一个状态栏图标”的通用规则。同一包的多条独立通知可以占据多个图标位置，最终可见数量由屏幕空间、优先级、静默图标设置和 SystemUI 策略共同决定。
+状态栏用 `Notification.smallIcon` 生成图标；`largeIcon` 则用于通知内容或通知圆点（badge）的可选展示。同一应用包发布的多条独立通知可以占据多个状态栏图标位置，系统并不按“每包最多一个”做硬性裁剪，最终可见数量由屏幕空间、优先级、静默图标设置和 SystemUI 策略共同决定。
 
 `IMPORTANCE_LOW` 的 SDK 定义是可能出现在状态栏，但不产生声音式打扰；用户还可以选择隐藏静默通知图标。不能用单一 importance 值推断图标一定显示或一定隐藏。
 
@@ -722,7 +722,7 @@ Android 17 针对 target API 37 的 custom notification view 增加了展开后�
 6. group 是否同时设置正确的 summary 与 alert behavior；
 7. 是否把通知显示当成业务成功确认；
 8. Perfetto 是否包含应用、Binder、`system_server`、SystemUI 和图形线程；
-9. Android 17 的 Live Update 是否逐项满足条件，而非只调用一个 setter（设置方法）。
+9. Android 17 的 Live Update 是否逐项满足条件，而不只停留在调用单个 setter（设置方法）。
 
 ## 相关章节
 

@@ -103,7 +103,7 @@ App 已排队数据
 + 调度抖动
 ```
 
-各项相加才接近整条链路的排队与处理时间。“双缓冲所以乘 2”同样是个案：不同输出配置档（output profile）、路由、HAL、DSP 和设备会形成深度不同的队列，要以实际测量为准。
+各项相加才接近整条链路的排队与处理时间。不同输出配置档（output profile）、路由、HAL、DSP 和设备会形成深度不同的队列，实际输出延迟须以实测为准，不宜简单套用“双缓冲乘以 2”的固定换算。
 
 ### 1.2 系统特性声明与实测延迟
 
@@ -150,7 +150,7 @@ App buffer
                  └─ driver / DSP / Codec / transducer
 ```
 
-对照这张图可以看到：Binder 主要负责建流、状态、路由、参数和控制操作，高频 PCM 数据通常走共享内存队列；“每个音频缓冲区都经过一次 Binder 序列化”这类描述，可以直接排除。
+对照这张图可以看到：Binder 主要负责建流、状态、路由、参数和控制操作，高频 PCM 数据通常走共享内存队列，并不逐块经由 Binder 序列化传输。
 
 <!-- gracker-diagram: ch01-20-audio-control-data -->
 ![音频控制操作与连续 PCM 数据的分工](../../assets/diagrams/ch01/ch01-20-audio-control-data.png)
@@ -170,7 +170,7 @@ App buffer
 
 ### 2.2 AudioFlinger 决定“这条音轨怎么运行”
 
-AudioFlinger 运行在 `audioserver` 中。音频服务在 Android 7 就已从原来的 `mediaserver` 进程拆出，常被误记成 Android 8 才分离。
+AudioFlinger 运行在独立于 `mediaserver` 的 `audioserver` 进程中（该进程拆分自 Android 7 起完成）。
 
 AudioFlinger 用 track 表示一条应用侧播放或录制流。按输出类型，它会使用不同线程或端点：
 
@@ -240,7 +240,7 @@ FastMixer 保留：
 
 声道条件旁仍保留着一个 TODO：抽取用于检查是否需要高成本向下混音（downmix）的函数。现有掩码判断不能视为完整的声道转换成本检查，排查多声道配置时还要核对实际转换路径。
 
-另一句常见的误写是“帧数不匹配就一定拒绝 FAST”。对流式快速音轨，系统会把缓冲区帧数至少提高到 `mFrameCount * fast_track_multiplier`，调整的是实际缓冲配置，帧数检查不在第一层拒绝条件里。打开音轨后要读取实际配置，builder（构建器）里的请求未必原样生效。
+帧数不匹配也未必导致 FAST 请求被拒。对流式快速音轨，系统会把缓冲区帧数至少提高到 `mFrameCount * fast_track_multiplier`，调整的是实际缓冲配置；因此打开音轨后需要读取实际配置，builder（构建器）里的请求未必原样生效。
 
 ### 4.2 默认为什么最多看到 7 条应用快速音轨
 
@@ -323,10 +323,10 @@ aaudio_performance_mode_t performance =
 
 Android 8.1 扩展了 AAudio MMAP。设备需要在 Audio HAL 和驱动中声明并实现 MMAP/NOIRQ 能力，还要提供对应的音频策略配置档。MMAP 让应用和驱动通过内存映射（MMAP）缓冲区交换数据；NOIRQ 表示这条路径不依赖传统的周期性中断通知方式。
 
-- **EXCLUSIVE**：应用可写入与 ALSA（Linux 的音频驱动框架）驱动共享的内存映射缓冲区，绕过普通软件混音器；延迟最低，但端点更容易因路由变化或资源竞争而断开。
+- **EXCLUSIVE**：应用独占单个端点，可写入与 ALSA（Linux 的音频驱动框架）驱动共享的内存映射缓冲区并绕过普通软件混音器；系统其他声音仍可能通过另一端点继续播放，且端点更容易因路由变化或资源竞争而断开（或被降级为 SHARED）。
 - **SHARED**：多个流共享端点，由系统侧负责混合与管理；这里没有应用独占的硬件缓冲区。
 
-所以无论哪种模式，建流、权限、路由、状态切换、时间戳、xrun 和错误恢复仍要走 AAudio 服务、AudioFlinger / AudioPolicy 与 HAL 的控制路径。“应用直接打开 `/dev/snd/*`，audioserver 完全不参与”的画法，漏掉的正是这条控制路径。
+无论哪种模式，建流、权限、路由、状态切换、时间戳、xrun 和错误恢复仍要走 AAudio 服务、AudioFlinger / AudioPolicy 与 HAL 的控制路径；应用并不会绕开 `audioserver` 直接操作 `/dev/snd/*`。
 
 AAudio 的 MMAP 策略通常允许自动回退。只有在专用验证环境里才适合强制 MMAP 并禁止回退；面向用户的代码要能处理传统 AudioFlinger 路径。
 
@@ -343,7 +343,7 @@ Oboe 是 Google 的 C++ 封装：
 - AAudio 不可用时回退 OpenSL ES。
 - 统一音频流构建器、数据回调、错误恢复和一部分设备兼容处理。
 
-Oboe 的选路没有固定的“MMAP EXCLUSIVE → MMAP SHARED → FAST → Normal”决策表，最终路径仍受 API 级别、构建参数、设备配置档、端点占用和厂商实现影响。
+Oboe 的选路同样受 API 级别、构建参数、设备配置档、端点占用和厂商实现影响，并不遵循单一固定的线性优先级表。
 
 Oboe 的工程价值在于减少跨版本分支，并提供 `getAudioApi()`、`getSharingMode()`、`getPerformanceMode()` 等结果查询。至于 HAL 的 MMAP 能力与数据回调中的锁等待，Oboe 的封装管不到这里，仍要应用自己处理。
 
@@ -641,7 +641,7 @@ Perfetto 能解释软件时序；扬声器振膜何时发声、麦克风声学�
 | 短音效 | 预加载的 SoundPool 或低延迟音频引擎 | 首次预热与稳态分开测 |
 | 语音助手 | 正确的 `USAGE_ASSISTANT` 与 Assistant 角色能力 | Android 17 独立音量行为、音频焦点与后台生命周期 |
 
-这张表刻意避开“必须小于 10ms/20ms”这类写死的数值：目标取决于设备能力和产品交互。API 负责提出请求，结果要靠测量来证明。
+延迟预算取决于设备能力和产品交互形态，因此上表仅给出 API 选型与验证重点，具体是否达标应以目标设备上的实测数据为准。
 
 ## 12. 版本演进
 
@@ -655,41 +655,7 @@ Perfetto 能解释软件时序；扬声器振膜何时发声、麦克风声学�
 | Android 16（API 36） | AIDL HAL 扩展 CAP；AAudio 增加 Power Saving Offloaded；公开 `isMMapUsed()` | 分开验证省电硬件卸载与低延迟 MMAP |
 | Android 17（API 37） | 加强后台音频限制；AudioTrack/AAudio 支持按位置局部刷新；增加 codec provenance 与 Assistant 独立音量 | 当前源码以 `android-17.0.0_r1` 为准 |
 
-## 13. 常见误区
-
-### “用了 AAudio 就一定是 MMAP”
-
-用了 AAudio 只说明选了这套 API；AAudio 可以回退到传统 AudioFlinger 路径。API 36 及以上版本可用 `AAudioStream_isMMapUsed()` 核对。
-
-### “请求 LOW_LATENCY 就一定是快速音轨”
-
-这个请求只表达低延迟偏好；采样率、声道布局、FastMixer、可用槽位和音效都会影响是否接纳。
-
-### “FastMixer 不做混音”
-
-FastMixer 是做混音的：它把 Normal Mixer 的子混音与应用快速音轨合并，只是功能比 Normal Mixer 精简。
-
-### “缓冲区是 5ms，所以输出延迟就是 5ms”
-
-这个数只描述一个缓冲区承载的音频时长，其他队列、DSP、硬件和调度时间都还要叠加进来。
-
-### “EXCLUSIVE 意味着系统其他声音都消失”
-
-EXCLUSIVE 独占的是一个端点；系统声音可能通过另一个端点继续播放。请求也可能被降级为 SHARED。
-
-### “xrun 一定是缓冲区太小”
-
-数据回调等待锁、线程没有及时获得 CPU、HAL 阻塞、路由切换和时钟漂移都能造成 xrun。增大缓冲区换来的只是对调度波动更高的容忍度，代价是延迟增加。
-
-### “`getCodecProvenance()` 能判断硬解或软解”
-
-它返回配置的编解码器 MIME 媒体类型；编解码组件名称和实际执行路径都在它的返回范围之外。
-
-### “Perfetto 能直接量出扬声器发声时间”
-
-Perfetto 解释的是软件时序；声学端到端延迟要做回环测试。
-
-## 14. 排查清单
+## 13. 排查清单
 
 1. 固定设备、系统构建版本、路由和测试内容。
 2. 区分预热、稳态输出、输入与往返延迟。

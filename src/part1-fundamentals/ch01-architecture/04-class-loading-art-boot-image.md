@@ -127,7 +127,7 @@ last_body_apply_at: '2026-09-15T09:18:26+08:00'
 
 应用侧 Baseline Profile 与 Startup Profile 的结论以 Android Developers 文档为准，最终仍要回到所用 AGP/R8 版本、release APK 和目标设备 trace 验证。
 
-全文还有几个反复出现的词，先约定清楚：ART 指 Android Runtime；Zygote 是预先初始化运行时、再 fork 出 System Server 和应用进程的父进程；Boot Class Path 是系统核心 Java 类路径，System Server Class Path 承载 `system_server` 专用类；profile 记录应优先处理哪些类和方法，作为编译输入；AOT（Ahead-of-Time） 在运行前编译，JIT（Just-in-Time） 在运行时即时编译。
+本文涉及的 Boot Class Path 指系统核心 Java 类路径，System Server Class Path 承载 `system_server` 专用类；profile 记录需要优先处理的类与方法，分别作为编译与布局输入。
 
 ## 类加载委派、查找与启动成本
 
@@ -170,7 +170,7 @@ ClassLoader.loadClass(name, resolve)
 
 这里的 `bootstrap lookup` 是从 boot class path 查找平台类；`sharedLibraryLoaders` 与 `sharedLibraryLoadersAfter` 则分别表示在本加载器 DEX 之前、之后参与查找的共享库（shared library）加载器。
 
-这条链上有两个按顺序访问的维度：父加载器链和 `dexElements[]`。`DexPathList.findClass()` 按数组顺序访问元素，命中第一个定义就停止。DEX 数量增加，会让一次未命中或靠后命中的查找访问更多元素；但耗时还受缓存、DEX 是否已映射、ART 产物是否有效和设备存储影响，要把这些因素放在一起看，单凭 DEX 数量换算不出固定毫秒数。
+这条链上有两个按顺序访问的维度：父加载器链和 `dexElements[]`。`DexPathList.findClass()` 按数组顺序访问元素，命中第一个定义就停止。DEX 数量增加会让未命中或靠后命中的查找访问更多元素，实际耗时则受缓存、DEX 是否已映射、ART 产物是否有效和设备存储性能共同影响，应结合这些因素综合评估，难以仅按 DEX 数量换算固定毫秒数。
 
 #### API 37 的 ART 快速路径
 
@@ -220,7 +220,7 @@ API 37 的实现里没有对 `class_defs` 做二分查找这一步。
 
 Startup Profile 是构建期输入：D8/R8 用它调整 DEX 布局，优先把启动类和方法放入主 `classes.dex`，空间不足时放到后续 DEX。Baseline Profile 则随 APK/AAB 提供给 ART，做设备侧的 profile 引导编译（profile-guided compilation）——ART 会优先处理 Profile 覆盖的类和方法。两者可以来自同一套生成流程，只是作用阶段不同。
 
-“首 DEX 命中率达到某个百分比”这类目标代替不了测量。我们可以在 Android Studio 的 APK Analyzer 或同等解包工具中检查 DEX 分布；构建链路输出的 R8/Startup Profile 元数据可以当布局辅助参考，最终还是要回到 release 产物和启动 trace 验证。
+评估布局效果时，可以在 Android Studio 的 APK Analyzer 或同等解包工具中检查 DEX 分布；构建链路输出的 R8/Startup Profile 元数据可作为布局参考，最终优化收益仍需回到 release 产物和启动 trace 验证。
 
 ### `ClassLinker::DefineClass()` 做了什么
 
@@ -250,7 +250,7 @@ API 37 的主要步骤可概括为：
 - `ArtField` 数组；
 - 部分 IMT、方法冲突表和链接期表结构。
 
-应用类加载器注册时，ART 为它创建 `ClassTable` 和专属 `LinearAlloc`；该类加载器不再可达并被清理时，ART 会移除相关 JIT/CHA 依赖，随后删除对应分配器和类表。类加载器长期存活时，`LinearAlloc` 中的类元数据会一直存在——这描述的只是该观察窗口内的情形，尚不构成 ART 的一般回收规则。
+应用类加载器注册时，ART 为它创建 `ClassTable` 和专属 `LinearAlloc`；该类加载器不再可达并被清理时，ART 会移除相关 JIT/CHA 依赖，随后删除对应分配器和类表。只要类加载器长期存活，`LinearAlloc` 中的类元数据就会一直保留；一旦类加载器失去引用并被回收，这些元数据也会随之释放。
 
 #### 并发定义使用多层同步
 
@@ -264,7 +264,7 @@ API 37 的主要步骤可概括为：
 - 初始化代码等待其他线程、I/O 或应用锁；
 - CHA 假设失效处理和 JIT 代码缓存（code cache）的更新。
 
-所以看到主线程阻塞，我们先结合等待栈和被等待线程确认它等在哪，再谈是不是那把“ClassLinker 全局锁”。
+因此，主线程在类加载阶段出现阻塞时，应先结合等待栈和被等待线程确认具体等待对象，区分是 `classlinker_classes_lock_` 临界区、共享父类/接口链接、verifier 递归还是 `<clinit>` 等待。
 
 ### 验证：编译过滤器能省掉哪部分工作
 
@@ -376,7 +376,7 @@ LoadedApk.makeApplicationInner()
 
 该材料使用的是应用层 `androidx.compose.remote:*` alpha 实现；上述内部类在 `1.0.0-alpha15` 中仍有 `@RestrictTo(LIBRARY_GROUP)` 限制。平台侧 `com.android.internal.widget.remotecompose.*` 属于隐藏实现，应用层库与平台隐藏类均不能当作 Android 17 稳定 SDK 契约。[来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；官方版本说明: https://developer.android.com/jetpack/androidx/releases/compose-remote]
 
-排查这类方案时，我们先确认代码运行在哪个进程：同进程插件的类加载、`<clinit>` 和崩溃栈会出现在宿主进程，SIGQUIT/Perfetto 中也应在宿主进程看到对应加载器、DEX 路径或类加载 slice；SCVH 这类跨进程嵌入则要同时观察宿主进程、Provider 进程、Binder 连接和 surface 可见性，Provider 死亡可能导致嵌入区域黑屏或停更；RemoteCompose 这类字节文档路径，优先核对宿主播放器、Binder 文档传输和 Provider 重新生成文档的时机，若宿主出现插件 DEX 加载或插件 `<clinit>` 热点，应先怀疑架构中混入了同进程加载，而不是把它归因于 RemoteCompose 文档渲染。[来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md；来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；已验证: system/core/debuggerd/debuggerd.cpp 与 art/runtime/class_linker.cc @ android-17.0.0_r1]
+排查这类方案时，应先确认代码实际运行在哪个进程：同进程插件的类加载、`<clinit>` 和崩溃栈会出现在宿主进程，SIGQUIT/Perfetto 中也应在宿主进程看到对应加载器、DEX 路径或类加载 slice；SCVH 这类跨进程嵌入则要同时观察宿主进程、Provider 进程、Binder 连接和 surface 可见性，Provider 死亡可能导致嵌入区域黑屏或停更；RemoteCompose 这类字节文档路径，优先核对宿主播放器、Binder 文档传输和 Provider 重新生成文档的时机，若宿主出现插件 DEX 加载或插件 `<clinit>` 热点，说明架构中混入了同进程加载，需将其与 RemoteCompose 文档渲染本身的开销区分排查。[来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md；来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；已验证: system/core/debuggerd/debuggerd.cpp 与 art/runtime/class_linker.cc @ android-17.0.0_r1]
 
 ### 如何在 API 37 上定位成本
 
@@ -459,7 +459,7 @@ API 37 的 `debuggerd` 实现要求 root 权限，量产 `user` 构建不应依�
 
 `CompilationMode.Partial` 从 Macrobenchmark 1.1.0 提供。使用 `BaselineProfileMode.Require` 时，目标 APK 需要包含 ProfileInstaller，并由 AGP 7.0+ 打包 Baseline Profile；这组条件针对设备侧 profile 安装，不替代 Startup Profile 的构建要求。`warmupIterations` 默认为 `0`，若另行设置，会在预编译前增加用于收集 profile 的预热运行，比较两种模式时要记录该参数。[官方 API: https://developer.android.com/reference/kotlin/androidx/benchmark/macro/CompilationMode.Partial]
 
-Baseline Profile 可以减少解释执行、JIT 和部分运行时验证，也可能让 profile 覆盖的类从 app image（包含预初始化类对象的 ART 镜像产物）——预先初始化好类对象的 ART 镜像产物——中更快恢复。它不保证消除所有 `Class` 对象的建立工作，也不会自动缩短应用写在 `<clinit>` 中的 I/O 或锁等待。
+Baseline Profile 可以减少解释执行、JIT 和部分运行时验证，也可能让 profile 覆盖的类从 app image（包含预初始化类对象的 ART 镜像产物）中更快恢复。它不保证消除所有 `Class` 对象的建立工作，也不会自动缩短应用写在 `<clinit>` 中的 I/O 或锁等待。
 
 #### 处理反射和运行时扫描
 
@@ -473,7 +473,7 @@ Baseline Profile 可以减少解释执行、JIT 和部分运行时验证，也�
 
 ### Android 17 结论与检查表
 
-源码结论以 `android-17.0.0_r1` 为准。API 37 的结论包括：标准加载器的原生快速路径、`TypeLookupTable` 优先查找、`mirror::Class` 与 `LinearAlloc` 的内存分工、完整类状态、实际 trace 名称和 ART Service 三种正式 compiler filter；至于“Android 17 进一步优化了某算法”这类说法，没有源码依据的都不算版本结论。
+本节对 API 37 的机制结论均以 `android-17.0.0_r1` 为准，涵盖标准加载器的原生快速路径、`TypeLookupTable` 优先查找、`mirror::Class` 与 `LinearAlloc` 的内存分工、完整类状态、实际 trace 名称以及 ART Service 三种正式 compiler filter。
 
 排查启动类加载时，可按以下顺序复核：
 
@@ -513,9 +513,9 @@ ART Boot Image 是 `dex2oat` 生成的可加载运行时快照。它保存选入
 | `.oat` | OAT 头、编译代码、运行时所需元数据 | 提供 AOT 代码和镜像依赖信息 |
 | `.vdex` | DEX 字节码与验证相关数据；是否携带 DEX section（文件区段）取决于产物模式 | 配合 OAT 打开 DEX，复用验证结果 |
 
-“三个固定文件”只够解释最小模型。Android 17 默认使用多组件能力：一个主镜像可以覆盖多个 Boot Class Path 组件，再接若干 Boot Image Extension（附加在主镜像后的扩展镜像）；多镜像构建时会出现 `boot.art`、`boot-framework-*.art` 等文件，并各有对应的 `.oat`、`.vdex`。
+Android 17 默认支持多组件镜像：一个主镜像可以覆盖多个 Boot Class Path 组件，再接若干 Boot Image Extension（附加在主镜像后的扩展镜像）；多镜像构建时会出现 `boot.art`、`boot-framework-*.art` 等文件，并各有对应的 `.oat`、`.vdex`。
 
-`services.jar` 属于 System Server Class Path，说明 Boot Image 时别把它写进 Boot Class Path 清单；`odrefresh` 对 Boot Class Path 和 System Server Class Path 使用两套检查与编译流程。
+`services.jar` 属于 System Server Class Path，不属于 Boot Class Path；`odrefresh` 对 Boot Class Path 和 System Server Class Path 使用两套检查与编译流程。
 
 ### 产物位置由运行时选择
 
@@ -542,7 +542,7 @@ ART 已经模块化，并不表示 `boot.art` 一定位于 `/apex/com.android.ar
 - 同时传入输出 image 和已有 `--boot-image`：生成 Boot Image Extension。
 - 传入 `--app-image-file` 或 `--app-image-fd`：生成 App Image。
 
-Android 17 的 AOT 编译统一使用位置无关代码（PIC）——代码装载到不同地址也能执行，`Dex2Oat::ProcessOptions()` 直接设置 `compile_pic_ = true`。“Boot Image 依赖位置相关机器码，地址一变就跑不起来”不符合当前实现。
+Android 17 的 AOT 编译统一使用位置无关代码（PIC）——代码装载到不同地址也能执行，`Dex2Oat::ProcessOptions()` 直接设置 `compile_pic_ = true`，因此镜像重定位后仍可正常执行。
 
 #### profile 对类和方法的选择不同
 
@@ -560,11 +560,11 @@ Boot Image Profile 同时携带类和方法信息：
 - `/system/etc/preloaded-classes`：传给 `dex2oat --preloaded-classes-fds`，同时由 Zygote 在 Java 层逐项加载并初始化。
 - `/system/etc/dirty-image-objects` 与 ART APEX 内同名文件：给 `ImageWriter` 提供容易被写脏的对象信息，改善对象排布，减少少量可变对象导致整页失去共享的概率。
 
-Android 17 AOSP 手机配置中的 `preloaded-classes` 有 18,784 个有效条目。这个数字只描述该 tag 的默认 phone 配置；产品可以替换该文件，后续版本也会变化，别把它当平台契约。
+Android 17 AOSP 手机配置中的 `preloaded-classes` 有 18,784 个有效条目。这个数字只描述该 tag 的默认 phone 配置；产品可以替换该文件，后续版本也会变化，实际规模以设备构建配置为准。
 
 ### `.art` 文件结构
 
-Android 17 的定义位于 `art/runtime/oat/image.h`，文件格式实现位于 `art/runtime/oat/image.cc`。旧资料常写成 `runtime/image.h` 或不存在的 `runtime/image_header.cc`，检索源码时要用当前路径。
+Android 17 的格式定义与实现位于 `art/runtime/oat/image.h` 和 `art/runtime/oat/image.cc`，检索源码时应以这两个当前路径为准。
 
 `ImageHeader` 记录的内容包括：
 
@@ -620,7 +620,7 @@ Runtime::Init()
 
 地址改变不会直接导致 fatal abort（进程因致命错误退出）。`MaybeRelocateSpaces()` 计算实际地址与 `ImageHeader::GetImageBegin()` 的差值，再由 `Relocator::RelocateBootImage()` 修正镜像内的对象引用和 native 指针；加载器还会为 OAT 初始化运行时 relocation。
 
-预留连续地址仍有价值：多个 image 与 OAT 可以按构建时布局装入同一段低 4 GB 地址空间，引用编码和相邻空间预留也更容易满足。这里的“低 4 GB”指虚拟地址小于 4 GiB 的区域，跟“内部指针全是不可调整的绝对地址”是两回事。
+预留连续地址仍有价值：多个 image 与 OAT 可以按构建时布局装入同一段低 4 GB 地址空间，引用编码和相邻空间预留也更容易满足。这里的“低 4 GB”指虚拟地址小于 4 GiB 的区域，镜像内部指针仍可在加载时通过重定位调整。
 
 #### 未压缩镜像与压缩镜像的映射不同
 
@@ -641,11 +641,11 @@ MemMap::MapFileAtAddress(
     error_msg);
 ```
 
-这段源码说明 image object 区以 `MAP_PRIVATE` 私有文件映射装入，初始权限 `PROT_READ | PROT_WRITE`，可读可写。`ImageSpace` 加载代码并没有在 Zygote `fork` 前统一通过 `mprotect(PROT_READ)` 把整段镜像改成只读；把“fork 前统一转为只读”写成固定步骤，会误导排查。
+这段源码说明 image object 区以 `MAP_PRIVATE` 私有文件映射装入，初始权限 `PROT_READ | PROT_WRITE`，可读可写；`ImageSpace` 加载代码并没有在 Zygote `fork` 前统一通过 `mprotect(PROT_READ)` 把整段镜像改成只读。
 
 压缩镜像需要建立匿名读写映射，再从只读文件映射解压进去；运行期生成到 `memfd`（只存在于内存的匿名文件）的 Boot Image Extension 也会禁用直接映射，并复制到匿名映射。此时物理页共享特征与直接文件映射不同，诊断时要以 `/proc/<pid>/maps`、`smaps` 中的实际映射为准。
 
-记录镜像对象位置的 Image bitmap 单独以 `PROT_READ | MAP_PRIVATE` 映射。OAT 则由 `OatFile::Open()` 按文件段及是否允许执行建立映射，一句话“整个 `boot.oat` 都是 `PROT_READ|PROT_EXEC`”概括不了它。
+记录镜像对象位置的 Image bitmap 单独以 `PROT_READ | MAP_PRIVATE` 映射。OAT 则由 `OatFile::Open()` 按文件段及是否允许执行分段建立映射，各段权限并不相同。
 
 ### Zygote 共享与写时复制
 
@@ -708,12 +708,10 @@ Android 12 起，ART 是可更新的 Mainline 模块。早期启动阶段的 `od
 
 支持 Android Virtualization Framework（AVF）受保护虚拟机的设备还可以使用 Isolated Compilation（隔离编译），把耗时编译移到重启前。重启后，`odsign` 校验虚拟机对产物的签名，并确认编译环境（例如 APEX 版本）与当前启动环境一致；不匹配时回退到重新运行 `odrefresh`。排查开机编译耗时时，需要先区分设备是否采用这条分支。[官方说明: https://source.android.com/docs/security/features/verifiedboot/on-device-signing-architecture]
 
-profile 输入和运行时产物的关系分开看：
+profile 输入与运行时产物的关系可从两方面来看：
 
-- 官方文档所说“Boot Image Profile 只能随 OTA 更新”，对应系统镜像内的 framework profile。Mainline APEX 还可以携带模块自己的 `etc/boot-image.prof`，Android 17 会把已安装模块提供的 profile 加入扩展镜像编译。
-- `odrefresh` 可以在 ART/APEX 或 Boot Class Path 变化后，用当前系统和 APEX 提供的 profile 输入重新生成 `/data` 下的 `.art/.oat/.vdex`。
-
-“ART Mainline 更新不会重建 Boot Image”不符合上述流程。
+- 系统镜像内的 framework profile 随 OTA 更新；Mainline APEX 还可以携带模块自己的 `etc/boot-image.prof`，Android 17 会把已安装模块提供的 profile 加入扩展镜像编译。
+- ART/APEX 或 Boot Class Path 变化后，`odrefresh` 会用当前系统和 APEX 提供的 profile 输入重新生成 `/data` 下的 `.art/.oat/.vdex`。
 
 #### Boot Image 变化后的应用产物处理
 
@@ -736,7 +734,7 @@ adb shell getprop dalvik.vm.boot-image
 adb shell 'pid=$(pidof zygote64); cat /proc/$pid/maps | grep -E "boot.*\\.(art|oat|vdex)"'
 ```
 
-属性为空表示运行时走了默认选择逻辑，这并说明不了设备没有 Boot Image。`/proc/<pid>/maps` 列出进程的虚拟内存映射，其中的路径直接指出当前使用的镜像在哪；32 位 Zygote 或其他运行时进程也要一并检查。
+属性为空表示运行时走了默认选择逻辑，不代表设备未使用 Boot Image。`/proc/<pid>/maps` 列出进程的虚拟内存映射，其中的路径直接指出当前使用的镜像在哪；32 位 Zygote 或其他运行时进程也要一并检查。
 
 #### 2. 用 `smaps` 判断共享质量
 
@@ -767,7 +765,7 @@ adb shell oatdump --image=/system/framework/boot.art
 - `odrefresh` 的编译阶段、触发原因与失败原因。
 - ART Service 对应用执行的 dexopt 记录。
 
-这些信息可以区分 Boot Image 重建、System Server 编译和应用 dexopt，避免把三类耗时合成一个“OTA 后重编”结论。
+这些信息可以将 Boot Image 重建、System Server 编译和应用 dexopt 拆开归因，从而准确定位 OTA 或更新后的编译耗时。
 
 ### OEM 调整的整机验证
 

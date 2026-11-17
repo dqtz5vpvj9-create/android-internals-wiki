@@ -106,7 +106,7 @@ ContentProvider（内容提供组件，下文简称 Provider）同时出现在�
         → ContentProvider.query()
 ```
 
-Provider 调用未必经过 Binder；要确认某次调用是否跨进程，应结合调用双方 PID、当前生命周期以及 Binder 事务或 flow。只有在采集覆盖完整时，缺少某类事件才有排除意义，不能从“没采到 Binder”反推一定是同进程。
+Provider 调用在同进程与跨进程场景下走完全不同的线程路径；确认一次调用是否跨进程，应结合调用双方 PID、当前生命周期以及 Binder 事务或 flow。只有在采集覆盖完整时，缺少 Binder 事件才说明更可能是同进程直调，否则仍需结合进程信息核对。
 
 ### 权限检查发生在哪里
 
@@ -187,7 +187,7 @@ fork 进程
 
 窗口减少了大结果集的复制，但容量仍然有限：一个窗口装不下全部结果时，调用方一旦移动到窗口之外的行，`BulkCursorToCursorAdaptor` 就会调用远端 `getWindow(newPosition)` 取得新窗口；若 Provider 要求接收所有游标移动事件，即使目标仍在当前窗口，也可能调用远端 `onMove()`。
 
-顺带澄清一个常见印象：“`moveToNext()` 永远不走 Binder”。在当前窗口内读取列值，通常不需要远程取数；但窗口失效、越界或 Provider 请求所有移动回调时，仍会发生 Binder 往返。
+在当前窗口内移动游标并读取列值时，通常不需要远程取数；但当窗口失效、越界或 Provider 请求接收所有移动回调时，`moveToNext()` 仍会触发 Binder 往返。
 
 <!-- gracker-diagram: ch01-15-cursor-window-movement -->
 ![游标移动何时需要再次调用远程 Provider](../../assets/diagrams/ch01/ch01-15-cursor-window-movement.png)
@@ -327,7 +327,7 @@ suspend fun queryWithTimeout(
 4. 新请求在驱动或线程池中排队；
 5. 调用方同步等待，随后可能触发所处场景的 ANR，或进入 Android 框架的 Provider 无响应处理。
 
-Android 没有“`system_server` 心跳拿不到 Binder 线程，所以自动判定 ANR”这一通用机制；定位时我们按线程停住的位置区分三种情况：
+出现调用方卡顿或无响应时，按线程停住的位置区分三种情况：
 
 - 调用方主线程停在 `IContentProvider` 客户端代理（Proxy）：正在等待远端返回；
 - 提供方多条 Binder 线程停在同一锁或 I/O：并发请求受到同一串行瓶颈限制；
@@ -395,9 +395,9 @@ Provider 进程中的 GC 不会直接暂停主进程的 ART 线程，但可能�
 
 Jetpack App Startup 使用一个 `InitializationProvider` 发现多个 `Initializer`，并根据 `dependencies()` 声明的依赖确定初始化顺序。它可以避免每个库各自声明一个初始化 Provider，但初始化代码本身仍然运行在启动路径上。
 
-要让某个组件不自动初始化，需要从合并后的 Manifest 中移除对应的 `<meta-data>` 节点，再在真正需要时调用 `AppInitializer.initializeComponent()`——App Startup 的延迟初始化指的就是这套手动流程；框架里没有一个能自动把耗时任务移出启动路径的 `lazy` 标记。
+要让某个组件不自动初始化，需要从合并后的 Manifest 中移除对应的 `<meta-data>` 节点，再在真正需要时手动调用 `AppInitializer.initializeComponent()`。
 
-收益必须用目标应用实测；“每减少一个 Provider 固定节省 2 ms”“必然提升 35%”这类没有设备、构建和样本条件的数字，不能拿来当优化依据。
+实际启动收益取决于各初始化任务的真实耗时与设备状态，需在目标应用和构建下实测确认。
 
 ---
 
@@ -513,35 +513,7 @@ public ContentProviderResult[] applyBatch(
 | Android 12（API 31） | `ContentResolver.getType()` 内部使用 `getTypeAsync()` 回调 | 公开 API 仍是同步 `getType()`；应用仍应自行选择线程 |
 | Android 17（API 37） | 当前实现基线，保留 10 秒发布、20 秒就绪等待、3 秒已连接异步回调的分层语义 | 数值受 `Build.HW_TIMEOUT_MULTIPLIER` 影响，CRUD 仍无统一 Provider 超时 |
 
-这张表只收录能够由固定源码标签（tag）或官方 API 确认的变化。系统照片选择器（Photo Picker）、分区存储（Scoped Storage）等功能会改变数据访问方式，但这些功能描述本身不能证明 ContentProvider 的 Binder 调用或超时机制在该版本改变；要断言具体关联，仍需对应源码标签或 API 契约证据。
-
----
-
-## 常见误区
-
-### “Provider 一定运行在 Binder 线程”
-
-同进程调用可以直接在调用方线程执行。只有跨进程调用才进入提供方 Binder 线程。
-
-### “所有 Provider 都有 10 秒 CRUD 超时”
-
-10 秒是进程完成绑定（attach）后的发布窗口。普通 CRUD 没有这个统一计时器。
-
-### “CursorWindow 绕过了 Binder”
-
-窗口可以通过共享区域 fd 或 inline 行数据传递；窗口描述、控制调用、翻页和其他参数仍通过 Binder。只有共享区域形态的行数据不需要作为普通 Parcel 数据再次传送。
-
-### “多进程能消除数据库卡顿”
-
-多进程把 Provider 与主进程隔离开，却增加了冷启动、内存和 IPC 成本。共享数据库的锁与 I/O 仍然存在。
-
-### “App Startup 会自动延迟所有初始化”
-
-它默认仍在 `InitializationProvider` 中运行 `Initializer`。要真正延迟初始化，需要从合并后的 Manifest 中移除对应的 `<meta-data>` 注册项，并在业务入口手动初始化。
-
-### “批处理天然具有事务性”
-
-Android 框架默认只让 `applyBatch()` 按顺序应用操作，事务语义由具体 Provider 实现。
+系统照片选择器（Photo Picker）、分区存储（Scoped Storage）等功能会改变数据访问方式，但它们并未改变 ContentProvider 底层的 Binder 调用或上述超时机制。
 
 ---
 

@@ -144,7 +144,7 @@ payload 通常是 APK 内嵌的原生共享库，由 Microdroid payload launcher
 | `unshare` | 所有者不变 | 取消宿主映射 | 结束临时共享 |
 | `relinquish` | pVM → 宿主 | 是，重新归宿主 | 内存 balloon 或长期运行的 VM 归还不用的页 |
 
-客户机归还私有页时，内核路径分三步走：先撤销客户机 Stage-2 映射，再处理页面内容，最后把所有者改回宿主。内容处理有两种可能：默认调用 `hyp_poison_page()`；调用若显式带有 `KVM_FUNC_MEM_RELINQUISH_NO_POISON`，则改走 `hyp_flush_page()` 做缓存维护，这一分支并不覆盖页面内容——“所有 `relinquish` 调用都先清零”因此成了一刀切的误读。核心顺序如下：
+客户机归还私有页时，内核路径分三步走：先撤销客户机 Stage-2 映射，再处理页面内容，最后把所有者改回宿主。内容处理有两种可能：默认调用 `hyp_poison_page()`；调用若显式带有 `KVM_FUNC_MEM_RELINQUISH_NO_POISON`，则改走 `hyp_flush_page()` 做缓存维护，这一分支并不覆盖页面内容，因此并非所有 `relinquish` 调用都会执行清零。核心顺序如下：
 
 ```c
 /* Zap the guest stage2 pte and return ownership to the host */
@@ -193,7 +193,7 @@ virtio 的常规设计假设宿主设备后端能顺着 virtqueue（virtio 队�
 - 客户机通过 `relinquish` 或 balloon 归还后，页面可以回到宿主；
 - VM 停止时，虚拟机监控器清理并归还剩余页面。
 
-两句常见的说法都偏了：“128 MiB 配置永久硬占 128 MiB，直到销毁”过于绝对；“宿主的低内存终止守护进程（lmkd）能直接回收客户机内某几页”同样不准确。宿主管理内存压力的单元通常是 crosvm 或整台 VM，页级别的细回收要靠客户机主动配合。
+因此，pVM 的内存配置上限并不等同于虚拟机销毁前必须永久锁死全部物理页，宿主的低内存终止守护进程（lmkd）也无法直接逐页回收客户机私有页；宿主管理内存压力的单元通常是 crosvm 或整台 VM，页级别的细回收要靠客户机主动配合。
 
 ### 4.2 最小启动内存要靠运行时探测
 
@@ -250,7 +250,7 @@ virtio 用 MMIO 完成设备控制与通知，数据面主要通过共享 virtqu
 - crosvm 设备处理是否受 CPU、I/O 或锁限制；
 - 客户机提交深度能否覆盖宿主处理延迟。
 
-离开设备型号、CPU 频点、负载、virtqueue 配置和统计分布，`VM exit = 5–10 μs` 或“比系统调用（syscall）慢 3–10 倍”都算不上平台结论。
+VM exit 的微秒级开销和相对系统调用的倍率取决于设备型号、CPU 频点、负载、virtqueue 配置与统计分布，只能在具体平台上实测评估，不存在跨设备的固定参考值。
 
 ## 六、vsock 与 Binder RPC 的边界
 
@@ -304,7 +304,7 @@ AOSP 启动基准测试将总时长分成 `VM_START`、`BOOTLOADER`、`KERNEL` �
 
 API 文档把 `VirtualMachine.stop()` 比作拔电源：客户机软件收不到正常关机通知，加密存储写入可能未持久化。需要正常关机（graceful shutdown）时，应通过 payload 的 Binder / vsock 协议请求退出，并等待 `onPayloadFinished()`。
 
-“正常销毁 100–500 ms，强杀 50–200 ms”没有平台保证。应分别测量：
+VM 停止及内存回收的耗时不存在平台级的固定毫秒保证，评估时应分别测量以下三段：
 
 - payload 收到退出请求到 `onPayloadFinished()`；
 - `stop()` 调用到 `onStopped()`；
@@ -321,7 +321,7 @@ API 文档把 `VirtualMachine.stop()` 比作拔电源：客户机软件收不到
 
 ### 7.4 并发 VM 的数量上限
 
-流传的“Arm 最多 16 台”在 API 37 里站不住：`VirtualMachine.run()` 的注释写明，并发运行数量除可用内存外没有 Java API 固定限制。当前 6.18 内核定义 `KVM_MAX_PVMS = 255`，这是内核对象的上限，离“设备可承载 255 台 VM”的性能承诺还差一层；实际容量要按下面的条件另算。
+API 37 中并没有固定的 Arm 并发 VM 上限（例如早期流传的 16 台）：`VirtualMachine.run()` 的注释明确指出，并发运行数量除可用内存外没有 Java API 固定限制。当前 6.18 内核定义 `KVM_MAX_PVMS = 255`，这是内核对象的上限，具体设备能稳定承载的数量还需按系统资源进一步评估：
 
 产品上限还受以下条件约束：
 
@@ -331,7 +331,7 @@ API 文档把 `VirtualMachine.stop()` 比作拔电源：客户机软件收不到
 - pKVM 固件、IOMMU（I/O 内存管理单元）和可分配设备资源；
 - 前后台管理策略。
 
-AOSP 基准测试里有同时创建 8 台 VM 的测试路径，说明“每个应用默认只能运行 1 台”的概括站不住脚；至于一台设备该以几台为目标，回到上面这些条件来定。
+AOSP 基准测试中也包含同时创建 8 台 VM 的测试路径，可见单个应用并非只能运行一台 VM；至于单台设备适合并发运行几台，最终仍由上述内存、调度与安全资源条件决定。
 
 ## 八、protected 与 non-protected 模式的选择
 

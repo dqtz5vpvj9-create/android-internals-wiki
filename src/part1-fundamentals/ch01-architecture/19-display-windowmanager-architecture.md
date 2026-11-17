@@ -300,17 +300,13 @@ consolidated_from:
 
 在 Perfetto 里看到掉帧或 present 偏晚，我们先要回答这一帧慢在哪一段。这一节把一帧从应用窗口到屏幕的路径拆成可观察的阶段，配上 fence 与三个时间点，再按出图拓扑分类。
 
-### 讨论范围与源码基线
+### 源码基线与观测边界
 
-这一节先划出讨论范围。AOSP 没有承诺通用的“动态分辨率自动调整”或“基于机器学习的渲染参数自动调整”，`RenderThread`、BufferQueue 复用和 HWC 也都早于 Android 17；GPU 驱动、overlay plane、显示带宽和功耗策略大多由 SoC 与设备厂商实现。
-
-我们只讨论源码和系统轨迹能证明的内容：
+Android 图形显示跨应用框架、本地图形服务与厂商硬件后段：RenderThread、BufferQueue 复用和 HWC 属于通用显示管线基础，而 GPU 驱动、overlay plane 数量、显示带宽与功耗策略通常由 SoC 与设备厂商实现；AOSP 公共主线也并未内建通用的动态分辨率自动调整或基于机器学习的渲染参数自动调优模块。围绕源码与系统轨迹展开分析时，性能比较应具体落实到对象状态、等待点和显示时间戳上。
 
 > 源码基线：框架 Android 17 / API 37 / `android-17.0.0_r1`；涉及 dma-buf、dma-fence、sync_file 或显示驱动时，内核 `android17-6.18-2026-06_r6`；版本演进保留 Android 12—17 的现代显示基线，版本首引由对应标签或公开 API 文档确认。
 
-所以“性能更好”要落实到具体对象、等待点和显示时间上；某台设备是否获得提升，单凭系统版本或 API 名字推导不出来。
-
-各类出图路径的源码细节和 Perfetto 案例见[第 13 章：渲染管线专题](../../part2-performance/ch13-rendering-pipelines/README.md)。我们先把公共显示主线、时间边界和分类索引统一，下面各节都沿用它。
+各类出图路径的源码细节和 Perfetto 案例见[第 13 章：渲染管线专题](../../part2-performance/ch13-rendering-pipelines/README.md)。下文先统一公共显示主线、时间边界与分类索引。
 
 ### 1. 公共显示主线
 
@@ -494,11 +490,11 @@ HDR 亮度余量也要按目标对象分别设置。`Window.setDesiredHdrHeadroo
 
 历史功能开关也分版本：[`android-15.0.0_r1`](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/core/api/current.txt) 与 [`android-16.0.0_r1`](https://android.googlesource.com/platform/frameworks/base/+/android-16.0.0_r1/core/api/current.txt) 的 API 文本为这些 headroom 方法保留 `limited_hdr` 注解；[`android-17.0.0_r1`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/api/current.txt) 已移除该注解。目标设备的 HDR 能力仍要单独检查，注解只提示版本差异。
 
-这些版本差异没有建立“版本越新，所有页面越快”的因果关系。做渲染评审时，我们把版本能力、应用用法、设备实现和运行时表现分别记录，四者互相替代不了。
+这些版本演进扩展了系统提供的渲染能力与调度接口，但具体页面的帧表现仍取决于应用实现、设备合成能力与运行时负载。做渲染评审时，应将版本能力、应用用法、设备实现和运行时表现分别记录，四者各自反映不同层面的约束。
 
-#### 4.1 常见“新技术”说法与源码事实
+#### 4.1 常见显示特性与 AOSP 源码边界
 
-| 常见说法 | 源码边界 |
+| 特性或组件 | 源码边界 |
 |---|---|
 | HWC 改进 | AOSP 可确认合成类型协商和 present 流程；性能结果由 layer 条件、Composer HAL、显示硬件和厂商策略决定 |
 | 渲染线程优化 | RenderThread 是长期存在的 HWUI 执行角色；应用不能把任意 UI 工作“移到 RenderThread”，应减少主线程状态准备、RenderNode 更新和同步等待 |
@@ -675,7 +671,7 @@ system_server
 
 WCT 是“窗口容器要变成什么状态”的管理请求，处理后可能引发一个或多个 SurfaceControl transaction；它不属于 SurfaceFlinger 的几何 transaction。几何属性与内容 buffer 分属两路输入，resize 时可能短暂出现位置尺寸已更新、buffer 还是旧的；也可能新 buffer 已到，同步组尚未放行新的几何。
 
-容器请求、几何事务和内容 buffer 对齐之后，才能确定问题出在哪条链；只搜索“transaction”定位不到问题位置。
+容器请求、几何事务和内容 buffer 对齐之后，才能确定问题出在哪条链；仅凭“transaction”一词无法区分上述三层对象。
 
 ### WMS 的容器树与 Surface 树
 
@@ -719,7 +715,7 @@ WMS 与 ATMS 共享 `WindowManagerGlobalLock`。`addWindow()`、`relayoutWindow(
 - AnimationThread 已收到 traversal，但在等待锁；
 - WMS 已提交 transaction，后续时间消耗在应用绘制或 SurfaceFlinger。
 
-“WMS 很忙”解释不了延迟；把锁持有者和调用阶段标出来，才能对上具体环节。
+排查延迟时，仅归因于“WMS 很忙”无法定位问题，需要把持锁线程和具体调用阶段标出来。
 
 ### WMS 的线程分工
 
@@ -868,7 +864,7 @@ flag 开启时，`ViewRootImpl.createSurfaceControl()` 在应用进程创建 BLA
 
 `SurfaceControl.Builder.build()` 遇到未显式指定 effect/container 类型的普通 layer 时会调用 `setBLASTLayer()`；WMS 和 `ViewRootImpl` 的窗口创建代码也显式设置 BLAST layer。
 
-注意“谁创建 SurfaceControl”与“是否为 BLAST buffer layer”是两个维度，别把它们混在一起：
+“谁创建 SurfaceControl”与“是否为 BLAST buffer layer”属于两个正交维度：
 
 ```text
 server-created ─┐
@@ -1114,7 +1110,7 @@ Shell Transitions 由 `TransitionController`/`Transition` 在 `system_server` �
 3. `AnimationAdapter` 修改 leash 的变换参数、position、alpha、crop 等；
 4. 动画完成后把 Surface reparent 回原父节点并销毁 leash。
 
-应用 View 内容仍由应用/HWUI 绘制。WMS/Shell 对 Surface 做变换，代替不了应用的 GPU 渲染；源码里也没有一个名为 `WindowAnimationController` 的核心类负责“统一 GPU 优化”。
+应用 View 内容仍由应用与 HWUI 绘制。WMS/Shell 只对 Surface 执行几何与图层变换，系统内也并不存在统一负责 GPU 优化的核心类。
 
 共享元素转场通常还涉及应用侧捕获、布局和绘制（draw），只从 WMS 动画线程判断成本会漏掉大头。诊断时我们要同时看：
 
@@ -1186,7 +1182,7 @@ NO_SURFACE
 
 `READY_TO_SHOW` 允许 WMS 等同一 token 或 sync group 的其他窗口准备好后再统一显示。`mHasSurface=true` 只说明 Surface 资源已就位，用户是否看到内容，还要看后面的 show 与 present。
 
-“请求可见、已有 Surface、首帧已提交、Surface 已 show、Layer 已 present 到屏幕”，哪一环断了，就沿那一环继续查。
+排查黑屏或闪屏时，可按“请求可见 → 已有 Surface → 首帧已提交 → Surface 已 show → Layer 已 present 到屏幕”依次定位中断环节。
 
 [源码依据：`WindowState.isVisible*()`、`isOnScreen()`、`WindowStateAnimator` draw states，`android-17.0.0_r1`]
 
@@ -1215,7 +1211,7 @@ WMS add/relayout/focus/layout
 
 `updateInputWindowsImmediately(t)` 则移除待执行回调、立即运行更新，并把结果合入调用方事务；立即生成 input info 也不代表 InputDispatcher 已收到新快照。调度与事务合并见 [`InputMonitor.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/wm/InputMonitor.java#344)，按 Display 持有该对象的关系见 [`DisplayContent.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/wm/DisplayContent.java#1365)。
 
-当 InputDispatcher 判断无焦点窗口或窗口无响应时，通过 `InputManagerCallback` 回到 WMS，随后由 `AnrController` 解析窗口/Activity/进程并通知 ActivityManager。窗口 ANR 超时受目标窗口和应用状态影响，把所有输入超时硬编码成一个通用 5 秒结论是错的。
+当 InputDispatcher 判断无焦点窗口或窗口无响应时，通过 `InputManagerCallback` 回到 WMS，随后由 `AnrController` 解析窗口/Activity/进程并通知 ActivityManager。窗口 ANR 超时阈值受目标窗口类型和应用状态影响，不能一概按固定 5 秒计算。
 
 #### 输入延迟应拆成三段
 
@@ -1233,7 +1229,7 @@ WMS add/relayout/focus/layout
 
 #### `WindowInfosUpdate` 的发布与消费时序
 
-`InputMonitor.UpdateInputWindows` 在 `mGlobalLock` 下按 Z-order 填充窗口输入信息，再用 `SurfaceControl.Transaction.setInputWindowInfo()` 把 touchable region、transform、focusability 与对应 layer 一起提交。非立即路径会先合并进 `DisplayContent` 的 pending transaction，而不是为每个输入事件同步询问 WMS。
+`InputMonitor.UpdateInputWindows` 在 `mGlobalLock` 下按 Z-order 填充窗口输入信息，再用 `SurfaceControl.Transaction.setInputWindowInfo()` 把 touchable region、transform、focusability 与对应 layer 一起提交。非立即路径会先合并进 `DisplayContent` 的 pending transaction，无须为每个输入事件同步询问 WMS。
 
 SurfaceFlinger 消费 transaction 后，从已提交的 layer snapshot 生成 `WindowInfo`/`DisplayInfo`，`updateInputFlinger()` 再发布 `WindowInfosUpdate`。
 
@@ -1322,7 +1318,7 @@ QPR 是 Android 的季度平台更新；Connected Display Desktop 是把桌面�
 - 各可见窗口分辨率、格式和 buffer 数量；
 - 最近是否有旋转、分屏、录屏、虚拟显示或窗口反复创建。
 
-WMS 也没有公开的“常用窗口预加载池”。starting window 和 task snapshot 服务于启动/切换期间的视觉连续性，等同于提前创建完整应用窗口及其 buffer 的说法没有依据。
+WMS 也没有提前创建完整应用窗口及其 buffer 的预加载池；starting window 与 task snapshot 仅用于维持启动和切换期间的视觉连续性。
 
 ### 性能诊断：按状态链定位
 

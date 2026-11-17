@@ -147,7 +147,7 @@ consolidated_from:
 
 # 系统启动、Zygote 与图形栈预加载
 
-谈“开机耗时”，我们得先把终点定下来：Bootloader 把控制权交给内核、`system_server` 进入 `run()`、屏幕被允许点亮、Launcher 提交首帧、用户收到 `LOCKED_BOOT_COMPLETED` 或 `BOOT_COMPLETED`，都可以当里程碑，只是它们回答的问题各不相同。比较设备或版本时，起点和终点不一致，数字就没有可比性。
+开机流程包含多个独立里程碑：Bootloader 把控制权交给内核、`system_server` 进入 `run()`、屏幕被允许点亮、Launcher 提交首帧，以及用户收到 `LOCKED_BOOT_COMPLETED` 或 `BOOT_COMPLETED`。不同里程碑反映系统的不同就绪阶段，对比设备或版本间的开机耗时需先统一起点和终点定义。
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -156,7 +156,7 @@ consolidated_from:
 <!-- gracker-diagram: ch01-03-boot-milestones -->
 ![系统启动与相互独立的完成里程碑](../../assets/diagrams/ch01/ch01-03-boot-milestones.png)
 
-图：主启动链到 SystemServer 后分出多条工作路径。屏幕启用、Launcher 首帧、输入可用和按用户发送的启动完成广播需要分别取证；两类结果没有固定的先后间隔。
+图：主启动链到 SystemServer 后分出多条工作路径。屏幕启用、Launcher 首帧、输入可用和按用户发送的启动完成广播需分别取证，互相之间没有固定先后间隔。
 
 <details>
 <summary>可编辑 Mermaid 源码</summary>
@@ -235,7 +235,7 @@ return FirstStageMain(argc, argv);
 
 `SetupSelinux()` 调用 Android SELinux 策略加载路径，设置 enforcing 强制模式，给 init 可执行文件恢复安全上下文，再 `execv("/system/bin/init", {"second_stage"})`。它有独立的执行阶段，看耗时时要和第一阶段挂载、第二阶段 `.rc` 解析分开。
 
-策略规模、文件读取和设备存储都会影响耗时，AOSP 源码里找不到某台设备固定的毫秒数；测量要用对应构建的内核/init 日志和系统跟踪数据。
+策略规模、文件读取和设备存储都会影响这一阶段的耗时，具体数值需通过对应构建的内核/init 日志和系统跟踪数据测量。
 
 #### 第二阶段 init（second stage）
 
@@ -246,7 +246,7 @@ return FirstStageMain(argc, argv);
 - `/vendor/etc/init`、`/odm/etc/init`：设备和厂商服务。
 - `/product/etc/init`：产品级服务和动作。
 
-看到一个服务启动慢，我们先用进程可执行文件、`.rc` 定义位置和触发条件（trigger）确定归属；把所有服务都归到主 `init.rc`，会漏掉 `vendor`、`odm`、`product` 和 APEX 配置。
+看到一个服务启动慢，可以先通过进程可执行文件、`.rc` 定义位置和触发条件（trigger）确定其归属分区（`init.rc`、`vendor`、`odm`、`product` 或 APEX 配置）。
 
 ### Zygote 启动前必须满足的条件
 
@@ -261,7 +261,7 @@ on zygote-start
     start zygote_secondary
 ```
 
-`odsign` 负责校验设备上生成的 ART 编译产物，因此 `odsign.verification.done` 未就绪会直接推迟 Zygote。OTA、ART APEX 变化或编译产物异常后，如果 Zygote 启动点明显后移，我们先量出 `wait_for_prop` 的等待区间，再核对 `odsign` 和 ART 的 dexopt 编译优化产物，Zygote 的 `PreloadClasses` 不是第一现场。
+`odsign` 负责校验设备上生成的 ART 编译产物，因此 `odsign.verification.done` 未就绪会直接推迟 Zygote。OTA、ART APEX 变化或编译产物异常后，若 Zygote 启动点明显后移，可先量出 `wait_for_prop` 的等待区间，再核对 `odsign` 和 ART 的 dexopt 编译优化产物，排查重点落在启动前的等待链，而不一定出在 Zygote 自身的 `PreloadClasses`。
 
 ### Zygote：预加载、创建 SystemServer、等待应用请求
 
@@ -273,9 +273,9 @@ init 的 Zygote `.rc` 服务通过 `app_process` 启动 `ZygoteInit.main()`，�
 4. 子进程进入 `handleSystemServerProcess()` 并最终运行 `SystemServer.main()`。[已验证: `ZygoteInit.java` 与 `SystemServer.java` @ AOSP `android-17.0.0_r1`]
 5. Zygote 父进程进入 `runSelectLoop()`，处理后续应用进程创建请求。[已验证: `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
 
-这里两条路径要分开记住：SystemServer 进程由 Zygote 主动创建，用不着 AMS 发起；应用进程才由 `system_server` 通过 Zygote 命令套接字请求创建。[已验证: `ZygoteInit.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`]
+这里要区分两条创建路径：SystemServer 进程由 Zygote 主动 fork；普通应用进程则由 `system_server` 通过 Zygote 命令套接字请求创建。[已验证: `ZygoteInit.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`]
 
-`frameworks/base/config/preloaded-classes` 在 `android-17.0.0_r1` 中去掉注释和空行后有 18,784 条。这个数字只描述该固定源码标签的生成输入，换版本或厂商构建就未必还是这个数。预加载过少会把公共类加载成本留给进程启动，过多则增加整机开机时间、Zygote 常驻内存和可能被写脏的页面，所以调整列表必须同时测量整机启动、进程启动与 PSS（按共享比例分摊后的进程物理内存）。[已验证: `frameworks/base/config/preloaded-classes` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
+`frameworks/base/config/preloaded-classes` 在 `android-17.0.0_r1` 中去掉注释和空行后有 18,784 条（具体条数随版本和厂商构建变化）。预加载过少会把公共类加载成本留给进程启动，过多则增加整机开机时间、Zygote 常驻内存和可能被写脏的页面，因此调整列表时需同时测量整机启动、进程启动与 PSS（按共享比例分摊后的进程物理内存）。[已验证: `frameworks/base/config/preloaded-classes` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
 
 Zygote 创建进程时使用写时复制（Copy-on-Write）共享未修改页面，公共运行时因此不必在每个进程里重复占用物理内存。但私有页照样会来：ART 线程、应用类加载、堆写入和原生代码初始化都会逐步产生。[已验证: `ZygoteInit.java` 与 ART/Zygote fork 路径 @ AOSP `android-17.0.0_r1`]
 
@@ -318,9 +318,9 @@ startApexServices(t);
 
 `ActivityManagerService.systemReady()` 之后，Activity/Task 管理路径会尝试在各显示设备启动 Home。注意这个调用只表示系统请求启动 Launcher，Launcher 首帧是否已经提交或显示，要另外确认。
 
-用户可见启动至少包含三类不同信号：
+用户可见启动包含三类相互独立的信号：
 
-- `boot_progress_enable_screen`：应用框架开始允许屏幕显示，它与 Launcher 首帧是两回事。
+- `boot_progress_enable_screen`：应用框架开始允许屏幕显示，它与 Launcher 首帧是不同的里程碑。
 - Launcher 首帧：需要从 Launcher、WindowManager、FrameTimeline 和 SurfaceFlinger 事件确认缓冲区提交与显示。
 - 输入可用：还要确认焦点、InputDispatcher 和目标窗口已经就绪。
 
@@ -347,7 +347,7 @@ AOSP 的 `system/core/bootstat/bootstat.cpp` 把 `-p` 定义为打印已记录�
 adb shell bootstat -p
 ```
 
-输出是里程碑集合，不是自动生成的统一“总开机时间”。设备厂商可以增加或缺少事件，跨设备比较时需要检查事件名和记录点。
+输出为各启动里程碑的时间点集合。设备厂商可能增删自定义事件，跨设备比较时需先核对事件名和打点位置。
 
 #### 事件日志与内核日志
 
@@ -358,7 +358,7 @@ adb logcat -b events -d | grep -E 'boot_progress|boot_complete'
 adb shell dmesg
 ```
 
-`boot_progress_system_run` 表示进入 `SystemServer.run()`；PMS、AMS、屏幕启用等事件各有自己的写入位置，事件名接近，语义却各自独立。`dmesg` 用于查看早期内核、驱动、device-mapper 和存储信息；量产 user build 可能限制读取权限。
+`boot_progress_system_run` 表示进入 `SystemServer.run()`，PMS、AMS、屏幕启用等事件各自对应独立打点。`dmesg` 用于查看早期内核、驱动、device-mapper 和存储信息；量产 user build 可能限制读取权限。
 
 #### Android 17 的 Perfetto 启动跟踪
 
@@ -395,7 +395,7 @@ init 动作执行慢时，从日志里的动作、命令、`.rc` 文件和属性
 - Zygote 的类、资源或共享库预加载变慢；
 - 存储和 CPU 竞争让上述阶段的耗时同时增加。
 
-这四种情况对应的修复位置各不相同；把所有 OTA 后首次启动变慢都写成“dex2oat 慢”，会漏掉校验、快照合并和 I/O 竞争。
+这四种情况对应的修复位置各不相同；针对 OTA 后首次启动变慢的归因，需同时覆盖校验、快照合并与 I/O 竞争，以免遗漏 `dex2oat` 之外的瓶颈。
 
 #### SystemServer
 
@@ -421,21 +421,16 @@ Launcher 首帧慢时，按应用启动问题处理：应用绑定（bind）、�
 
 现代 Virtual A/B 把更新数据写入 snapshot/COW 快照设备，重启进入新系统后再执行 merge 合并。Android 13 及以后推出的新设备使用 `snapuserd` 在用户空间合并快照。合并期间，`system` 等分区的 I/O 可能经过 device-mapper 的用户空间路径 dm-user/snapuserd。
 
-OTA 后首次启动变慢时，应记录快照合并状态、`snapuserd` 的 CPU/I/O、`odsign`/ART 工作和存储带宽。A/B 能缩短设备因更新而不可用的时间并支持回滚，但更新后的第一次启动与普通启动不是同一条基线——两份基线要分开记。
+OTA 后首次启动变慢时，应记录快照合并状态、`snapuserd` 的 CPU/I/O、`odsign`/ART 工作和存储带宽。A/B 能缩短设备因更新而不可用的时间并支持回滚，由于更新后的首次启动包含快照合并等额外 I/O，应与常规启动分开建立基线。
 
-### 常见误区
+### 边界澄清：dm-verity 与 Android 17 SecureFS
 
-- **“init 解析一个 `init.rc` 就启动全部服务。”** 实际有第一阶段、SELinux 初始化、第二阶段，还会读取 `system`、`system_ext`、`vendor`、`odm`、`product` 和 APEX 配置。
-- **“SystemServer 进程由 AMS 请求创建。”** 主 Zygote 根据 `--start-system-server` 主动创建 SystemServer；ActivityManagerService 的进程管理路径通过 Zygote 套接字请求的是后续应用进程。
-- **“屏幕亮了就是开机完成。”** 屏幕启用、Launcher 首帧、输入可用和各用户的广播是不同里程碑。
-- **“一次 adb Perfetto 命令能抓完整重启。”** 普通会话只能记录命令启动之后的过程；启动跟踪（trace-on-boot）也要等 `/data` 和跟踪守护进程就绪。
-- **“关闭 dm-verity 就能验证启动收益。”** Verified Boot 是平台安全边界，且 dm-verity 在读取存储块时执行验证。性能评估应在保持产品安全配置的前提下分析 I/O、硬件加速和缓存；拿关闭完整性保护当量产优化方案，并不可取。
-- **“多加预加载类一定让应用更快。”** 它可能缩短部分进程启动，也会增加整机启动时间、内存和写时复制（snapshot/COW）成本，必须看整机指标。
-- **“Android 17 有 SecureFS 与 Zygote lazy preload 的启动交互。”** AOSP `android-17.0.0_r1` 的公开平台源码中未找到名为 `SecureFSService`、`SecureFsService`、`system/security/securefs` 或 `frameworks/native/cmds/sfs` 的实现；`system/core/rootdir/init.rc` 中的 `/mnt/secure` 目录与 Zygote lazy preload 链路没有源码级调用关系。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md]
+- **不要以关闭 dm-verity 作为优化方案**：Verified Boot 是平台安全边界，且 dm-verity 在读取存储块时执行逐块验证。性能评估应在保持产品安全配置的前提下分析 I/O、硬件加速和缓存，不应以关闭完整性保护作为量产优化手段。
+- **Android 17 不存在 SecureFS 与 Zygote lazy preload 的启动交互**：AOSP `android-17.0.0_r1` 的公开平台源码中未找到名为 `SecureFSService`、`SecureFsService`、`system/security/securefs` 或 `frameworks/native/cmds/sfs` 的实现；`system/core/rootdir/init.rc` 中的 `/mnt/secure` 目录与 Zygote lazy preload 链路没有源码级调用关系。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md]
 
 ## Zygote 预加载、fork 与进程特化
 
-SystemServer 和桌面跑起来之后，应用启动就进入 Zygote 管理的进程创建阶段。这一节我们依次看预加载、普通 fork 与 USAP（Unspecialized App Process，未特化应用进程）：它们分别影响共享内存、创建延迟和特化成本。
+SystemServer 和桌面跑起来之后，应用启动就进入 Zygote 管理的进程创建阶段。这一节依次说明预加载、普通 fork 与 USAP（Unspecialized App Process，未特化应用进程）分别如何影响共享内存、创建延迟和特化成本。
 
 Zygote 是长期存活的应用进程父进程，它提前完成每个 Android 应用都会用到的一部分运行时初始化。于是启动应用时，系统直接从 Zygote fork 出子进程，或把 USAP 池中的预备进程转换成目标应用进程，省掉了从空进程重新装载 ART 和常用框架状态的开销。
 
@@ -445,7 +440,7 @@ Zygote 是长期存活的应用进程父进程，它提前完成每个 Android �
 - fork 后的私有可写内存页暂时共享，父进程或子进程首次写入时再触发写时复制（COW）；
 - `system_server` 可以通过受控协议为子进程设置 UID、GID、SELinux 安全域、挂载命名空间（mount namespace）、资源上限和系统调用过滤规则。
 
-分析冷启动时，Zygote 只负责“请求进程、创建或特化进程、进入应用入口”这一段；后面 `bindApplication`（系统向新进程发送应用绑定信息） 把应用绑定信息发给新进程，再往后是 Provider 初始化、`Application.onCreate()` 和首帧，这些都属于应用初始化。整段冷启动都算到 Zygote 头上，优化位置就会找错。
+分析冷启动时，Zygote 只负责请求、创建或特化进程并进入应用入口；随后的 `bindApplication`、Provider 初始化、`Application.onCreate()` 和首帧绘制属于应用初始化阶段，排查时应分别归因。
 
 ---
 
@@ -471,11 +466,11 @@ primary 或 secondary Zygote
 
 `ProcessList.startProcess()` 还会先看进程类型：
 
-- WebView 相关进程可以走 `WebViewZygote`；
-- 声明使用 App Zygote 的隔离服务（isolated service）可以走 `AppZygote`，这类服务以独立 UID 运行；
+- WebView 相关进程走 `WebViewZygote`；
+- 声明使用 App Zygote 的隔离服务（isolated service）走 `AppZygote`，这类服务以独立 UID 运行；
 - 其余应用走普通的主/次 Zygote。
 
-所以调用 `Process.start()` 之后，进程未必连的是同一个 Zygote 套接字——类型决定去处。
+因此，调用 `Process.start()` 后具体连接的 Zygote 套接字由进程类型和目标 ABI 共同决定。
 
 ---
 
@@ -501,7 +496,7 @@ beginPreload
   → warmUpJcaProviders
 ```
 
-`HttpEngine.preload()` 受功能开关（flag）控制，并用 `NoSuchMethodError` 兼容 Zygote 与模块版本不一致的情况，所以把它当成所有产品都会执行的固定阶段并不安全。
+`HttpEngine.preload()` 受功能开关（flag）控制，并用 `NoSuchMethodError` 兼容 Zygote 与模块版本不一致的情况，在不同产品上属于条件执行阶段。
 
 #### `preloaded-classes` 的边界
 
@@ -524,17 +519,15 @@ beginPreload
 android::GraphicBufferMapper::preloadHal();
 ```
 
-源码注释给出的约束是：适合放在这里的 HAL 实现，应当始终采用直通模式，也就是在应用进程内直接调用，并且会被大多数应用进程使用。这个入口目前的容量就这么大，离“Zygote 预加载所有 HAL”很远。
+源码注释给出的约束是：适合放在这里的 HAL 实现，应当始终采用直通模式，也就是在应用进程内直接调用，并且会被大多数应用进程使用。
 
 `nativePreloadGraphicsDriver()` 调用 `zygote_preload_graphics()`。`ZygoteInit` 的注释说明，它通过一次 OpenGL 或 Vulkan 调用加载并初始化图形驱动；属性 `ro.zygote.disable_gl_preload=true` 可以关闭该动作。
 
-这里预热的只是可继承的驱动装载状态，每个应用自己的图形运行环境还在后头：应用的 RenderThread、EGL/Vulkan 图形上下文（context）、Surface 和首帧命令仍在子进程中创建；应用选择的可更新 GPU 驱动也未必与 Zygote 预加载的系统驱动相同。
+这里预热的只是可继承的驱动装载状态，应用自身的 RenderThread、EGL/Vulkan 图形上下文（context）、Surface 和首帧命令仍在子进程中创建；应用选择的可更新 GPU 驱动也未必与 Zygote 预加载的系统驱动相同。
 
 #### 32 位次 Zygote 的延迟预加载
 
-延迟预加载的触发链路（`SecondaryZygotePreload` 的提交位置、`--preload-default` 的写入与回写、与 WebView 准备任务的先后）在「Zygote：预加载、创建 SystemServer、等待应用请求」一节已经展开。这里只保留图形部分会用到的返回值和设备差异。
-
-在 64/32 双 ABI 的 AOSP 配置中：
+延迟预加载的触发链路（`SecondaryZygotePreload` 的提交位置、`--preload-default` 的写入与回写、与 WebView 准备任务的先后）见前文「Zygote：预加载、创建 SystemServer、等待应用请求」。在 64/32 双 ABI 的 AOSP 配置中：
 
 - `init.zygote64.rc` 启动 64 位主 Zygote，启动期就完成 eager 预加载；
 - `init.zygote64_32.rc` 启动 32 位次 Zygote，并带有 `--enable-lazy-preload`，采用 lazy 延迟预加载。
@@ -576,11 +569,11 @@ ZygoteHooks.postForkCommon();
 - 安装 seccomp 系统调用过滤器；
 - 设置调度策略；
 - 收缩 Linux capabilities（按权限拆分的内核特权）；
-- 执行 SELinux 安全域切换（domain transition），也就是 domain transition；
+- 执行 SELinux 安全域切换（domain transition）；
 - 设置进程名、调试与内存安全选项；
 - 运行 ART 在 fork 后为子进程准备的回调。
 
-这些步骤负责建立应用的安全隔离，也会计入进程创建时间。普通 fork 路径在 `nativeForkAndSpecialize()` 返回子进程后才开始 `PostFork`，挂载和 SELinux 安全域切换已在此前的 `SpecializeCommon()` 中完成。`PostFork` 包含网络权限设置、Java 线程优先级调整、`ZygoteHooks.postForkCommon()` 及进入应用入口前的部分清理。排查原生特化耗时，应对齐 Zygote 请求、内核进程创建事件、新进程调度和原生调用栈，不能把整段特化时间算进 `PostFork`。
+这些步骤负责建立应用的安全隔离，也会计入进程创建时间。普通 fork 路径在 `nativeForkAndSpecialize()` 返回子进程后才开始 `PostFork`，挂载和 SELinux 安全域切换已在此前的 `SpecializeCommon()` 中完成。`PostFork` 包含网络权限设置、Java 线程优先级调整、`ZygoteHooks.postForkCommon()` 及进入应用入口前的部分清理。排查原生特化耗时时，应对齐 Zygote 请求、内核进程创建事件、新进程调度和原生调用栈，将原生特化阶段与 `PostFork` 区分开。
 
 #### 内核中的 fork 与 COW
 
@@ -598,13 +591,13 @@ ZygoteHooks.postForkCommon();
 
 图：以一张私有可写页为例，fork 后父子映射可以指向同一物理页；子进程写入时，通常复制并建立自己的可写页。若页面已独占，内核可直接恢复写权限。
 
-已退出的普通应用进程不会成为后续应用的父进程。`lmkd` 终止缓存应用，不会让下一次 fork 脱离 Zygote，也不会因为“缓存子进程少了”直接降低 Zygote 的 COW 复用率。内存压力可以通过回收文件页、swap 交换空间（swap）、调度与 I/O 间接影响启动，但这属于另一条因果路径。
+普通应用始终从 Zygote 或 USAP 派生，因此 `lmkd` 终止缓存应用只会通过回收文件页、swap 交换空间、调度与 I/O 影响启动，不会改变 Zygote 的父子进程关系或 COW 页共享来源。
 
 #### 16KB 内存页的收益与代价
 
-对于相同的虚拟内存范围，16KB 页通常需要更少的页表项；但 VMA 数量由内存映射布局决定，页大小从 4KB 变为 16KB 并不会让它自动减少 75%。
+对于相同的虚拟内存范围，16KB 页通常需要更少的页表项；而 VMA 数量由内存映射布局决定，不会因页大小从 4KB 变为 16KB 而等比减少 75%。
 
-更大的页可能减少部分页表和缺页管理开销，但 COW 的复制单位也变大了：只修改页内少量数据，也要私有化整个更大的页面。对 Zygote 子进程而言，启动时间、按共享比例分摊的 PSS、驻留物理内存 RSS 的净变化，取决于内存访问是否集中、脏页比例、文件映射和设备内存配置；想知道净收益，只能实测，页大小本身推不出来。
+更大的页可能减少部分页表和缺页管理开销，同时 COW 的复制单位也随之变大：修改页内少量数据时也会私有化整个更大的页面。对 Zygote 子进程而言，启动时间、按共享比例分摊的 PSS 与驻留物理内存 RSS 的净变化，取决于内存访问局部性、脏页比例、文件映射和设备内存配置，需在目标设备实测确认。
 
 ---
 
@@ -643,7 +636,7 @@ adb shell getprop persist.device_config.runtime_native.usap_pool_enabled
 adb shell getprop dalvik.vm.usap_pool_enabled
 ```
 
-属性为空说明不了 USAP 最终一定启用——解释时按上面的优先级和默认值来，再结合启动轨迹判断请求是否用了池中进程。
+若两个属性均为空，则以源码默认值 `false` 为准，最终是否命中池中进程需结合启动轨迹中的套接字与进程事件确认。
 
 #### 子 Zygote 为什么没有 USAP
 
@@ -694,7 +687,7 @@ ZygoteConnection.handleChildProc()
 
 ---
 
-### 四类 Zygote 不要混在一起
+### 四类 Zygote 的分工
 
 | 类型 | 谁启动 | 服务对象 | 预加载特点 | USAP |
 |---|---|---|---|---|
@@ -716,7 +709,7 @@ ZygoteConnection.handleChildProc()
 - 优先加载只读、可共享且会被多个隔离服务使用的数据；
 - 不把用户或单次请求状态放入父进程。
 
-它不是普通 Activity 进程的通用预加载 API。
+App Zygote 专用于隔离服务，不面向普通 Activity 进程。
 
 #### WebView Zygote
 
@@ -742,7 +735,7 @@ ZygoteConnection.handleChildProc()
 - `system_server`：异步 Trace 区段 `launching: <package>`；
 - EventLog：`am_proc_start`（30014）和 `am_proc_bound`（30010）分别是进程启动与绑定的观察入口；解析时以设备 `logcat -b events` 输出和对应构建的 logtags 为准。
 
-只有在性能轨迹启用了 Android 日志并包含 `events` 缓冲区时，才能查询 EventLog；轨迹里查不到这些记录，说明不了进程没有启动。
+查询 EventLog 要求性能轨迹已启用 Android 日志并包含 `events` 缓冲区；未采集该缓冲区时需改用 `logcat -b events` 或进程生命周期事件核对启动记录。
 
 #### 诊断顺序
 
@@ -761,7 +754,7 @@ ZygoteConnection.handleChildProc()
 - `bindApplication` 长：优先检查内容提供者、Application、类加载和资源；
 - 目标进程早已存在：本次属于温启动或热启动（warm/hot start），Zygote 不在关键路径上。
 
-“fork 应小于 N 毫秒”这样的固定跨设备阈值并不存在。ABI、内存页大小、SELinux、挂载操作、调度、内存压力和厂商实现都会改变耗时分布，比较对象应该是同一设备、同一构建、同一启动类型的基线。
+进程创建耗时没有跨设备统一阈值。ABI、内存页大小、SELinux、挂载操作、调度、内存压力和厂商实现都会改变耗时分布，应在同一设备、同一构建、同一启动类型的基线下做对比。
 
 ---
 
@@ -774,48 +767,11 @@ ZygoteConnection.handleChildProc()
 | Android 10 | `PreloadGraphicsDriver` 替代旧 `preloadOpenGL`；AOSP 出现 USAP、App Zygote 与 `ZygotePreload` | 普通 fork、USAP、WebView/App 子 Zygote 需要分开判断 |
 | Android 17 | 当前固定基线；保留可选的 `HttpEngine.preload()`、次 Zygote 延迟预加载和当前 USAP 策略 | 以产品功能开关、ABI、`init` 配置和实际轨迹判断生效路径 |
 
-历史版本只用于说明机制何时出现，判断当前行为时回到文首的源码基线即可。
-
----
-
-### 常见误区
-
-#### “`system_server` 通过 Binder 调用 Zygote”
-
-创建进程的命令走 Zygote `LocalSocket`；Binder 出现在另外两处：启动请求进入 `system_server`，以及子进程通过 `attachApplication()` 连接回 `system_server`。
-
-#### “看到 `PostFork` 就证明刚执行了 fork”
-
-普通 fork 和 USAP 特化都会开始 `PostFork` Trace 区段，实际走了哪条路，要结合 USAP 配置、PID 和父进程事件判断。
-
-#### “预加载越多，应用一定越快”
-
-预加载会增加开机时间和常驻内存；容易被子进程写入并形成脏页的对象还会削弱 COW 收益。适合预加载的，是只读、普遍使用且可安全继承的数据。
-
-#### “图形驱动预加载已经创建应用的 GPU 图形上下文”
-
-它只预热驱动装载状态。应用自己的 RenderThread、图形上下文、Surface 与首帧仍在子进程中创建。
-
-#### “lmkd 杀缓存应用会破坏 Zygote 的父子复用”
-
-普通应用始终从 Zygote 或 USAP 派生，父进程关系不因缓存清理改变：`lmkd` 杀掉的子进程，本来也不会成为别人的 fork 来源。
-
-#### “16KB 页让 fork 固定快 75%”
-
-页表项、COW 粒度、缺页和内存浪费会同时变化，VMA 数量也不会按页大小等比缩减，这个比例只能实测。
-
 ---
 
 ## 图形栈预加载与应用首帧边界
 
-Zygote 是 Android 创建应用进程时使用的进程模板。在 Zygote 通过 `fork` 派生应用进程前，Android 会预先调用一部分图形栈入口，把多数应用都会遇到的 HAL 发现、动态库映射和首次执行成本提前到系统启动阶段。但这项工作离首帧还很远：GraphicsEnvironment、RenderThread、着色器和首批资源仍在应用进程执行，收益要与系统预加载分开测量。
-
-这里有两个常见误解：
-
-1. Zygote 调过一次 EGL 或 Vulkan，应用就不需要再初始化 RenderThread 和图形上下文。
-2. Zygote 预加载了“GPU 驱动”，每个应用使用的驱动就已经确定。
-
-源码不支持这两个结论。要看清收益和适用范围，我们把图形初始化拆成四段：
+Zygote 在 fork 应用进程前会预先调用一部分图形栈入口，把多数应用共用的 HAL 发现、动态库映射和早期加载器初始化提前到系统启动阶段；随后应用的驱动选择、RenderThread 启动、图形上下文创建与着色器编译仍在各自进程中执行。整个图形初始化按阶段拆分为四段：
 
 ```text
 系统启动
@@ -863,7 +819,7 @@ Activity 即将创建
 - 着色器编译、渲染管线缓存未命中和应用资源上传。
 - SurfaceFlinger 合成、硬件合成器（HWC）的验证与显示，以及同步栅栏等待。
 
-所以我们看到，Zygote 预加载削减的是公共冷路径；首帧图形初始化该做的还是要做。
+因此，Zygote 预加载主要分摊公共冷路径开销，首帧所需的具体驱动选择、上下文与资源仍需在应用进程中初始化。
 
 #### 1.1 这笔成本从应用启动移到了系统启动
 
@@ -883,7 +839,7 @@ Zygote 启动可能更轻
 首次使用相应图形路径的 App 自行承担更多成本
 ```
 
-这属于系统级成本分摊，代价是真实存在的。评估时我们要同时测系统启动和应用启动，只截一张应用轨迹会看丢一半。
+这属于系统级成本分摊，代价是真实存在的。评估时需同时测量系统启动与应用启动，才能完整观察成本转移的效果。
 
 ### 2. Android 17 的 Zygote 预加载顺序
 
@@ -944,7 +900,7 @@ void android_internal_os_ZygoteInit_nativePreloadAppProcessHALs(
 1. HAL 总是以同进程直通（passthrough）方式加载。
 2. 大多数应用进程都会使用。
 
-Zygote 是所有普通应用的父进程。把一个很少有应用使用、或依赖应用身份的 HAL 放进这里，会增加系统启动时间、常驻映射和 `fork` 安全风险。所以某个厂商 HAL 首次加载慢，推不出“应该放进 Zygote 预加载”这个结论。
+Zygote 是所有普通应用的父进程。把一个很少有应用使用、或依赖应用身份的 HAL 放进这里，会增加系统启动时间、常驻映射和 `fork` 安全风险。因此，个别厂商 HAL 首次加载慢时，通常应在服务或调用路径侧优化，而不宜直接加入 Zygote 预加载。
 
 #### 3.1 Android 17 不再无条件预加载 Gralloc 2/3
 
@@ -1043,7 +999,7 @@ if (Properties::peekRenderPipelineType()
 - `eglCreateWindowSurface()`
 - `eglMakeCurrent()`
 
-所以，“Zygote 已初始化应用的 GL 图形上下文”这一说法不成立，上下文要等子进程里的 RenderThread 来创建。
+真正的 EGL 初始化与图形上下文要等子进程里的 RenderThread 来创建。
 
 #### 4.2 Vulkan 分支没有创建 VkInstance 或 VkDevice
 
@@ -1062,15 +1018,15 @@ if (Properties::peekRenderPipelineType()
 
 源码说明，这次 GL 调用发生在 `fork` 前，相关内存应可共享；不使用 GL 的应用不需要在自己的启动路径中再次承担同样的公共成本。
 
-### 5. `ro.zygote.disable_gl_preload` 不是应用调优开关
+### 5. `ro.zygote.disable_gl_preload` 的作用范围
 
-这个属性容易被误用。需要先看清三点：
+这个属性面向平台级配置而非应用侧动态调优，使用时需要明确三点边界：
 
 1. 它只跳过 `maybePreloadGraphicsDriver()`。
 2. 它不会跳过 `nativePreloadAppProcessHALs()`，映射器 HAL 仍会预热。
 3. `ro.*` 是只读属性，普通应用不能在运行时切换。
 
-要对比开关效果，平台或设备厂商团队需要准备不同的系统镜像或启动属性配置，并重启 Zygote 或设备；在已经启动的设备上 `setprop` 后立即重跑应用，算不上有效的 A/B 对比。
+要对比开关效果，平台或设备厂商团队需要准备不同的系统镜像或启动属性配置，并重启 Zygote 或设备；在已经启动的设备上执行 `setprop` 后立即重跑应用，无法改变既有 Zygote 状态，也就无法构成有效的 A/B 对比。
 
 关闭它可用于设备级兼容性应急，比如某个厂商 EGL/Vulkan 实现在 `fork` 前的入口调用中崩溃、死锁或留下无法安全继承的状态。应急之后还是要修驱动或系统集成问题；永久关闭等于把首次初始化成本还给应用进程。
 
@@ -1102,7 +1058,7 @@ notifyGraphicsEnvironmentSetup
 
 #### 6.2 `setupAngle`：选择 GLES 实现
 
-ANGLE 不是“另一块 GPU 驱动”，它把 OpenGL ES 调用翻译到其他图形后端，在 Android 上通常与 Vulkan 驱动配合。系统会综合以下条件进行选择：
+ANGLE 负责把 OpenGL ES 调用翻译到其他图形后端，在 Android 上通常运行在 Vulkan 驱动之上。系统会综合以下条件进行选择：
 
 - 全局或按应用设置的 ANGLE 选项。
 - `persist.graphics.egl` 与 `ro.hardware.egl`。
@@ -1201,7 +1157,7 @@ HardwareBitmapUploader::initialize();
 | 没有具体应用与窗口 | 已确定应用驱动，准备实际渲染 |
 | 系统启动期间执行一次 | 每个需要硬件加速的应用进程执行 |
 
-`HardwareRenderer.preload()` 把任务投到 RenderThread，让驱动与图形上下文初始化尽量和主线程创建 Activity 的过程并行。并行归并行，预热没完成时，首帧仍可能因等待 RenderThread 的同步点而阻塞，落点在 RenderThread 或 UI 线程。
+`HardwareRenderer.preload()` 把任务投到 RenderThread，让驱动与图形上下文初始化尽量和主线程创建 Activity 的过程并行。但当预热尚未完成时，首帧仍可能因等待 RenderThread 的同步点而阻塞，阻塞位置可能落在 RenderThread 或 UI 线程。
 
 ### 8. 首帧阶段还有哪些 Zygote 帮不了的成本
 
@@ -1261,7 +1217,7 @@ queueBuffer
 - 启动驱动内部线程。
 - 着色器编译器或渲染管线缓存初始化。
 
-只看到 `libGLES*.so` 或 Vulkan `.so` 被映射，还推不出耗时全在加载器；要把 CPU 轨迹区段、I/O、Binder、线程调度和调用栈对齐了看。
+仅观察到 `libGLES*.so` 或 Vulkan `.so` 被映射，尚不足以确定耗时全在动态链接器；排查时应把 CPU 轨迹区段、I/O、Binder、线程调度和调用栈对齐观察，区分加载器自身工作与驱动初始化操作。
 
 #### 9.2 应用主线程与 RenderThread 可能并行
 
@@ -1294,7 +1250,7 @@ adb shell settings get global angle_gl_driver_selection_pkgs
 adb shell settings get global angle_gl_driver_selection_values
 ```
 
-这些值要和系统轨迹同时保存。只截取 `chooseDriver` 耗时、不记录最终配置，两台设备就没法比。
+这些值要和系统轨迹同时保存，以便在不同设备之间对照相同的驱动选择上下文。
 
 #### 10.2 检查当前应用实际映射
 
@@ -1345,7 +1301,7 @@ adb logcat -v threadtime \
 - 文件页仍在页面缓存中。
 - 瓶颈位于着色器、缓冲区分配器或 SurfaceFlinger。
 
-没有调用栈与配置信息时，我们别急着猜是哪一种。
+排查时应先补齐调用栈与配置信息，再进一步确认属于哪一类原因。
 
 ### 版本与实现边界
 
@@ -1356,37 +1312,7 @@ adb logcat -v threadtime \
 | Android 15–16 | Vulkan HWUI 分支可通过 `initializeGlAlways()` 额外预热 GL；映射器仍预热 2/3/4/5 | 是否额外预热 GL 取决于属性和功能开关 |
 | Android 17（API 37） | `requireMapper4()` 可在设备 API ≥ 36 时跳过旧版 Gralloc 2/3；ANGLE 增加面向 Android 17 设备的应用清单主动启用项与设备条件 | 当前结论以 `android-17.0.0_r1` 为准 |
 
-历史差异可用于解释旧设备；分析 Android 17 时，Android 16 那套无条件预加载四个版本的代码已经不适用。
-
-### 常见误区
-
-#### “Zygote 已经创建好 EGLContext”
-
-不成立。Zygote 只调用 `eglGetDisplay()`；初始化 EGL、创建图形上下文并构造 Skia 上下文的是应用的 RenderThread。
-
-#### “Vulkan 预加载已经创建 VkDevice”
-
-不成立。Zygote 调用的是 `vkEnumerateInstanceVersion()`。
-
-#### “PreloadAppProcessHALs 会预加载所有应用 HAL”
-
-不成立。Android 17 当前只预热 GraphicBufferMapper。
-
-#### “Android 17 一定预加载 Gralloc 2/3/4/5”
-
-不成立。要求 Mapper 4+ 时会跳过 2/3。
-
-#### “Zygote 预加载决定应用使用的驱动”
-
-不成立。应用进程从 Zygote 派生后，仍通过 `GraphicsEnvironment.setup()` 选择 ANGLE、系统驱动或可更新驱动。
-
-#### “应用可通过关闭 `ro.zygote.disable_gl_preload` 动态调优”
-
-不成立。该属性是只读平台配置；而且就算能关，它也只影响图形驱动入口，映射器 HAL 预热照旧进行。
-
-#### “首帧慢就是驱动预加载失效”
-
-不成立。图形上下文、缓冲区分配器、着色器、BufferQueue、同步栅栏和合成，每一环都可能才是主因。
+历史差异可用于解释旧设备；分析 Android 17 时需按 `requireMapper4()` 判断是否跳过 Gralloc 2/3。
 
 ## 诊断与验证清单
 
@@ -1396,16 +1322,14 @@ adb logcat -v threadtime \
 4. Android 17 映射器路径要按 `requireMapper4()` 判断是否包含 Gralloc 2/3。
 5. 记录 `ro.zygote.disable_gl_preload` 与 HWUI 渲染器。
 6. 在应用绑定阶段检查 `setupAngle`、`chooseDriver` 和最终软件包。
-7. 不把 `eglGetDisplay()` 写成 EGLContext 初始化。
-8. 不把 `vkEnumerateInstanceVersion()` 写成 Vulkan device 初始化。
-9. 检查 `HardwareRenderer.preload()` 是否在首帧前给 RenderThread 留出足够时间。
-10. 分开分析映射器与分配器。
-11. 为着色器、渲染管线、缓冲区、同步栅栏与合成分别取证。
-12. A/B 对比必须重启 Zygote 或设备，并保持驱动选择一致。
-13. 厂商结论应附上 SoC、系统与厂商构建版本、驱动软件包和属性快照。
-14. 当前平台源码统一引用 `android-17.0.0_r1`。
+7. 检查 `HardwareRenderer.preload()` 是否在首帧前给 RenderThread 留出足够时间。
+8. 分开分析映射器与分配器。
+9. 为着色器、渲染管线、缓冲区、同步栅栏与合成分别取证。
+10. A/B 对比必须重启 Zygote 或设备，并保持驱动选择一致。
+11. 厂商结论应附上 SoC、系统与厂商构建版本、驱动软件包和属性快照。
+12. 当前平台源码统一引用 `android-17.0.0_r1`。
 
-把分段测量结果、固定源码标签和设备配置放在一起，我们才能把“开机慢”定位到可修改的代码与依赖。
+将分段测量结果、固定源码标签和设备配置对齐后，即可把开机或冷启动延迟定位到具体的代码模块与依赖边界。
 
 ## 冷启动的源码路径与职责边界
 

@@ -214,7 +214,7 @@ UI 线程表面上被低优先级线程阻塞，实际等待时间还被中优�
 - 大范围调用 `removeCallbacksAndMessages()` 或各种 `removeMessages()` 重载。
 - 同步屏障存在时，Looper 需要越过同步消息继续寻找可执行的异步消息。
 
-“主线程很忙”和“MessageQueue 锁竞争”是两回事：要把问题归到队列同步结构，我们需要在性能轨迹里看到对应的锁等待，或者用 A/B 测试稳定复现差异。
+区分主线程自身任务过重与 `MessageQueue` 锁竞争，需要在性能轨迹中确认对应的锁等待区段，或通过同版本 A/B 开关对照复现差异。
 
 ### 3. `next()` 不只是取链表头
 
@@ -295,7 +295,7 @@ Message next() {
 }
 ```
 
-所以，“Android 17 源码只有 DeliQueue”和“每个 Android 17 应用都使用 DeliQueue”这两种说法都对不上源码：平台用同一个组合类承载两种实现，再按进程启动时确定的兼容性结果选择路径。系统进程、测试环境和功能开关（feature flag）另有平台内部的启用入口；这些入口算不上稳定 API，普通应用的兼容性判断应只依据 `@EnabledAfter` 这条公开路径。
+可见 Android 17 通过同一个组合类同时承载 DeliQueue 与旧版实现，再按进程启动时确定的兼容性结果选择执行路径。系统进程、测试环境和功能开关（feature flag）另有平台内部的启用入口，但不属于面向普通应用的稳定 API，常规兼容性判断仍应依据 `@EnabledAfter` 这条公开路径。
 
 ### 5. DeliQueue 的数据结构
 
@@ -353,7 +353,7 @@ do {
 2. 同步屏障生效时，同步消息被暂缓，只能选择到期的异步消息。
 3. 没有消息到期时，计算等待时间并回到 `nativePollOnce()`。
 
-DeliQueue 没有引入业务优先级、机器学习调度或新的线程优先级策略。应用能观察到的主要排序依据仍是 `when`、同时间的插入顺序、同步屏障和异步标记。
+在调度语义上，DeliQueue 沿用既有的消息排序模型，应用能观察到的排序依据仍是 `when`、同时间的插入顺序、同步屏障和异步标记。
 
 #### 5.3 移除：先做逻辑删除，再由 Looper 清结构
 
@@ -414,7 +414,7 @@ DeliQueue 使用原子等待状态（wait state）协调“预计睡到何时”
 - 旧版路径里的 `synchronized (this)`。
 - 原生轮询、唤醒和退出阶段的协调。
 
-所以准确的说法是：DeliQueue 消除了旧 MessageQueue 核心消息路径上的单一全局监视器锁，并使用无锁共享结构与 Looper 私有堆协作。把它读成“MessageQueue 内任何操作都不加锁”，会与源码冲突。
+因此，DeliQueue 消除了旧 `MessageQueue` 核心消息路径上的单一全局监视器锁，改用无锁共享结构与 Looper 私有堆协作，而上述外围集合与本地轮询协调仍保留各自的同步机制。
 
 ### 7. 同步屏障与 Choreographer：语义不变，容器变了
 
@@ -454,7 +454,7 @@ Android Developers Blog 给出了 DeliQueue 的内部验证结果：
 | System UI / Launcher 交互掉帧 | 降低 7.7% | 同批内部测试设备与工作负载 |
 | 启动到首帧 P95 | 缩短 9.1% | 同批内部测试设备与工作负载 |
 
-`5,000×` 来自多线程向已经繁忙的队列插入消息的极端合成基准，官方也没有公开完整线程数、消息规模、设备与参数，所以它撑不起“应用普遍快 5,000 倍”这种表述。`15%` 和掉帧数据描述的是 Google 的内部样本，Android 17 对每台设备并没有这样的性能承诺。
+其中 `5,000×` 来自多线程向繁忙队列插入消息的合成基准，未公开完整线程数、消息规模、设备与参数，仅反映极端高竞争插入场景的上限；`15%` 和掉帧降幅同样源于 Google 内部测试样本，实际应用在目标设备上的收益仍需实测确认。
 
 项目自己的结论至少要记录：
 
@@ -536,29 +536,7 @@ A/B 结果的解释也要克制：
 | Android 16（API 36） | 公开源码出现组合版、并发版和旧版多种实现，处于优先为系统进程逐步启用的阶段 |
 | Android 17（API 37） | DeliQueue 面向 `targetSdkVersion >= 37` 的应用默认启用；当前源码锚点为 `CombinedDeliMessageQueue`、`MessageStack`、`MessageHeap` 与扩展后的 `Message` |
 
-Android 16 的并发实现适合用来理解演进脉络，当前源码仍要以 Android 17 为准。Android 17 的 `MessageStack` 本身就是 Treiber 栈，把它描述成“用 MessageStack 替换 Treiber 栈”是错的；实际的变化是并发原型最终采用共享 Treiber 栈、Looper 私有双堆、墓碑删除，以及完整的休眠和退出协调。
-
-### 常见误区
-
-#### “无锁就是没有任何 `synchronized`”
-
-不是。核心消息路径不再依赖旧的全局监视器锁，但 IdleHandler、文件描述符记录和旧版路径仍有各自的锁。
-
-#### “CAS 一定比锁快”
-
-不是。竞争较少且临界区很短时，锁可能已经足够快；高竞争下 CAS 也会不断重试。DeliQueue 的收益来自重新设计 MessageQueue 的整体结构，靠把每个 `synchronized` 换成原子变量复现不出来。
-
-#### “MessageStack 解决了所有 ABA 问题”
-
-不准确。`MessageStack` 就是 Treiber 栈。Android 17 通过禁止 DeliQueue 中的 `Message` 对象池复用、保留墓碑节点的生命周期，并限定只有 Looper 修改实际结构，来规避节点复用引发的 ABA 问题。
-
-#### “新队列给渲染消息增加了更高业务优先级”
-
-没有。同步屏障与异步消息语义沿用既有模型；DeliQueue 改的是并发容器和协调算法，不是应用任务优先级系统。
-
-#### “主线程处于休眠状态就是队列锁竞争”
-
-不成立。空闲 Looper 正常阻塞在原生轮询中。确认旧版监视器锁竞争时，应结合竞争事件（如 `android_monitor_contention`）、持锁线程和 MessageQueue 调用点；未采集到相应事件时，仅凭休眠状态还下不了判断。
+Android 16 的并发实现适合用来理解演进脉络，当前源码仍以 Android 17 为准。Android 17 的 `MessageStack` 本身即采用 Treiber 栈，整体方案由共享 Treiber 栈、Looper 私有双堆、墓碑删除以及完整的休眠和退出协调共同组成。
 
 ### 结论
 
@@ -627,7 +605,7 @@ enum LockState {
 
 轻量锁的优势是，不必为每个使用过 `synchronized` 的对象都分配完整 Monitor。没有竞争时，这条路径很短，不会让线程休眠，也不会触发内核调度切换。
 
-“无竞争的 `synchronized` 开销较小”这句话有前提：对象可能已经膨胀为重量级 Monitor，可能带身份哈希值，也可能发生重入和其他运行时状态变化；这些情况下，一次 CAS 交换就搞定的假设并不成立。性能结论要结合实际对象和竞争形态。
+无竞争情况下 `synchronized` 的轻量锁开销较小，但这建立在对象未膨胀为重量级 Monitor、未携带身份哈希值且未发生重入或其他运行时状态转换的前提上，具体耗时仍需结合实际对象与竞争形态评估。
 
 #### 2.2 竞争、`wait()` 与身份哈希：Monitor 膨胀
 
@@ -659,15 +637,7 @@ static constexpr uint64_t kLongWaitMs =
         100 * kDebugThresholdFudgeFactor;
 ```
 
-也就是 release 构建为 100ms，debug 构建为 1000ms。这个常量服务于 ART 的长时间竞争告警；日志是否记录，还受采样和持锁者方法能否解析等条件影响。
-
-从它出发推不出下面这些结论：
-
-- “小于 100ms 的锁竞争不会进 Perfetto。”
-- “没有长等待日志就没有锁问题。”
-- “100ms 是 Android 所有锁的统一严重阈值。”
-
-一帧在 60Hz 下只有约 16.7ms，几毫秒的主线程锁等待已经可能造成掉帧，远不到 ART 长等待日志的量级。
+也就是 release 构建为 100ms，debug 构建为 1000ms。这个常量仅用于触发 ART 的长时间竞争告警；日志是否记录还受采样和持锁者方法能否解析等条件影响。该阈值也不代表低于 100ms 的等待不会被 Perfetto 采集或对界面流畅性无害——一帧在 60Hz 下只有约 16.7ms，几毫秒的主线程锁等待就足以造成掉帧。
 
 ### 3. Futex：用户态快路径与内核慢路径
 
@@ -731,13 +701,7 @@ pthread_mutexattr_setprotocol(&attr, PTHREAD_PRIO_INHERIT);
 pthread_mutex_init(&mutex, &attr);
 ```
 
-只有互斥锁属性显式选择 `PTHREAD_PRIO_INHERIT`，bionic 才会调用 `__futex_pi_lock_ex()` / `__futex_pi_unlock()`，由内核 PI-futex 和 rt-mutex 提升持锁者优先级。普通互斥锁仍走普通 futex 路径。
-
-所以：
-
-- “Android 内核支持 PI-futex”只说明具备这项能力；
-- 判断“这把锁启用了 PI”，必须检查它的初始化属性；
-- 某线程停在 `futex_wait`，还说明不了该锁走的是 PI 路径。
+只有互斥锁属性显式选择 `PTHREAD_PRIO_INHERIT`，bionic 才会调用 `__futex_pi_lock_ex()` / `__futex_pi_unlock()`，由内核 PI-futex 和 rt-mutex 提升持锁者优先级；普通互斥锁仍走普通 futex 路径。因此，仅凭内核支持 PI-futex 或线程停在 `futex_wait` 尚不能确定某把锁启用了优先级继承，仍需检查其初始化属性。
 
 PI 解决的是调度这一段，锁设计本身的问题——临界区过大、锁顺序混乱、持锁执行 I/O——仍要从设计上修复。
 
@@ -798,7 +762,7 @@ Android 17 的 `ProcessState.cpp` 定义：
 - 业务线程也可以进入 Binder 调用上下文；
 - 服务可以在启动线程池前通过 API 配置不同上限。
 
-所以，把 Binder 线程池概括成“固定 15 条”或“固定 16 条”都会误导性能分析。线程数只是容量的一部分；一个工作线程长时间持锁或执行缓慢 I/O，仍可能让其他事务排队。
+因此，Binder 线程池并非固定为 15 条或 16 条线程：计算容量时应将按需增线程上限、主动启动的主线程池线程以及进入池中的业务线程分开核算；同时，只要工作线程长时间持锁或执行缓慢 I/O，依然会引起后续事务排队。
 
 #### 5.3 `oneway` 的提交、串行与容量边界
 
@@ -860,7 +824,7 @@ void updateOomAdjLocked(@OomAdjReason int oomAdjReason) {
 
 这里调用者已经持有 `mServiceLock`，随后再进入 `mProcLock`，符合从全局锁到进程锁的顺序。`ProcessList.mLruProcesses` 也标注为由组合锁保护。
 
-这些源码能证明哪些状态由哪些锁保护、锁按什么顺序获取；固定的性能提升比例要另找测量数据，锁持有时间必须来自具体设备的性能轨迹。没有可定位的一手基准时，“从 25ms 降到 8ms”或“吞吐提升 3 倍”这类写法都站不住。
+这些源码能证明哪些状态由哪些锁保护以及锁的获取顺序，但实际的锁持有时间与吞吐变化仍需从具体设备的性能轨迹中测量。
 
 #### 6.2 ATMS/WMS 的窗口锁与跨域通知
 
@@ -880,7 +844,7 @@ ATMS 与 WMS 共享窗口管理全局锁。服务职责分开后，跨服务调�
 
 前半篇已经讲清 DeliQueue 的旧锁、新栈与双堆实现，这里只提炼诊断意义。如果 Android 17 / target API 37 上的测量表明生产者入队争锁明显下降、消息仍然迟到，我们就继续查 Looper 前序任务、执行线程调度、业务锁、Binder 与 I/O；反过来，在旧实现或兼容开关未启用时，MessageQueue 自身的 monitor contention 仍可能是等待链中的关键节点。
 
-DeliQueue 因此只解决了队列这一段的锁，谈不上证明“无锁一定更快”；Google 公布的 15% 锁竞争时间下降只描述其内部样本，CAS 重试、缓存行争用、内存分配和延迟清理仍要在目标负载中测量。
+竞争较少且临界区很短时，互斥锁与原子操作各有适用范围；DeliQueue 仅消除了消息队列核心路径上的单一全局监视器锁，Google 公布的 15% 锁竞争时间下降也只对应其内部样本，高竞争下的 CAS 重试、缓存行争用、内存分配和延迟清理成本仍要在目标负载中测量。
 
 ### 8. Perfetto：先找证据，再解释原因
 
@@ -1069,33 +1033,7 @@ LIMIT 30;
 | Android 9（API 28） | bionic 已提供 `PTHREAD_PRIO_INHERIT` 互斥锁属性接口 | 只说明这项能力可用；具体锁是否启用仍要看初始化 |
 | Android 17（API 37） | 当前 bionic 的 PI 互斥锁走 PI-futex；当前 ACK 为 `android17-6.18-2026-06_r6`；DeliQueue 对目标 SDK 37 及以上应用默认启用 | 平台、bionic 与内核源码按本知识库的统一锚点核对 |
 
-Binder 默认线程配置在历史上容易被误传。在当前 Android 17 锚点下，`DEFAULT_MAX_BINDER_THREADS` 为 15，`startThreadPool()` 还会另行启动主线程池线程；它是默认上限，不是进程的固定线程总数。
-
-### 常见误区
-
-#### “Waiting / Sleeping 就是锁竞争”
-
-不成立。Looper、条件变量、Binder、I/O 和定时器都会让线程睡眠。先找等待对象和唤醒条件。
-
-#### “`synchronized` 一定比 `ReentrantLock` 慢”
-
-不成立。它们的功能、运行时路径和竞争行为不同。没有实际工作负载和性能轨迹，单凭锁类型下不了判断。
-
-#### “看到 `futex_wait` 就找 Java Monitor 的持锁者”
-
-不成立。应先看 `android_monitor_contention` 和调用栈。futex 是底层等待机制，不是 Java Monitor 的专属标志。
-
-#### “内核支持 PI，所以 Android 关键锁都有优先级继承”
-
-不成立。bionic 互斥锁必须使用 `PTHREAD_PRIO_INHERIT` 初始化；Binder 的事务优先级传播又是另一套机制。
-
-#### “Binder 调用慢就是驱动慢”
-
-只看到 Binder 调用耗时，通常还不足以定位。服务端工作线程可能阻塞在业务锁、I/O、CPU 调度或嵌套 IPC 上。应先把调用端与服务端的时间线连起来。
-
-#### “无锁一定更快”
-
-不成立。CAS 重试、多个 CPU 核反复争用同一缓存行、GC 和算法复杂度都可能成为新成本。DeliQueue 的价值来自针对具体队列结构的重构，“无锁”两个字概括不了它。
+在当前 Android 17 锚点下，`DEFAULT_MAX_BINDER_THREADS` 为 15，`startThreadPool()` 还会另行启动主线程池线程；它是驱动按需增线程的默认上限，而非进程的固定线程总数。
 
 ### 结论
 

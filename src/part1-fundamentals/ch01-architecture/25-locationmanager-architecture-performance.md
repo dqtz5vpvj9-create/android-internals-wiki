@@ -322,7 +322,7 @@ Android 12 起，应用同时请求 fine（精确）和 coarse（粗略）权限
 
 ## 5. 同一 Provider 的请求如何合并
 
-每个 Provider 有自己的 `LocationProviderManager`，只合并发往该 Provider 且当前 active 的注册。合并过程不是“全系统挑一个最佳位置源”。
+每个 Provider 有自己的 `LocationProviderManager`，只合并发往该 Provider 且当前 active 的注册，并不会跨 Provider 全局挑选位置源。
 
 ### 5.1 `ProviderRequest` 的合并规则
 
@@ -443,7 +443,7 @@ AIDL `IGnss` 的主生命周期接口是：
 
 HAL 会上报 scheduling、measurement、geofence、low-power mode 等能力。framework 据此启用对应路径。例如，没有调度能力时，`GnssLocationProvider` 可以通过 alarm 在低频请求之间休眠和唤醒；具备调度能力时，可把周期直接交给 HAL。
 
-能力位不能推导出固定精度、TTFF（Time to First Fix，首次定位时间）或电流值。天线、天空可视度、频段、热状态、厂商固件、辅助数据、移动速度和测量环境都会改变结果。通用章节不应给出“GPS 恒定 3–10 米”或“batching 恒定 1–5 mA”一类设备无关结论。
+能力位仅反映接口支持情况，无法直接推导出具体的精度、TTFF（Time to First Fix，首次定位时间）或功耗电流值。天线、天空可视度、频段、热状态、厂商固件、辅助数据、移动速度和测量环境都会改变结果，这些指标只能在具体设备和测试条件下实测，并不存在跨设备的固定数值。
 
 ## 8. GNSS 调度、batching 与 full tracking
 
@@ -457,7 +457,7 @@ HAL 会上报 scheduling、measurement、geofence、low-power mode 等能力。f
 - HAL 不支持 scheduling 时，framework 用 alarm 辅助长间隔轮询；
 - Provider request 变为 inactive 时，停止 navigation 和 batching。
 
-这里没有“interval 大于 10 秒就必定 batching”的规则。
+是否启用 batching 严格取决于后续的能力与时长比例条件，并非超过某个固定 interval 就自动进入批处理。
 
 ### 8.2 Hardware batching 的必要条件
 
@@ -517,7 +517,7 @@ PSDS 有助于缩短部分启动场景的捕获时间，却不是 TTFF 的唯一
 TTFF = first valid fix elapsed realtime - mFixRequestTime
 ```
 
-结果写入 `GnssMetrics`，`GnssStatus.Callback.onFirstFix(ttffMillis)` 也向有权限的监听者暴露相应事件。这个定义可以用于同设备、同场景的前后对比；“冷启动必为 30–60 秒”或“A-GPS 必为 1–5 秒”没有跨设备保证。
+结果写入 `GnssMetrics`，`GnssStatus.Callback.onFirstFix(ttffMillis)` 也向有权限的监听者暴露相应事件。该指标适合用于同设备、同场景的前后对照；受卫星信号、网络辅助和硬件状态影响，冷启动或辅助定位均不存在跨设备恒定的耗时区间。
 
 做可重复测试时，至少记录：
 

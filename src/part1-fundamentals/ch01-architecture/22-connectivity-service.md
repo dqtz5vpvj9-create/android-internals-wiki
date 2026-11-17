@@ -227,7 +227,7 @@ native network 与 DNS 缓存由 `ConnectivityService` 协调创建。不同能�
 - strict mode Private DNS（只使用指定加密 DNS）解析与探测；
 - 连接后的 DNS/TCP 数据停滞信号，用于触发重新验证。
 
-探测 URL、并行策略和超时受资源配置、DeviceConfig、网络属性及模块版本影响。单个探测代码里的超时常量，撑不起“所有验证固定 30 秒”这样的结论。失败后状态机会按逐渐延长等待时间的退避策略重试；验证失败后，`NetworkMonitor` 也不会自行宣布物理链路断开。
+探测 URL、并行策略和超时受资源配置、DeviceConfig、网络属性及模块版本影响，并非固定不变的常量。失败后状态机会按逐渐延长等待时间的退避策略重试；验证失败后，`NetworkMonitor` 也不会自行宣布物理链路断开。
 
 结果我们这样理解：
 
@@ -237,7 +237,7 @@ native network 与 DNS 缓存由 `ConnectivityService` 协调创建。不同能�
   `NET_CAPABILITY_PARTIAL_CONNECTIVITY`；
 - Private DNS：strict mode 下还要解析并验证指定服务器，它有自己的状态和重试。
 
-`PARTIAL_CONNECTIVITY` 的结论来自系统配置的验证端点及探测组合，设备厂商和网络环境都可能改变端点行为；判断它要看这套机制，`NET_CAPABILITY_CAPTIVE_PORTAL` 和“Google 可达、第三方 CDN 不可达”这两种读法都站不住。
+`PARTIAL_CONNECTIVITY` 的结论来自系统配置的验证端点及探测组合，设备厂商和网络环境都可能改变端点行为；判断它需依据探测机制本身，不能简单等价为 `NET_CAPABILITY_CAPTIVE_PORTAL` 或固定服务商域名的连通性差异。
 
 `NET_CAPABILITY_PARTIAL_CONNECTIVITY` 在 Android 17 仍是隐藏的 `@SystemApi`。系统组件可以直接检查它，普通 SDK 应用则要把它挡在可发布代码之外。对普通应用来说，稳妥的策略是：
 
@@ -268,7 +268,7 @@ Cellular 50 + validated 40 = 90
 Partial connectivity +20
 ```
 
-原生 `Vpn` 仍会构造 legacy int 为 101 的 `NetworkScore`，这是历史兼容值。`FullScore` 会基于 `TRANSPORT_VPN` 设置 VPN 策略。“VPN 继承底层网络分数”的说法与源码对不上。
+原生 `Vpn` 仍会构造 legacy int 为 101 的 `NetworkScore`，这只是历史兼容值。在排序阶段，`FullScore` 直接基于 `TRANSPORT_VPN` 设置 VPN 策略位，并不继承底层承载网络的分数。
 
 legacy int 还有一个受限的特例：提供者在真正建网前，可用 `NetworkOffer` 表示自己可能提供的能力（prospective offer）。`FullScore.makeProspectiveScore()` 会把高于 `NetworkRanker.LEGACY_INT_MAX` 的 filter 值映射为 `POLICY_IS_INVINCIBLE`，只用于判断这条 offer 是否值得尝试建网；网络 connected 之后仍按完整策略链排序，想借这个兼容分支找回旧的整数打分模型，是行不通的。
 
@@ -288,7 +288,7 @@ legacy int 还有一个受限的特例：提供者在真正建网前，可用 `N
 10. 全部等价时保持当前满足该请求的网络（satisfier），减少无意义切换；
 11. 以上条件全部打平时，从剩余等价候选中返回一个。
 
-`FullScore` 中虽有 `POLICY_IS_UNMETERED`，`NetworkRanker` 里对应的筛选仍是带 TODO 的注释代码；非计费网络自动拿到更高数值分数这件事，在当前源码里并没有发生。
+`FullScore` 中虽有 `POLICY_IS_UNMETERED`，但 `NetworkRanker` 里对应的筛选在当前源码中仍为带有 TODO 的注释代码，非计费属性尚不会在排序决策中自动加分胜出。
 
 这份顺序用于理解源码，不适合在业务代码中复制一套“系统打分器”。运营商配置、Wi-Fi 策略、VPN、每 UID 路由和后续平台版本都会影响最终选择。
 
@@ -426,7 +426,7 @@ class NetworkStateTracker(
 - 在 capabilities 里只提取业务需要的字段，再做快照去重；
 - DNS、路由和代理变化属于 `LinkProperties`，不要等待 `onCapabilitiesChanged()`；
 - 回调中不做磁盘 I/O、同步网络请求或长时间锁等待；
-- 记录回调处理时长和队列等待，“每次 Binder 都小于几毫秒”这类说法要靠实测支撑。
+- 记录回调处理时长和队列等待，结合实测量化跨进程与调度耗时。
 
 `NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED` 从 Android 16（API 36）起公开，也提供于 U Extensions 16。缺少它时应把带宽用量控制在 `NetworkCapabilities` 报告的上下行带宽以内，并限制访问频率；超量或过频访问可能导致系统阻断应用联网，后台联网也可能进一步受限。网络是否受限要看这个能力位，单看 Wi-Fi/蜂窝 transport 推不出来。
 
@@ -486,7 +486,7 @@ NetworkStatsManager 查询
 
 map 是内核与用户空间交换计数数据的容器，pin 则是为 BPF 对象建立持久路径的操作。源码固定了多个 BPF map 路径，例如 `map_netd_app_uid_stats_map`、`map_netd_stats_map_A/B` 和 `map_netd_iface_stats_map`。读取详细统计前，会先把内核正在写入的 active map 与 inactive map 对调，再读取暂时停止写入的 inactive map，从而减少与内核更新计数的竞争。
 
-历史数据不存放在 SQLite 中。`NetworkStatsRecorder` 使用 `FileRotator`（按时间轮换历史文件）和 `NetworkStatsCollection` 管理按时间段聚合的 bucket 记录。`queryDetailsForUid()` 打开统计 session，读取权限允许的历史集合——它走的路径，比“Binder 后直接查询单个 UID 的 BPF map”要长。
+历史数据不存放在 SQLite 中。`NetworkStatsRecorder` 使用 `FileRotator`（按时间轮换历史文件）和 `NetworkStatsCollection` 管理按时间段聚合的 bucket 记录。`queryDetailsForUid()` 会打开统计 session 并读取权限允许的历史集合，经历的聚合与文件读取链路比直接读取单个 UID 的 BPF map 更长。
 
 <!-- gracker-diagram: ch01-22-networkstats-collection -->
 ![NetworkStats 从内核累计计数到历史查询](../../assets/diagrams/ch01/ch01-22-networkstats-collection.png)
@@ -505,7 +505,7 @@ map 是内核与用户空间交换计数数据的容器，pin 则是为 BPF 对�
 - stats provider 同步；
 - 持久化 I/O。
 
-所以 `NetworkStatsManager` 的查询 API 标注为 `@WorkerThread`，UI 主线程上要避开它。数据规模、时间范围、tag（应用为 socket 流量设置的分类标签） 数量、设备 I/O 和缓存状态共同决定耗时，通用的“低于 10 ms”保证并不存在。
+所以 `NetworkStatsManager` 的查询 API 标注为 `@WorkerThread`，UI 主线程上要避开它。数据规模、时间范围、tag（应用为 socket 流量设置的分类标签）数量、设备 I/O 和缓存状态共同决定查询耗时，并不存在固定一致的耗时上限。
 
 需要较高频率观察当前进程收发量时，可以在其统计语义允许的范围内用 `TrafficStats` 算前后差值；要查计费那套统计和跨时间段历史时，再换 `NetworkStatsManager`。两者的统计范围、更新时效和权限都不同。
 
@@ -528,7 +528,7 @@ Connectivity 代码会从 BPF 规则状态取得所跟踪 UID 的 blocked reason
 
 普通 SDK 应用收到的是 `onBlockedStatusChanged(Network, boolean)`，只知道是否被阻止；携带 blocked-reason 位掩码的重载是面向 module libraries 的 `@SystemApi`。应用可以把布尔状态与 Data Saver、前后台状态等公开信息结合展示；限制具体来自 Doze、Data Saver 还是 VPN，这个回调本身给不出答案。
 
-应用应把阻止状态作为调度输入，停止无意义的重试或把工作交给 JobScheduler/WorkManager，而不是循环创建 socket 验证限制是否解除。
+应用应把阻止状态作为调度输入，停止无意义的重试或把工作交给 JobScheduler/WorkManager，避免循环创建 socket 去试探限制是否解除。
 
 ## VPN 的两种数据通路
 
@@ -564,7 +564,7 @@ Connectivity 代码会从 BPF 规则状态取得所跟踪 UID 的 blocked reason
 - DNS 是否走预期网络；
 - 分流隧道（split tunnel）、绕过和强制 VPN 三类规则（split tunnel / bypass / lockdown）是否符合设计。
 
-“VPN 增加多少 CPU”或“每条规则耗时多少微秒”，要放回具体设备、算法和包长里测，固定数字给不出普适答案。
+VPN 引入的 CPU 开销和规则判定耗时取决于具体设备、加密算法与数据包长度，需要放回目标场景中实测评估。
 
 ## Android 17 / API 37 的应用可见变化
 
@@ -653,7 +653,7 @@ adb shell ip route show table all
 - 独立 NetworkStack 进程中的 `NetworkMonitor` 负责互联网与 Private DNS 验证；
 - `netd`、BPF 和内核负责路由、权限、防火墙与计数执行。
 
-做性能分析时，我们先分清职责落在哪一层，再测量队列、探测、路由、socket、DNS 和业务请求。旧的 AsyncChannel 图、固定加分表、固定验证超时和通用耗时数字，都套不进现在这套行为。
+做性能分析时，应先分清职责落在哪一层，再针对队列、探测、路由、socket、DNS 和业务请求分别测量，并依据现代策略排序与异步验证模型解释观测结果。
 
 ## 源码导航与官方资料
 

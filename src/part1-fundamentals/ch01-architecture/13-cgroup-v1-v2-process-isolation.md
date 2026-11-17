@@ -267,7 +267,7 @@ procstate 是 framework 对进程当前业务重要性的分类，sched group �
 | `SCHED_GROUP_FOREGROUND_WINDOW` | `THREAD_GROUP_FOREGROUND_WINDOW` |
 | 其他默认情形 | `THREAD_GROUP_DEFAULT` |
 
-OomAdjuster 通过 `mProcessGroupHandler` 异步发送组变更，再由 callback 调整应用及相关子进程。profile 文件写入不在 OomAdjuster 的计算循环内执行。状态字段先更新、cgroup 迁移随后执行，因此短时间观察可能同时看到“新 sched group”与“旧 cgroup 路径”；这两步之间的间隔不能预设为固定的 100～200 ms。
+OomAdjuster 通过 `mProcessGroupHandler` 异步发送组变更，再由 callback 调整应用及相关子进程。profile 文件写入不在 OomAdjuster 的计算循环内执行。状态字段先更新、cgroup 迁移随后执行，因此短时间观察可能同时看到“新 sched group”与“旧 cgroup 路径”，两步之间的实际间隔随调度和队列负载变化，并非固定数值。
 
 <!-- gracker-diagram: ch01-13-scheduling-group-application -->
 ![从 OomAdjuster 调度组到 profile 文件操作](../../assets/diagrams/ch01/ch01-13-scheduling-group-application.png)
@@ -289,7 +289,7 @@ OomAdjuster 通过 `mProcessGroupHandler` 异步发送组变更，再由 callbac
 
 cpuset 挂载使用 `noprefix`，实际文件名是 `/dev/cpuset/<group>/cpus` 和 `mems`，不是 v2 风格的 `cpuset.cpus`。
 
-init 只保证组和权限存在，并把根 CPU mask（允许使用的 CPU 编号集合）复制为初始值。具体 SoC（System on Chip，片上系统）的 `top-app`、`foreground`、`background` CPU mask 由设备配置写入。AOSP 不能证明“background 固定为 0-3”或“top-app 固定为 0-7”。
+init 只保证组和权限存在，并把根 CPU mask（允许使用的 CPU 编号集合）复制为初始值。具体 SoC（System on Chip，片上系统）的 `top-app`、`foreground`、`background` CPU mask 由设备配置写入，因设备拓扑而异。
 
 ### 6.2 UClamp 的位置与含义
 
@@ -346,9 +346,9 @@ memory controller 在默认 `cgroups.json` 中标为 optional。设备不支持�
 | `memory.max` | 硬上限；回收无法满足时可能触发 cgroup OOM（Out of Memory，内存不足处理） | 错误上限会导致进程被杀或分配失败 |
 | `memory.oom.group` | 设为 1 时把 cgroup 作为不可分割 workload（工作负载整体）处理 | 可能扩大一次 cgroup OOM 的终止范围 |
 
-`memory.low` 不能概括成“低于该值绝不回收”；它提供尽力而为的保护。`memory.high` 也不是普通告警阈值，超限会让该 cgroup 中的进程进入强回收和节流。
+`memory.low` 提供尽力而为的回收保护，并不保证低于该值绝不回收；`memory.high` 也不只是统计告警阈值，超限会让该 cgroup 中的进程直接进入强回收和节流。
 
-AOSP 默认 profile 暴露这些能力，但没有给所有应用统一写入 `memory.max`/`memory.high`。是否设置、设置多少属于产品策略。不要用假设的 system_server 上限、工作资料（Work Profile）上限或固定阈值解释未知设备。
+AOSP 默认 profile 暴露这些能力，但没有给所有应用统一写入 `memory.max`/`memory.high`。是否设置、设置多少属于产品策略，排查未知设备时需读取实际的 cgroupfs 配置，而不应套用预设的进程内存阈值。
 
 ### 7.3 与 LMKD 的边界
 
@@ -377,7 +377,7 @@ SetProcessProfiles(uid, pid, {"Frozen"})
 
 解冻使用 `Unfrozen` 并写 `0`。这里不使用 cached fd 路径，因为文件名包含 UID/PID，且进程 cgroup 会创建和删除。
 
-向 `cgroup.freeze` 写 `1` 会发起该 cgroup 及其后代的冻结。冻结完成可能滞后于写入；内核通过 `cgroup.events` 的 `frozen` 字段报告完成状态。“一次写入就原子完成冻结”的说法因此不准确。
+向 `cgroup.freeze` 写 `1` 会发起该 cgroup 及其后代的冻结。实际冻结完成可能滞后于写入，内核通过 `cgroup.events` 的 `frozen` 字段报告完成状态，因此单次写入并不等同于原子冻结完成。
 
 ### 8.2 Android 为什么还需要 Binder Freezer
 
@@ -395,9 +395,7 @@ SetProcessProfiles(uid, pid, {"Frozen"})
 
 进程冻结后，其普通线程不再获得 CPU，进程内 Watchdog、采样线程和上传线程也会暂停。解冻后的时间间隔突增不能直接算作 ANR、CPU starvation（长时间得不到 CPU）或网络超时。
 
-普通应用没有可依赖的公开“即将被冻结”回调。监控系统若需要区分冻结，应结合系统侧/外部观测、生命周期上下文与采样连续性判断，不能靠在已冻结进程里轮询 `cgroup.freeze`。
-
-后台 profiler（性能采样器）的 10 ms 周期同样没有证据支持统一换算成 50～100 ms。
+普通应用没有可依赖的公开“即将被冻结”回调。监控系统若需要区分冻结，应结合系统侧或外部观测、生命周期上下文与采样连续性判断，不能靠在已冻结进程里轮询 `cgroup.freeze`；后台 profiler（性能采样器）的采样周期也会随进程冻结而暂停，难以在未知冻结窗口下按固定比例估算。
 
 ## 9. 设备核对方法
 
@@ -412,7 +410,7 @@ adb shell cat /vendor/etc/cgroups.json
 adb shell cat /vendor/etc/task_profiles.json
 ```
 
-文件可能通过根目录映射显示为 `/etc/...`，`vendor`/`system_ext` 也可能追加定义。命令失败还可能来自 SELinux 访问控制或 shell 权限，不能把“读不到”解释为 controller 不存在。
+文件可能通过根目录映射显示为 `/etc/...`，`vendor`/`system_ext` 也可能追加定义。读取失败可能来自 SELinux 访问控制或 shell 权限限制，并不意味着对应 controller 不存在。
 
 再按资源检查实际值：
 
@@ -473,6 +471,6 @@ Android 17 的资源分组可以分成三层：
 
 平台基线中，CPU、cpuset、blkio 仍在 v1，freezer 与可选 memory 位于 v2。v2 的 per-UID/per-process 树提供进程隔离、冻结、kill 和 memory 文件；`top-app`/`background` 的 CPU 差异仍来自 `/dev/cpuctl`、`/dev/cpuset` 及设备参数。
 
-定位问题时，应从设备当前拓扑出发：确认 controller 版本与路径，再确认 profile action 和 PID/TID 归属，然后用 trace 验证性能后果。把“Android 17 支持 cgroup v2”理解为“所有 controller 已迁入统一树”，会让后续 CPU、memory、freezer 结论全部偏离源码。
+定位问题时，应从设备当前拓扑出发：先确认各 controller 的实际版本与路径，再核对 profile action 和 PID/TID 归属，最后用 trace 验证性能后果，明确区分支持 cgroup v2 与所有控制器均已迁入统一树的区别。
 
 相关章节：CPU affinity、cpuset、task profile、EAS（Energy Aware Scheduling，能耗感知调度）与 UClamp 见 **5.1**；Binder Freezer 见 **1.10**；OomAdjuster 见 **1.12**；LMKD/PSI 见内存管理章节。

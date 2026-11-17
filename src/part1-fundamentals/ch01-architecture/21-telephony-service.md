@@ -198,7 +198,7 @@ Android 17 的 `RIL` 为以下功能域维护 `RadioServiceProxy`：
 
 RIL 先用 `ServiceManager.waitForDeclaredService()` 获取分域 AIDL 服务，并为每个域设置 response（请求响应）与 indication（Modem 主动上报）回调。目标 AIDL 服务不可用且版本条件允许时，源码会依次尝试 HIDL `IRadio` 1.6、1.5 和 1.4。
 
-Android 17 保留 HIDL 回退，因此“已经全面迁移、旧 HAL 不再存在”的说法不准确。
+由于 Android 17 依然保留了对 HIDL `IRadio` 1.4–1.6 的回退支持，部分设备仍可能沿用旧接口，排查时需先核实设备实际注册的是 AIDL 还是 HIDL 服务。
 
 AIDL `IRadio*` 接口是异步的 `oneway`：调用线程不会等待 HAL 方法返回业务结果。一次 radio 请求的基本过程如下：
 
@@ -226,7 +226,7 @@ Vendor HAL 到 Modem 的传输由厂商实现决定，可能涉及共享内存�
 
 ## 3. 同步 API 的耗时取决于服务端实现
 
-“查询类 API 都会同步访问 Modem”不适用于 Android 17，实际情况至少有三类。
+Telephony 的查询类 API 并不都会同步访问 Modem。在 Android 17 中，根据服务端实现的不同，实际耗时可分为以下三类路径：
 
 ### 3.1 读取 Phone 进程缓存
 
@@ -269,9 +269,7 @@ Binder thread
   → Handler 完成请求并 notify
 ```
 
-`sendRequest()` 明确禁止从 Phone 主 Looper 自身调用，以避免线程等待自己处理消息而死锁。许多调用使用负 timeout，表示一直等到完成；另一些调用传入明确 timeout。
-
-没有一个覆盖全部 Telephony API 的“5–10 秒默认超时”，Binder 也没有可依赖的通用事务超时。
+`sendRequest()` 明确禁止从 Phone 主 Looper 自身调用，以避免线程等待自己处理消息而死锁。许多调用使用负 timeout（表示一直等到完成），另一些调用传入明确 timeout；Telephony API 并不存在统一的固定默认超时，Binder 本身也没有通用的事务超时上限。
 
 对应用的建议很简单：
 
@@ -424,9 +422,7 @@ SmsManager
 
 `SmsManager.sendTextMessage()` 正常返回不保证发送请求已交给短信服务，也不表示网络已接收或对端已收到。[Android 17 的实现](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/telephony/java/android/telephony/SmsManager.java#756) 可能先异步等待用户选择订阅；订阅解析失败或向短信服务发送时捕获的 `RemoteException` 会通过非空的 `sentIntent` 回报错误。应用应使用 `sentIntent` 区分发送结果，并在需要时使用 `deliveryIntent` 观察网络交付报告。
 
-普通应用调用该接口需要 `SEND_SMS` 权限，设备还须声明 `FEATURE_TELEPHONY_MESSAGING`。长短信分段、重试、IMS 失败后的兼容路径（fallback）、发送限额确认和运营商服务都会改变时序。
-
-“权限检查固定 5–30 ms”没有测试条件，不能作为平台指标。耗时受 Binder 排队、AppOps、短信分段、默认短信应用策略、IMS 状态和 vendor radio 实现影响，必须在目标设备测量。
+普通应用调用该接口需要 `SEND_SMS` 权限，设备还须声明 `FEATURE_TELEPHONY_MESSAGING`。权限与发送前置检查的耗时受 Binder 排队、AppOps、长短信分段、默认短信应用策略、IMS 状态、发送限额确认和 vendor radio 实现共同影响，不存在固定区间，需要在目标设备上实测。
 
 ### 7.2 接收
 
@@ -466,7 +462,7 @@ DSDS（Dual SIM Dual Standby，双卡双待）与 DSDA（Dual SIM Dual Active，
 - DSDS 允许多张 SIM 保持待机，但并发通话、数据与射频资源仍受 Modem 能力和运营商配置约束。
 - DSDA 允许更强的双卡并发活动，但“能否同时通话”“通话时另一卡能否保持数据”仍要看设备公开的具体能力。
 
-不能根据 DSDS 名称推导“另一张卡一定周期性丢信号”，也不能假设每台 DSDA 设备都有两套完全独立的射频链路。Android 17 源码提供 `PhoneCapability`、active modem count 和 simultaneous calling 相关状态；应用与系统组件应读取这些能力，避免按卡槽数量猜测。
+DSDS 与 DSDA 只是能力大类的概括，实际并发受制于基带与射频硬件：DSDS 设备的副卡表现取决于具体的双待调度策略，并不一定周期性丢失信号；同样，DSDA 设备也未必配备两套完全独立的射频链路。Android 17 源码提供 `PhoneCapability`、active modem count 和 simultaneous calling 相关状态，应用与系统组件应直接读取这些运行时能力字段，避免仅凭卡槽数量推断行为。
 
 切换默认数据、语音或短信订阅由 `SubscriptionManagerService`、`MultiSimSettingController`、`PhoneSwitcher` 等组件协作。
 
@@ -604,7 +600,7 @@ App 发起 ITelephony
 | Android 15 | `SubscriptionInfo` 的 service capability 可表达特定订阅的语音、短信等能力 |
 | Android 17 / API 37 | AOSP 主锚点同时保留分域 AIDL 与 HIDL 1.4–1.6 回退，并扩展 IMS、NTN/satellite 和 network security 相关接口 |
 
-Android 17 源码中没有名为 `DeliQueue` 的 Telephony 回调优化，也没有名为“Data Plan Streaming API”的 Android 17 公共 API。带 `@FlaggedApi` 的 API 还要检查目标构建的功能开关、system feature、权限和运营商配置；源码中出现方法，不代表第三方应用在所有 Android 17 设备上都能调用。
+此外，带有 `@FlaggedApi` 注解的接口仍受目标构建的功能开关、system feature、权限和运营商配置约束，源码中存在方法定义并不等同于所有 Android 17 商业设备均可直接调用。
 
 ## 小结
 

@@ -64,21 +64,19 @@ Android 广播是一种受系统策略调度的事件分发机制。调用 `send
 
 > 源码基线：AOSP `android-17.0.0_r1`。
 
-早期 Android 示意图里“前台一条队列、后台一条队列”的结构，在 Android 17 上已经找不到了，第一节会专门说明。理解广播性能，可以从三个层次入手：`BroadcastRecord` 记录一次发送和它的接收者，`BroadcastProcessQueue` 记录每个目标进程的待投递项，进程调度槽决定同一时刻有多少个进程队列在投递。
-
-本章按这个顺序展开：第二节讲这三层结构，第三节跟一遍从 `sendBroadcast()` 到 `onReceive()` 的调用路径，第四到第六节分别讲优先级与顺序、cached 进程的延迟和广播 ANR 计时，第七到第十节给应用侧取舍、排查手段、版本差异和源码锚点。
+在 Android 17 上，理解广播性能可以从三个层次入手：`BroadcastRecord` 记录一次发送及其全部接收者，`BroadcastProcessQueue` 记录每个目标进程的待投递项，进程调度槽决定同一时刻有多少个进程队列在投递。下文先拆解单队列实例与三层数据结构，再沿 `sendBroadcast()` 到 `onReceive()` 追踪优先级、cached 进程延迟、ANR 计时以及可观测性与应用侧边界。
 
 ## 一、Android 17 只有一个 BroadcastQueue 实例
 
 ### 1.1 前台与后台：两套超时参数，一条队列
 
-我们从一个容易搞错的地方说起。API 37 的 `ActivityManagerService` 只持有一个 `mBroadcastQueue`；`ActivityManagerService.Injector.getBroadcastQueue()` 创建的是两个 `BroadcastConstants`：
+API 37 的 `ActivityManagerService` 只持有一个 `mBroadcastQueue`；`ActivityManagerService.Injector.getBroadcastQueue()` 创建的是两个 `BroadcastConstants`：
 
 - `foreConstants.TIMEOUT = BROADCAST_FG_TIMEOUT`；
 - `backConstants.TIMEOUT = BROADCAST_BG_TIMEOUT`；
 - 两者共同传给一个 `BroadcastQueueImpl`。
 
-也就是说，前台和后台分开的只是超时参数。旧示意图里 `mFgBroadcastQueue`、`mBgBroadcastQueue` 两条独立队列的画法，放到 Android 17 上已经对不上现状。`Intent.FLAG_RECEIVER_FOREGROUND` 仍然有效，但它改变的是紧急程度、接收进程的调度组和超时参数，记录本身仍在同一套队列里排队。
+也就是说，前台和后台分开的是超时与紧急程度等策略参数，并不存在独立的 `mFgBroadcastQueue` 与 `mBgBroadcastQueue` 两套队列实例。`Intent.FLAG_RECEIVER_FOREGROUND` 仍然有效，它改变的是紧急程度、接收进程的调度组和超时参数，记录本身仍在同一个 `BroadcastQueueImpl` 实例中排队。
 
 源码中的基准超时为：
 
@@ -93,7 +91,7 @@ Android 广播是一种受系统策略调度的事件分发机制。调用 `send
 
 Android 17 的源码标签里已经找不到 `BroadcastQueueModernImpl.java`，队列实现只剩 `BroadcastQueueImpl` 一个类。类注释直接说明：广播按目标进程分发，每个进程由一个 `BroadcastProcessQueue` 表示。
 
-框架内部的类名在开发分支和历史版本中发生过变化。应用可以依赖的始终是公开广播语义；设备究竟运行 Legacy 还是 Modern 模式，判断依据是当前源码里的类名，旧类名说明不了问题。
+框架内部的类名在开发分支和历史版本中发生过变化。应用可以依赖的始终是公开广播语义，排查平台实现时则应以当前源码中的实际类名为准。
 
 ## 二、三层数据结构分别解决什么问题
 
@@ -180,7 +178,7 @@ ContextImpl.sendBroadcast()
 
 共用队列归共用队列，到了投递这一步，源码仍对每个接收者分别调用 `scheduleRegisteredReceiver()` 或 `scheduleReceiver()`，一条一条走 Binder。“同进程多个广播自动合并为一次 IPC”，在源码里找不到依据。
 
-冷启动耗时同样要落到测量上：300～800 ms 没有平台层面的保证，Zygote 分支、存储冷热、`bindApplication`、应用初始化和设备负载都会改变结果，真实数字要用进程启动轨迹与广播轨迹在目标设备上测量。
+冷启动耗时因 Zygote 分支、存储冷热、`bindApplication`、应用初始化和设备负载而异，没有跨设备统一的毫秒基准，真实耗时需结合进程启动轨迹与广播轨迹在目标设备上测量。
 
 ### 3.2 运行时接收者与清单接收者的完成语义
 
@@ -226,7 +224,7 @@ Android 的 `Intent` 里并没有 `PRIORITY_URGENT_APP`、`PRIORITY_NORMAL_APP` 
 
 先看 Android 14 起定下的公开行为：应用处于 cached 状态时，系统可以延后运行时注册接收者的广播；应用重新拥有活跃组件、回到 active（有活跃组件） 状态后，系统再投递积压项，某些广播的多个实例还可能被合并。
 
-清单接收者不走这条无限延迟路径：重要的清单广播可以让应用离开 cached 状态并启动接收进程。把“cached 进程的所有广播都要等待其他原因启动进程”当成统一规则，会直接漏掉这批投递。
+清单接收者不走这条无限延迟路径：重要的清单广播可以让应用离开 cached 状态并启动接收进程，因此进程处于 cached 状态并不代表所有发往它的广播都会等待其他事件才投递。
 
 ### 5.2 API 37 如何计算 `runnableAt`
 
@@ -292,7 +290,7 @@ API 37 另有受 feature flag 控制的发送方广播延迟：可冻结的发�
 4. 广播是否带 `FLAG_RECEIVER_FOREGROUND`，从而使用 10 秒基准；
 5. 系统轨迹中的长时间出现在调度前排队，还是提交给应用后执行。
 
-## 七、应用侧常见误区
+## 七、应用侧边界与设计取舍
 
 ### 7.1 清单接收者与动态接收者的选择
 
@@ -306,7 +304,7 @@ API 37 另有受 feature flag 控制的发送方广播延迟：可冻结的发�
 
 如果接收者要接收的系统广播来自 Bluetooth、telephony 这类高权限、不以 system UID 运行的框架组件，官方文档建议使用 `RECEIVER_EXPORTED`；导出后应通过权限或发送方身份校验限制未保护广播。私有 `action` 的包名前缀可减少重名，其他应用仍能构造同名 `action`，仅凭命名无法验证发送方身份。
 
-`RECEIVER_NOT_EXPORTED` 收紧的是发送方身份，性能上没有附带的好处：它没有把广播自动变成进程内函数调用；省去 PackageManager 查询或 Binder IPC 这笔账，也记不到它头上。若事件只在一个进程内使用，直接回调、`Flow` 或应用自己的事件模型更简单。
+`RECEIVER_NOT_EXPORTED` 收紧的是发送方身份，本身并不会把广播变成进程内函数调用，也不减少 PackageManager 查询或 Binder IPC 开销。若事件只在一个进程内使用，直接回调、`Flow` 或应用自己的事件模型更简单。
 
 ### 7.3 广播与低延迟 IPC 的分工
 
@@ -367,7 +365,7 @@ API 37 定义了 `broadcasts` Perfetto SDK 分类。启用相关 v3 跟踪功能
 
 对“假定已投递”的无序动态接收者，系统可能在 `onReceive()` 执行前就写入 `terminalTime`。测量这类接收者的应用耗时，需要在回调入口、出口或异步 `finish()` 处补充应用侧时间点。
 
-写 SQL 前先在目标轨迹中确认存在 `broadcast_delivered`，再通过 `slice` / `args` 表查看该版本导出的参数名，别照搬依赖不存在字段或别名的语句。没启用 SDK 分类时，仍可结合传统 ActivityManager trace 中 `BroadcastQueue` 的 `enqueueBroadcast`、`updateRunningList`、`scheduleReceiverWarmLocked`、`finishReceiver` 等方法片段，加上 `BroadcastQueue.mRunning[N]` 进程队列片段、应用主线程或指定回调线程的时间片、`sched` 调度事件和 Binder 轨道还原延迟。
+写 SQL 前先在目标轨迹中确认存在 `broadcast_delivered`，再通过 `slice` / `args` 表查看该版本导出的参数名，避免照搬依赖不存在字段或别名的语句。没启用 SDK 分类时，仍可结合传统 ActivityManager trace 中 `BroadcastQueue` 的 `enqueueBroadcast`、`updateRunningList`、`scheduleReceiverWarmLocked`、`finishReceiver` 等方法片段，加上 `BroadcastQueue.mRunning[N]` 进程队列片段、应用主线程或指定回调线程的时间片、`sched` 调度事件和 Binder 轨道还原延迟。
 
 ### 8.3 一次可靠的广播性能实验
 

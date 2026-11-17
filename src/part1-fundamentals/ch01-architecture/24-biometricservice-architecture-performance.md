@@ -282,7 +282,7 @@ AuthService.onStart()
     → IrisService.registerAuthenticators()
 ```
 
-`BiometricService` 用 `CopyOnWriteArrayList<BiometricSensor> mSensors` 保存注册结果。源码中没有 `SensorListState`。
+`BiometricService` 使用 `CopyOnWriteArrayList<BiometricSensor> mSensors` 保存已注册的传感器列表。
 
 Android 17 优先支持稳定 AIDL HAL，同时仍有 HIDL 配置和 `HidlToAidlSessionAdapter` 等兼容路径。分析具体设备时，我们查看 provider 类型和 HAL instance（已注册的 HAL 服务实例）来确认走哪条路，单凭系统版本下不了结论。
 
@@ -341,7 +341,7 @@ interface IFace {
 
 客户端 Binder 死亡时还会进入 `STATE_CLIENT_DIED_CANCELLING` 清理路径。源码的 `@IntDef` 没有把这个值列入主状态集合，但处理分支存在。
 
-`AuthSession` 只有一个 `mState`。源码中没有 `AUTH_STARTED_FACE` 和 `AUTH_STARTED_FINGERPRINT` 这类并行 session state。多传感器进度由每个 `BiometricSensor` 的状态分别记录。
+`AuthSession` 只维护单一的全局会话状态 `mState`；多传感器并行参与时的各自进度，则由每个 `BiometricSensor` 的状态字段独立记录。
 
 ### `BiometricSensor` 管理单个传感器
 
@@ -448,7 +448,7 @@ HAL session 由各模态的 AIDL `Sensor.mCurrentSession` 持有。scheduler 通
 2. 当前 operation 已开始且可中断时，请求取消；
 3. 等当前 operation 的完成 callback 执行后，再启动队列中的下一项。
 
-所以“录入一定比认证优先”“认证一定能抢占录入”这类说法都靠不住。是否中断，取决于具体 client 的属性、当前 operation 是否已经开始以及它是否可取消。
+因此，录入与认证之间不存在固定的绝对抢占次序；是否发生中断，取决于新 client 的属性、当前 operation 是否已启动以及是否支持取消。
 
 <!-- gracker-diagram: ch01-24-sensor-scheduler -->
 ![单传感器队列先完成当前任务，再推进下一项](../../assets/diagrams/ch01/ch01-24-sensor-scheduler.png)
@@ -477,11 +477,11 @@ void close();
 
 UDFPS（Under-Display Fingerprint Sensor，屏下指纹传感器）的 `onPointerDown*()`、`onPointerUp*()`、`onUiReady()` 等属于可在采集 operation 运行时调用的交互方法，跟第二个 authenticate operation 是两回事。
 
-Face AIDL 也使用 `authenticate()` 和 `detectInteraction()`，没有 `detectInteractive()`。Android 17 还提供带 `OperationContext` 的变体，HAL 可以利用显示、AOD（Always-On Display，息屏显示）等上下文优化执行，也可以忽略额外上下文并按基础方法处理。
+Face AIDL 同样定义 `authenticate()` 和 `detectInteraction()` 方法。Android 17 还提供带 `OperationContext` 的变体，HAL 可以利用显示、AOD（Always-On Display，息屏显示）等上下文优化执行，也可以忽略额外上下文并按基础方法处理。
 
 ### 超时来自哪里
 
-`AuthSession` 里没有“所有认证 30～60 秒强制结束”的统一常量。真实的超时各有来源：
+BiometricPrompt 认证的超时时间并不受全局单一固定常量控制，其实际触发源自以下几层：
 
 - HAL 对当前采集返回 `BIOMETRIC_ERROR_TIMEOUT`；
 - sensor client 的具体实现；
@@ -489,7 +489,7 @@ Face AIDL 也使用 `authenticate()` 和 `detectInteraction()`，没有 `detectI
 - scheduler watchdog 的显式调用；
 - OEM HAL 或安全环境。
 
-`BiometricScheduler.startWatchdog()` 中有 10 秒清理定时器，Fingerprint/Face service 也暴露了受 `USE_BIOMETRIC_INTERNAL` 保护的 `scheduleWatchdog()` 内部入口，provider 会把它转为对应 scheduler 的 `startWatchdog()`。但它是显式调用的清理机制，BiometricPrompt 每次 `authenticate()` 并未自动启用它；说成所有认证 10 秒或 30～60 秒强制结束，就与源码对不上了。
+`BiometricScheduler.startWatchdog()` 中有 10 秒清理定时器，Fingerprint/Face service 也暴露了受 `USE_BIOMETRIC_INTERNAL` 保护的 `scheduleWatchdog()` 内部入口，provider 会把它转为对应 scheduler 的 `startWatchdog()`。但它是显式调用的清理机制，`BiometricPrompt.authenticate()` 每次请求并未默认开启它，并不存在统一的 10 秒或 30～60 秒全局强制超时。
 
 排查超时时，我们记录实际 error、modality（指纹、人脸等认证模态）、`vendorCode` 和当前 operation，以实际值为准，套固定秒数只会误导。
 
@@ -649,7 +649,7 @@ Gatekeeper 负责 PIN、图案和密码等设备凭据验证；设备的安全�
 
 报告状态。framework 的 `AuthSessionCoordinator` 和 `MultiBiometricLockoutState` 在不同认证强度、sensor 与用户之间协调结果。
 
-“失败 5 次锁 30 秒”只适合当作个别设备的例子，写成所有设备的 framework 实现就错了。精确要求来自当前 Android CDD，执行细节还受 sensor strength、HAL 与设备策略影响。诊断时我们以实际 error、duration、sensorId 和设备 CDD 版本为准。
+诸如“连续失败 5 次锁定 30 秒”仅可作为具体设备行为的示例，并非由框架写死的通用常数。具体限流阈值取决于对应版本的 Android CDD 要求，并受 sensor strength、HAL 与设备策略共同影响，诊断时应以实际返回的 error、duration、`sensorId` 和设备 CDD 版本为准。
 
 ## SystemUI 与 App 的可见完成时间
 

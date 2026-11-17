@@ -126,7 +126,7 @@ Binder 延迟由服务端线程供给、事务排队方式和目标进程状态�
 #define DEFAULT_MAX_BINDER_THREADS 15
 ```
 
-`BINDER_VM_SIZE` 是 1 MiB 减去两个页，写文档时别把它简成精确的 1 MiB。`DEFAULT_MAX_BINDER_THREADS=15` 更容易误读：它常被直接读成“进程总共有 15 个 Binder 线程”，但这个数字限制的其实是内核按需请求的线程数，我们往下看。
+`BINDER_VM_SIZE` 为 1 MiB 减去两个内存页，小于整 1 MiB。`DEFAULT_MAX_BINDER_THREADS=15` 限制的则是内核按需请求的线程数，实际线程总数还会受主动启动线程影响。
 
 `ProcessState.h` 对线程数的定义很明确：
 
@@ -134,13 +134,13 @@ Binder 延迟由服务端线程供给、事务排队方式和目标进程状态�
 - `startThreadPool()` 另外主动创建 1 个线程；
 - 显式调用 `joinThreadPool()` 的线程另行计算。
 
-在常见的 `startThreadPool()` 配置下，默认上界就是“1 个主动启动线程 + 最多 15 个内核请求线程”；程序再显式让其他线程 `joinThreadPool()`，总数还能往上加。所以读到“线程池上限”时，我们要先问它是按哪种启动方式算出来的，把“15+1”当成固定的平台规则并不合适。
+在常见的 `startThreadPool()` 配置下，默认上界就是 1 个主动启动线程加上最多 15 个内核请求线程；若程序再显式让其他线程 `joinThreadPool()`，总数还会进一步增加。因此计算线程池容量时，需结合启动方式与运行时配置，不能将其视为固定不变的“15+1”。
 
 #### 1.2 Java App 主线程不默认加入 Binder 池
 
 `frameworks/base/cmds/app_process/app_main.cpp` 在 app process 或 Zygote 子进程初始化时调用 `ProcessState::startThreadPool()`，这会主动创建 1 个 Binder 线程。
 
-应用主线程则继续跑自己的 `Looper` 处理界面消息，Activity 启动并不会让它调用 `IPCThreadState::joinThreadPool()`。当然，主线程发起同步 Binder 调用时也要等回复，也可能在嵌套回调链里执行 Binder 工作，但这只是临时参与，和“主线程长期注册为线程池工作线程”是两回事。
+应用主线程则继续跑自己的 `Looper` 处理界面消息，Activity 启动并不会让它调用 `IPCThreadState::joinThreadPool()`。主线程发起同步 Binder 调用时也会等待回复，并可能在嵌套回调链里临时执行 Binder 工作，但这属于同步等待期间的临时参与，主线程并未注册为长期服务的线程池工作线程。
 
 #### 1.3 `BC_ENTER_LOOPER` 与 `BC_REGISTER_LOOPER`
 
@@ -205,7 +205,7 @@ adb logcat -v threadtime -s libbinder.IPCThreadState:E
 
 这条过滤命令能帮我们找到饥饿提示，定位还是要回到线程和事务时间线分析上。
 
-顺带澄清一个常被误写的函数。`IPCThreadState::blockUntilThreadAvailable()` 这个函数是存在的，也确实会等待 `mExecutingThreadsCount < mMaxThreads`，但标准 `transact()` 路径并不会自动调用它，frameworks/native 也没有把它接入每次出站事务——把它描述成“线程池一满，进程内所有新 Binder 调用都会先在此等待”，就与源码不符了。
+此外，`IPCThreadState::blockUntilThreadAvailable()` 确实会等待 `mExecutingThreadsCount < mMaxThreads`，但标准 `transact()` 路径并不会自动调用它，`frameworks/native` 也未将其接入每次出站事务，因此出站 Binder 调用并不会在线程池满时普遍在此阻塞等待。
 
 #### 2.3 线程状态的组合判读
 
@@ -294,7 +294,7 @@ system_server 同时承载 AMS、WMS、PMS 等服务，这也是它容易被殃�
 - 服务启动、广播、Provider 获取等 framework 状态机推进被拖住；
 - Watchdog 观察的关键线程或 Monitor 检查项（通常用于确认关键锁能否及时取得）也可能因同一把锁受阻。
 
-排查时还要知道，并不存在一条通用的 “Binder WATCHDOG” 规则专门按 Binder 调用延迟报警：Watchdog、ANR controller、Binder 饥饿日志和 Perfetto 各看各的对象，核对时要分别进行。
+排查时需将 Watchdog、ANR controller、Binder 饥饿日志和 Perfetto 分开核对，系统并没有针对单次 Binder 调用延迟的统一“Binder WATCHDOG”告警规则。
 
 ### 5. Binder Freeze 对线程池的影响
 
@@ -307,7 +307,7 @@ libbinder 对前者返回 `FROZEN_OBJECT` 或兼容的 `FAILED_TRANSACTION`，�
 
 `oneway` 事务在冻结期持续到达时，会一直占用异步事务 buffer；解冻后这些事务恢复处理，可能形成短时积压。Android framework 会结合缓存应用冻结器（cached-app freezer）策略控制进程状态。此时要记住：发送调用已经返回，冻结进程里的目标方法却可能还没执行——调用方拿到的“成功”，只覆盖到提交那一刻。
 
-`BINDER_GET_FROZEN_INFO` 返回的是目标进程在冻结期间是否收到过同步/异步事务的标志，不是“冻结前已处理完成的事务计数”。
+`BINDER_GET_FROZEN_INFO` 返回的是目标进程在冻结期间是否收到过同步或异步事务的状态标志，并不统计冻结前已处理完成的事务数量。
 
 本节源码位置：
 
@@ -332,7 +332,7 @@ libbinder 对前者返回 `FROZEN_OBJECT` 或兼容的 `FAILED_TRANSACTION`，�
 - 工作线程以什么优先级执行：由 Binder 优先级继承和 node 策略决定；
 - 线程何时拿到 CPU：由内核调度器、cpuset（允许线程运行的 CPU 集合）、uclamp（调度利用率上下限）等共同决定。
 
-以上行为描述仅适用于当前实现。Binder 优先级继承早已存在，在拿出跨版本的提交记录之前，我们不会把它说成本版新增的能力。
+上述优先级继承机制早已存在，此处描述基于当前基线源码的实现状态。
 
 ### 7. 与 ANR 的关系
 
@@ -375,7 +375,7 @@ done'
 
 线程数量接近理论上界，也证明不了饥饿：libbinder 启动过的池线程通常会留到进程退出。接下来要看的是这些线程在目标时间窗内是否都有未完成工作。
 
-ANR 文件的位置随版本和构建而变，路径别固定写成 `/data/anr/traces.txt`。优先用 bugreport、`adb shell dumpsys activity lastanr`、Play/Crashlytics 报告以及同时间段 Perfetto。
+ANR 文件的位置随版本和构建而变，排查时应优先使用 bugreport、`adb shell dumpsys activity lastanr`、线上异常报告以及同时间段 Perfetto，而不宜只依赖固定的 `/data/anr/traces.txt` 路径。
 
 #### 8.2 `binder_calls_stats` 能回答什么
 
@@ -393,7 +393,7 @@ adb shell dumpsys binder_calls_stats
 - 服务端获得 CPU 前的 runnable 调度延迟；
 - 接口实现内部等待锁或下游 Binder 的时间。
 
-`BBinder::startRecordingTransactions()` 与 `RecordedTransaction` 是另一套独立的事务录制能力，别把它当成 `binder_calls_stats` 的“更细统计模式”。它能记录请求和回复 Parcel，内容可能敏感，还会带来存储开销，只适合在受控环境里调试。
+`BBinder::startRecordingTransactions()` 与 `RecordedTransaction` 是另一套独立的事务录制能力，用于记录请求和回复 Parcel（内容可能敏感，且会带来存储开销），只适合在受控环境里调试，并不属于 `binder_calls_stats` 的统计路径。
 
 #### 8.3 用 Perfetto 关联 client、server 和调度
 
@@ -418,7 +418,7 @@ ORDER BY client_dur DESC
 LIMIT 50;
 ```
 
-`client_dur` 是同步调用方看到的实际经过时间（wall duration），`server_dur` 是服务端对应 Binder reply slice 的实际经过时间。两者之差里可能混着驱动排队、调度、传输和其他开销，直接叫它“排队时间”并不可靠。
+`client_dur` 是同步调用方看到的实际经过时间（wall duration），`server_dur` 是服务端对应 Binder reply slice 的实际经过时间。两者之差里混杂了驱动排队、调度、传输和其他开销，因此不能直接等同于纯排队时间。
 
 若 `aidl_name` 为空，可能是 AIDL trace 没启用、接口没有生成相应的 trace 名称，或这笔事务缺少可关联的时间片。原生服务端的入口位于 `frameworks/native/libs/binder/Binder.cpp`：`BBinder::transact()` 检查 `ATRACE_TAG_AIDL`，再调用 `BBinder::startTrace()` 生成接口/方法 slice。这里确认的是 Android 17 基线中的实现，首次引入版本仍需查提交历史。
 
@@ -468,7 +468,7 @@ libbinder 不允许在线程池启动后降低上限，Java App 也没有公开 
 
 #### 9.3 UI 框架与线程池策略无关
 
-Flutter Platform Channel 或 Compose 协程（coroutine）都可能在 UI 线程发起系统服务调用，慢同步 IPC 一来界面就卡。这是调用方线程选择的问题，由此推不出“所有 Binder 调用都应切到 `Dispatchers.IO`”。
+Flutter Platform Channel 或 Compose 协程（coroutine）都可能在 UI 线程发起系统服务调用，慢同步 IPC 会直接拉长界面响应。这属于调用方线程选择的问题，需按 API 契约和实测延迟权衡，而不应一概切到 `Dispatchers.IO`。
 
 线程怎么选，要看 API 契约和实测延迟：部分 framework API 要求在主线程调用，许多短 Binder 调用也适合留在主线程；允许后台调用且可能阻塞的工作可以移出 UI 线程，需要主线程状态的 API 则保持线程约束，同时从服务端把延迟压下来。
 
@@ -506,7 +506,7 @@ Binder 的 `oneway`（单向）调用经常被概括成“异步、不阻塞”�
 
 原生 Binder 的 `IBinder::FLAG_ONEWAY` 与内核 UAPI（用户态和内核态共享的接口定义）中的 `TF_ONE_WAY` 都使用最低位 `0x01`。AIDL 中声明为 `oneway` 的接口或方法，会在代理端发起带该标志的事务。
 
-`IPCThreadState::transact()` 先把 `BC_TRANSACTION` 写入当前线程的输出缓冲区，再按标志选择等待方式。下面的代码用于观察分支；一次事务可能触发多次 `ioctl`（用户态向 Binder 驱动收发命令的系统调用），别把这段读成一对一：
+`IPCThreadState::transact()` 先把 `BC_TRANSACTION` 写入当前线程的输出缓冲区，再按标志选择等待方式。下面的代码用于观察分支，实际执行中一次事务仍可能触发多次 `ioctl`（用户态向 Binder 驱动收发命令的系统调用）：
 
 ```cpp
 err = writeTransactionData(BC_TRANSACTION, flags, handle, code, data, nullptr);
@@ -525,7 +525,7 @@ if ((flags & TF_ONE_WAY) == 0) {
 
 同步路径需要等到 `BR_REPLY` 或错误。`oneway` 路径把两个输出参数都设为 `nullptr`，`waitForResponse()` 收到 `BR_TRANSACTION_COMPLETE` 后即可结束。
 
-拿到 `BR_TRANSACTION_COMPLETE` 时，我们要小心：它只表示当前事务完成了驱动侧的提交步骤，离“远端方法执行完毕”还远。目标进程可能尚未被调度，事务也可能还在 `proc->todo` 或 `node->async_todo` 中等待。
+收到 `BR_TRANSACTION_COMPLETE` 时，仅表示当前事务完成了驱动侧的提交步骤，目标进程可能尚未被调度，事务也可能还在 `proc->todo` 或 `node->async_todo` 中等待，并不代表远端方法已经执行完毕。
 
 #### 1.1 `mCallRestriction` 的准确边界
 
@@ -599,7 +599,7 @@ Binder 驱动维护的只是同一 node 上的 `oneway` 串行执行；跨出这
 - 服务端收到调用后把工作继续投递到其他线程，后续顺序由服务端队列决定。
 - 进程冻结、死亡、缓冲区不足或厂商扩展钩子（hook）都可能改变可见时序。
 
-如果我们的协议要求 A 必须先于 B 生效，最好让 A、B 经过同一个串行执行点，或者给消息加上序列号和状态校验；“它们都是 `oneway`”这一点，本身保证不了顺序。
+因此，如果协议要求 A 必须先于 B 生效，应让 A、B 经过同一个串行执行点，或者为消息加上序列号和状态校验。
 
 #### 2.2 调用方优先级不会随 `oneway` 继承
 
@@ -616,7 +616,7 @@ if (!(t->flags & TF_ONE_WAY) && binder_supported_policy(current->policy)) {
 
 因此，`oneway` 不继承调用方的实时或普通线程优先级。目标 Binder node 自身配置的 `min_priority` 仍会参与 `binder_transaction_priority()`，只是其输入不再来自 `oneway` 调用方。
 
-`FLAT_BINDER_FLAG_INHERIT_RT` 仅允许同步事务继承实时策略。驱动 UAPI 支持为 node 编码 `SCHED_NORMAL`、`SCHED_FIFO`、`SCHED_RR` 和 `SCHED_BATCH`，但“这条调用很重要”并不构成启用实时调度的理由；权限、CPU 占用和优先级反转风险都要在目标设备上验证。
+`FLAT_BINDER_FLAG_INHERIT_RT` 仅允许同步事务继承实时策略。驱动 UAPI 支持为 node 编码 `SCHED_NORMAL`、`SCHED_FIFO`、`SCHED_RR` 和 `SCHED_BATCH`，启用实时策略前需在目标设备上验证权限、CPU 占用和优先级反转风险。
 
 ### 3. 事务缓冲区与异步配额
 
@@ -651,7 +651,7 @@ alloc->free_async_space = alloc->buffer_size / 2;
 
 同步和异步事务使用同一块映射。`oneway` 分配除了受总空闲空间约束，还要通过 `free_async_space` 检查；同步事务不受这项异步配额限制，但仍受总空间和碎片影响。
 
-所以“每个进程可发送一笔接近 1 MB 的事务”只是一个随时可能失效的假设：可用空间属于目标进程，会被并发事务、对象偏移表和其他 Binder 工作一起消耗。Java 层报告的 `TransactionTooLargeException` 同样是根据事务失败时的上下文推测的，驱动并没有返回精确字节上限，固定的单笔限制也就无从反推。
+由于可用空间属于目标进程，会被并发事务、对象偏移表和其他 Binder 工作一起消耗，单笔接近 1 MB 同样可能受并发影响而失败；Java 层报告的 `TransactionTooLargeException` 也是根据事务失败时的上下文推测的，驱动并没有返回精确字节上限。
 
 适合 Binder 的数据通常应当小而有界。大图、文件和连续媒体数据更适合文件描述符、共享内存或专门的数据通道；拆成多笔事务时还要处理部分成功和版本一致性。
 
@@ -706,7 +706,7 @@ ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr);
 
 单次 `ioctl` 可以写入多条 `BC_TRANSACTION`、引用计数或 buffer 释放命令，也可以读取多条 `BR_*` 命令。它减少的是用户态与驱动之间的往返次数，不会把多笔业务事务合成一笔原子事务。
 
-`mIn`、`mOut` 初始容量都是 256 字节，但 Parcel 可以增长。一次调用能处理多少命令取决于命令类型、当前缓冲区内容、目标执行时机和驱动返回量，没有固定的“每批 N 条”。同步调用还要继续等 `BR_REPLY`，可能经历多轮 `talkWithDriver()`。
+`mIn`、`mOut` 初始容量都是 256 字节，但 Parcel 可以增长。一次调用能处理多少命令取决于命令类型、当前缓冲区内容、目标执行时机和驱动返回量，并没有固定的批量条数上限。同步调用还要继续等 `BR_REPLY`，可能经历多轮 `talkWithDriver()`。
 
 #### 5.1 `flushCommands()` 与 `flushIfNeeded()`
 
@@ -714,7 +714,7 @@ ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr);
 
 `flushIfNeeded()` 只在当前线程不属于 Binder 命令循环（looper）、没有正在服务 Binder 事务且未处于递归刷新时强制发送。之所以要这样做，是因为普通线程可能很久都不再进驱动，积压在其 `mOut` 中的 `BC_FREE_BUFFER` 等命令会一直占着对端资源。
 
-批处理是 libbinder 的常规传输行为，调用方并没有为某个 AIDL 方法单独打开它的“批量模式”开关；业务层要合并多条消息，仍需自己设计批量接口、上限和部分失败语义。
+批处理是 libbinder 的常规传输行为；业务层若要合并多条消息，仍需自行设计批量接口、上限和部分失败语义。
 
 ### 6. `oneway` 缩短调用方等待，不减少目标线程池工作
 
@@ -744,7 +744,7 @@ libbinder 默认发 `BINDER_SET_MAX_THREADS`，把上限设为 15。这个值是
 - 超时后回调才到达，形成迟到结果。
 - 重试产生重复请求或重复回调。
 
-用 `CountDownLatch`、`ConditionVariable` 或协程等回调时必须设超时，并且别在目标 Binder 线程池里，等一个还要靠同一线程池处理的回调。没有超时的等待可能永久挂起。至于会不会演化成死锁，要看等待依赖图和可用执行线程，`oneway` 本身并不自带“必死锁”。
+用 `CountDownLatch`、`ConditionVariable` 或协程等待回调时必须设超时，并且避免在目标 Binder 线程池里等待一个仍需由同一线程池处理的回调。是否演化成死锁取决于等待依赖图和可用执行线程，而不仅取决于接口是否为 `oneway`。
 
 #### 8.2 死亡通知不是 `oneway` 业务事务
 
@@ -804,11 +804,9 @@ ORDER BY total_server_ms DESC;
 | 目标是否被冻结 | freezer / cgroup 状态、Binder 冻结日志、驱动事件；只凭调用失败不够 |
 | 一次 `ioctl` 带了多少命令 | 系统调用级轨迹或受控实验；`android_binder_txns` 本身不能还原 BC / BR 批次 |
 
-普通 Perfetto Binder 时间片未必直接显示 `BR_TRANSACTION_PENDING_FROZEN` 的命令名。要确认这个分支，得把目标进程被冻结、`oneway` 事务提交、客户端警告三件事在时间线上对齐；单凭一条很短的客户端时间片，推断不出结论。
+普通 Perfetto Binder 时间片未必直接显示 `BR_TRANSACTION_PENDING_FROZEN` 的命令名。要确认这个分支，得把目标进程被冻结、`oneway` 事务提交、客户端警告三件事在时间线上对齐；仅凭一条很短的客户端时间片尚不足以得出结论。
 
 ### 10. 选择 `oneway` 时的检查表
-
-#### 10.1 适合 `oneway` 的条件
 
 - 调用方不需要立即返回值，也不需要知道服务端是否执行成功。
 - 消息允许排队，且目标暂时变慢时，已经明确如何限流、合并或丢弃。
@@ -816,22 +814,9 @@ ORDER BY total_server_ms DESC;
 - 单条数据小而有界，不依赖大 Parcel 搬运批量内容。
 - 顺序要求能落在同一 Binder node 或服务端明确的串行队列上。
 
-#### 10.2 常见误区
-
-| 误区 | Android 17 中的事实 |
-|---|---|
-| `oneway` 完全不阻塞 | 调用方仍要提交事务，可能受驱动、调度和 buffer 分配影响 |
-| 返回成功表示服务端完成 | 只表示提交阶段没有返回错误；服务端结果未知 |
-| `oneway` 不占 Binder 线程 | 只缩短调用方等待，服务端仍由 Binder 线程执行 |
-| 异步事务有独立的 512 KB 内存池 | 同步与异步事务共用同一映射，异步事务另受半池配额限制 |
-| Android 17 默认 Binder 池是 4 MB | AOSP libbinder 仍请求约 1 MB，内核 4 MB 是映射上限 |
-| `oneway` 自动保证跨接口顺序 | 串行保证围绕同一 Binder node，跨 node 需要协议约束 |
-| `oneway_spam_suspect` 会拒绝事务 | 它是异步空间不足时的诊断信号，不会执行限流 |
-| `TF_UPDATE_TXN` 可解决所有队列堆积 | 只替换冻结目标上特定 node 队列中的等价更新事务 |
-
 ### 11. Android 17 版本边界
 
-本节的机制大多来自多个历史版本：`TF_ONE_WAY`、oneway spam、freezer、优先级状态机都早于当前基线，Android 17 延续并组合了这些能力。写结论时，沿用机制要写成沿用，别把它落成这一版的首发特性。
+本节涉及的 `TF_ONE_WAY`、oneway spam、freezer 与优先级状态机均源自早期历史版本，Android 17 延续并组合了这些能力。
 
 不同设备还可能存在以下差异：
 
@@ -840,7 +825,7 @@ ORDER BY total_server_ms DESC;
 - 用户态是否仍使用 AOSP `BINDER_VM_SIZE`，以及内核是否采用同一 Android 通用内核（common kernel）标签。
 - 系统轨迹配置是否采集 Binder 驱动、AIDL 名称、调度和 freezer 数据。
 
-遇到设备差异时，要同时确认平台构建版本（build）、内核标签、厂商补丁、功能开关值和轨迹配置；只按 API 级别去推底层行为，会推错。
+遇到设备差异时，需同时确认平台构建版本（build）、内核标签、厂商补丁、功能开关值和轨迹配置，以便准确判断底层行为。
 
 
 ## 缓存进程冻结期间的 Binder 行为
@@ -870,18 +855,13 @@ Android 会把退到后台、当前没有重要工作的进程标为缓存进程
 | 后台启动 / 前台服务（FGS）限制 | 组件启动与长期后台执行 | 拒绝、限时或约束组件行为 | 不直接决定是否保留 | 依组件和用户可见状态变化 |
 | `lmkd` | 内存压力下的低优先级进程 | 杀进程并回收内存 | 释放 | 下次需要时重新启动 |
 
-这张表也提醒我们，下列推断都站不住：
-
-- “进程被冻结，所以按比例分摊的物理内存（PSS）已经释放。”
-- “应用处于 Doze，所以进程一定没有 CPU 时间。”
-- “进程处于缓存状态，所以它一定已经被冻结。”
-- “进程已被冻结但仍在内存，所以不会被杀。”
+需要注意的是，进程冻结并不等于释放按比例分摊的物理内存（PSS），处于缓存状态也不代表一定已被冻结，已被冻结的进程在内存压力下仍可能被 `lmkd` 终止，而处于 Doze 状态的应用在满足调度窗口或豁免条件时仍可获得 CPU 时间。
 
 是否启用 Cached Apps Freezer 还受设备配置影响。AOSP 提供 `activity_manager_native_boot/use_freezer` 和开发者选项，但量产设备是否启用、cgroup 如何布局、厂商是否增加自己的后台策略，都要在实机上确认。
 
 ### 2. Android 17 的决策链：先把进程重要性转换成 CPU 执行资格
 
-先补两个基础量：`oom_adj` 是进程在内存压力下的终止优先级分值，通常数值越低，进程越重要；进程状态（proc state）则说明它当前处于前台、服务、缓存等哪一类。理解当前实现时，只背一句“`oom_adj >= CACHED_APP_MIN_ADJ` 就冻结”是不够的——Android 17 会先把这些状态换成 CPU 执行资格（capability），再决定能否冻结：
+先补两个基础量：`oom_adj` 是进程在内存压力下的终止优先级分值，通常数值越低，进程越重要；进程状态（proc state）则说明它当前处于前台、服务、缓存等哪一类。在 Android 17 中，系统会先把这些状态转换为 CPU 执行资格（capability），再决定能否冻结，而不只看 `oom_adj >= CACHED_APP_MIN_ADJ`：
 
 ```text
 Activity / Service / Broadcast / binding 等状态
@@ -946,7 +926,7 @@ Flags.prototypeAggressiveFreezing()
 - 激进冻结（aggressive freezing）实验可把资格范围提前到 `HOME_APP_ADJ`。
 - 即使当前 adj 已不低于冻结阈值，低于阈值的 `maxAdj` 仍会授予隐式 CPU 时间。
 
-排查“为什么没有冻结”时，adj、CPU 执行资格、功能开关和可在线调整系统参数的 DeviceConfig 要一起看，只盯 `curAdj` 会看漏。
+排查进程为何没有冻结时，需将 `adj`、CPU 执行资格、功能开关和可在线调整系统参数的 DeviceConfig 结合起来核对，仅观察 `curAdj` 容易遗漏限制条件。
 
 #### 2.3 旧实现里的两个判断已经不能代表 Android 17
 
@@ -1269,7 +1249,7 @@ for (ApplicationExitInfo info : exits) {
 
 这些子原因与 `getSubReason()` 都是隐藏 API，普通应用别把它们当成公开诊断接口。平台或设备厂商调试可以从 `dumpsys`、`system_server` 日志与源码拿到更细的信息；应用侧则以公开原因、描述、自己的业务状态和时间线为准。
 
-API 30～32 没有公开 `REASON_FREEZER` 常量。不要硬编码数值 `14` 跨版本猜测；这会混淆“当时平台是否记录这种原因”与“当前 SDK 中的常量值”。
+API 30～32 没有公开 `REASON_FREEZER` 常量。业务统计不应硬编码数值 `14` 跨版本推断，以免混淆当时平台是否记录该原因与当前 SDK 中的常量值。
 
 ### 10. 用四层证据诊断，避免根据缓存状态直接下结论
 
@@ -1411,34 +1391,7 @@ Perfetto 没有采集 ActivityManager 或线程调度数据时，“没看到事
 | Android 16（API 36） | 公开 `IBinder` 冻结状态回调；`RemoteCallbackList` 增加远端冻结策略 | 回调服务可以按“丢弃、只留最新、全部排队”表达积压处理方式 |
 | Android 17（API 37） | 当前 `OomAdjuster` 以显式、隐式 `CPU_TIME` 执行资格统一决定能否冻结；Binder 监控与冻结重试继续完善 | 框架源码以 `android-17.0.0_r1` 为准，内核源码以 `android17-6.18-2026-06_r6` 为准 |
 
-版本演进可以保留，但描述当前行为时，别再拿 Android 15/16 的旧文件路径代替 Android 17——特别是 `shouldNotFreeze()`、冻结阈值和 Binder 错误上报，已经出现足以影响结论的结构变化。
-
-
-## 常见误区
-
-### “缓存进程一定被冻结”
-
-不成立。设备可能没有启用冻结器，进程可能仍持有 CPU 执行资格，也可能处于防抖等待、Binder 重试或实现级保护中。
-
-### “被冻结就等于释放内存”
-
-不成立。冻结器的直接作用是停止 CPU 执行；进程仍占用地址空间和物理内存。GC、内存压缩、ZRAM 回写与 LMK 是另外的动作。
-
-### “同步调用只会等到对方解冻”
-
-不成立。Android 会拒绝发往冻结远端的同步 Binder 事务，并终止被冻结的接收进程，避免调用线程无限等待。
-
-### “oneway 对冻结进程绝对安全”
-
-不成立。它会积压并占用 Binder 缓冲区，解冻后还可能集中处理过期事件；缓冲区压力过高时，目标进程会被终止。
-
-### “观察冻结回调就能统计冻结次数”
-
-不成立。状态事件允许合并，API 只承诺最新状态。
-
-### “厂商的‘冻结’都等于 AOSP Cached Apps Freezer”
-
-不成立。必须用 ActivityManager 事件、cgroup 状态、Binder 冻结退出原因和厂商实现的具体行为来区分。
+分析当前行为时，需以 Android 17 的源码路径为准——特别是 `shouldNotFreeze()` 的替换、冻结阈值与 Binder 错误上报，均已出现足以影响排查结论的结构变化。
 
 
 ## 参考资料

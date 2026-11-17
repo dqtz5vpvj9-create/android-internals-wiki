@@ -134,7 +134,7 @@ consolidated_from:
 
 # Android IPC 全景与 Binder 性能
 
-把 Android 的进程间通信（Inter-Process Communication，IPC）想象成「Binder、Intent、共享内存三选一」，是选型出错的常见起点。一条真实链路经常同时用到两到三层机制：Intent 和 AIDL（Android Interface Definition Language）描述上层接口与行为；Binder、Unix 域套接字和 vsock 负责传输；共享内存、DMA-BUF 与 FMQ（Fast Message Queue，快速消息队列）常用于持续传送数据。
+一条完整的 Android 进程间通信（Inter-Process Communication，IPC）链路往往需要两到三层机制协作：Intent 和 AIDL（Android Interface Definition Language）描述上层接口与行为；Binder、Unix 域套接字和 vsock 负责传输；共享内存、DMA-BUF 与 FMQ（Fast Message Queue，快速消息队列）常用于持续传送数据。
 
 > 源码基线：Android 17 / API 37；AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -230,7 +230,7 @@ client 编组
 + reply 编组与返回
 ```
 
-各项相加才是调用方实际感受到的时长。固定写“Binder 0.5ms、Socket 0.1ms、Pipe 0.05ms”没有工程价值：数据量、CPU、系统构建版本、线程池、SELinux、调度和服务端工作稍有变化，数字就会改变。需要比较时，我们在同一设备上用相同负载、同步语义和统计口径做基准。
+各项相加才是调用方实际感受到的时长。由于数据量、CPU、系统构建版本、线程池、SELinux、调度和服务端工作都会改变实际耗时，跨方案比较应在同一设备上用相同负载、同步语义和统计口径实测，而不宜使用固定单次毫秒估值。
 
 ### 3. Binder：Android 控制面的主干
 
@@ -289,7 +289,7 @@ Java `TransactionTooLargeException` 文档把 Binder 事务缓冲区描述为当
 #define DEFAULT_MAX_BINDER_THREADS 15
 ```
 
-这个值配置的是驱动可以按需启动的 Binder 线程池默认上限。`startThreadPool()` 启动的线程、主动调用 `joinThreadPool()` 加入线程池的线程，以及进程自行调整的配置都会影响总数；把它简化成「每个进程固定 16 个 Binder 线程」会误导容量分析。
+这个值配置的是驱动可以按需启动的 Binder 线程池默认上限。`startThreadPool()` 启动的线程、主动调用 `joinThreadPool()` 加入线程池的线程，以及进程自行调整的配置都会影响总数，因此进程的 Binder 线程总数并非固定值。
 
 线程池饥饿指所有工作线程都被占用，新事务长时间得不到处理。判断时我们要看的是：
 
@@ -332,9 +332,7 @@ AIDL 解决类型约定、版本和代码生成后端，底层事务缓冲区的
 
 #### 4.2 Messenger 是 Handler 语义叠在 Binder 上
 
-Messenger 用 Binder 传递 `Message`，接收端最终把消息投递到指定的 Handler / Looper。它适合希望按某个 Looper 的消息队列顺序处理请求、不自行管理并发 RPC 的场景。
-
-把 Messenger 叫作「单线程 Binder」，容易把传输和分发混为一谈：
+Messenger 用 Binder 传递 `Message`，接收端最终把消息投递到指定的 Handler / Looper。它适合希望按某个 Looper 的消息队列顺序处理请求、不自行管理并发 RPC 的场景，但需要注意其传输与分发边界：
 
 - 底层传输仍是 Binder。
 - Binder 收到消息后再投递给 Handler。
@@ -352,7 +350,7 @@ Messenger 用 Binder 传递 `Message`，接收端最终把消息投递到指定�
 - 后台启动、广播队列与缓存进程策略。
 - 有序广播的结果传播。
 
-所以 Intent 的耗时不该只用「一次 Binder 耗时」解释：冷启动目标进程、组件调度和生命周期回调的成本，通常远大于底层传输本身。
+因此，分析 Intent 耗时需兼顾冷启动目标进程、组件调度和生命周期回调的成本，这些阶段往往远大于底层传输本身。
 
 #### 4.4 ContentProvider 的数据路径
 
@@ -365,7 +363,7 @@ Provider 的查询、插入、更新和删除属于框架层 RPC，跨进程控�
 - 需要更大空间且仍可扩容时，才扩展到兼容 ashmem 的共享区域。
 - 大窗口通过文件描述符传递，对端使用只读 `mmap` 映射。
 
-所以「所有 ContentProvider 结果都零拷贝」对不上实际路径：列值填充、`CursorWindow` 构建、内联复制或共享区域初始化仍有 CPU 和内存成本。
+因此，即便小窗口和大窗口路径不同，列值填充、`CursorWindow` 构建、内联复制或共享区域初始化仍会产生 CPU 与内存开销。
 
 #### 4.5 ResultReceiver 是回调抽象
 
@@ -450,7 +448,7 @@ eventfd 主要传递计数或通知，不承载业务数据。跨进程使用时
 
 #### 6.3 Signal：异步通知的交付路径
 
-信号的交付仍受目标线程调度、信号掩码和处理函数行为影响，「内核直接中断、延迟为零」的印象站不住；标准信号通常只表达编号，带 `siginfo_t` 的机制能附带少量元数据，但业务数据流依然不适合放在信号上。
+信号的交付受目标线程调度、信号掩码和处理函数行为影响，并非无延迟即时送达；标准信号通常只表达编号，带 `siginfo_t` 的机制能附带少量元数据，但业务数据流依然不适合放在信号上。
 
 Android 常见用途：
 
@@ -476,7 +474,7 @@ bionic 把 `BIONIC_SIGNAL_DEBUGGER` 定义为 `__SIGRTMIN + 3`，这是平台保
 - CPU 与设备之间的缓存同步维护。
 - 消费方再把数据复制到自己的数据结构。
 
-更准确的说法是「持续数据可以避免重复的 IPC 复制」：避免的是逐条消息再次经过内核传输的那次复制，生产方写入、缺页、缓存同步和消费方转换的成本都还在。
+因此，共享内存避免的是逐条消息重复经过内核传输的那次拷贝，而生产方写入、缺页、缓存同步和消费方转换的成本依然存在。
 
 <!-- gracker-diagram: ch01-09-control-shared-data -->
 ![Binder 传递共享内存句柄与双方映射](../../assets/diagrams/ch01/ch01-09-control-shared-data.png)
@@ -524,7 +522,7 @@ ashmem 是 Android 早期的匿名共享内存机制，memfd 则用匿名内存�
 
 满足后使用 `memfd_create()`；否则回到 ashmem 设备。`sys.use_memfd=true` 仍可用于强制覆盖默认选择，但源码注明未来会移除。
 
-调试时我们要看 `/proc/<pid>/fd/*`、内存映射和设备属性；单看 Java API 名，是推不出底层对象的。
+调试时需结合 `/proc/<pid>/fd/*`、内存映射和设备属性核对底层实现，而不仅看 Java API 名称。
 
 ### 8. `Parcel::writeBlob()`：16KiB 分界的真实含义
 
@@ -550,7 +548,7 @@ if (!mAllowFds || len <= BLOB_INPLACE_LIMIT) {
 
 `writeBlob()` 返回可写区域给调用者，数据仍要被写进 Parcel 内联缓冲区或共享映射。文件描述符分支避免把整块二进制数据再次塞进 Binder 事务缓冲区，但生产方仍有写入成本。
 
-这项分流只覆盖实际使用二进制块或以文件描述符为后端的 `Parcelable` 路径；普通字节数组仍会被内联编组，「所有大 AIDL `byte[]` 都会自动走共享内存」的外推到这里就停住了。
+这项分流只覆盖实际使用二进制块或以文件描述符为后端的 `Parcelable` 路径，普通字节数组仍会被内联编组。
 
 ### 9. DMA-BUF、GraphicBuffer 与共享内存的分工
 
@@ -585,7 +583,7 @@ FMQ 先通过 HIDL 或 AIDL RPC 传递 `MQDescriptor` 描述对象，双方再�
 
 非同步队列的读取方从描述对象建立队列时，必须使用 `resetPointers=false`，避免重置共享写入位置；读位置由各读取方独立维护。检查可读量之后仍可能发生覆盖，因此还要处理实际读取失败。
 
-因此把 FMQ 表格写成“天然双向”是写错了方向。它适合固定布局、频繁、小单元的数据流，不适合：
+因此，单个 FMQ 属于单向队列，只适合固定布局、频繁、小单元的数据流，不适合：
 
 - 可变长复杂对象。
 - 含指针、Binder 接口或任意嵌套缓冲区的数据。
@@ -602,7 +600,7 @@ Android 8 的 Treble 把系统框架与厂商（vendor）实现分开升级，�
 - 厂商原生代码使用 NDK 或 Rust 代码生成后端等稳定运行时。只有 `system/system_ext` 可直接使用 C++ `libbinder`，其他分区应使用 `libbinder_ndk`、`libbinder_rs` 或适用的 Java 后端；Java 后端不能用于与 vendor 分区的服务管理器通信，vendor 分区也不能使用 API 34 之后新增的系统 API。
 - 系统与厂商之间的 AIDL 类型使用 `@VintfStability`，接口构建声明 `stability: "vintf"`，再通过厂商接口清单（VINTF）、冻结的接口版本和厂商测试套件（VTS）管理兼容性。
 
-HIDL 从 Android 13 起进入弃用状态，但既有 HIDL HAL 仍受支持；分析具体设备时，以它实际暴露的接口为准，单看系统版本下不了「所有 HAL 都已迁移到 AIDL」的结论。
+HIDL 从 Android 13 起进入弃用状态，但既有 HIDL HAL 仍受支持；分析具体设备时，应以设备实际暴露的接口为准。
 
 | HAL 接口 | 常见驱动域 | 当前定位 |
 | --- | --- | --- |
@@ -623,7 +621,7 @@ host RpcSession
             └─ pVM RpcServer root Binder object
 ```
 
-这条路径绕开了内核 Binder 的 `BINDER_VM_SIZE` 接收映射，「Binder 驱动复制一次」的结论也套不上。开销要分成：
+这条路径绕开了内核 Binder 的 `BINDER_VM_SIZE` 接收映射，也不存在内核 Binder 驱动的跨进程缓冲拷贝。开销主要由以下三部分组成：
 
 - Parcel / Binder RPC 消息分帧。
 - socket/vsock 缓冲区与 virtio 虚拟设备 I/O 传输。
@@ -646,7 +644,7 @@ host RpcSession
 | Signal | 异步进程/线程通知 | 遵循信号语义 | 不承载业务数据 | 处理函数安全、调度、平台保留信号 |
 | Binder RPC / vsock | 跨虚拟机 RPC | socket/vsock 与 RPC 会话 | 专用共享或文件通道 | 虚拟机调度、消息分帧、连接安全 |
 
-这张表回答的是“谁合适”，回答不了“谁最快”。同样传 16 字节，RPC 语义、线程唤醒与权限检查可能是主要成本；同样传 10MB，能否复用映射、是否复制到共享区、CPU 缓存与同步策略更加重要。
+这张表用于按交互语义筛选合适机制，而实际延迟仍取决于数据规模、是否复用映射、CPU 缓存与同步策略。
 
 ### 14. 选型决策树
 
@@ -745,11 +743,11 @@ LIMIT 50;
 - 同时查看线程状态、套接字缓冲区、背压日志和数据量计数。
 - 分析 InputChannel 时，结合输入事件分类、InputDispatcher 和目标应用线程。
 
-没有名为 `sendto` 的轨迹区段，也可能存在套接字 I/O。
+轨迹中未出现名为 `sendto` 的区段，并不代表没有发生套接字 I/O。
 
 #### 15.3 如何验证共享内存路径
 
-光看轨迹里有没有 `memcpy`，判断不出共享内存有没有省掉一次 IPC 复制；我们要把下面这些依据合起来看：
+验证共享内存是否实际省去了重复的 IPC 复制，需要把下面这些依据合起来看：
 
 - Parcel 里传的是文件描述符或句柄，不是大块内联数据。
 - `/proc/<pid>/fd` 与 `/proc/<pid>/maps` 显示两端映射同一对象。
@@ -819,43 +817,9 @@ List<State> states = remote.getStates(ids);
 
 可写文件描述符是一项访问能力。只需要读取时，先完成写入、解除写入方映射、降低后续映射权限，再传给不可信对端。接收方也要校验大小和格式——文件描述符来自 Binder，内容也未必安全。
 
-### 常见误区
-
-#### “Intent、AIDL、Binder 是三种并列 IPC”
-
-这三者不在同一层：Intent/AIDL 是上层协议或接口，跨进程时通常由 Binder 承载。
-
-#### “oneway 不会阻塞，也不会失败”
-
-它不等的是业务回复，提交到驱动、队列容量、冻结进程和服务端消费速度仍构成约束，阻塞和失败都还在。
-
-#### “Binder 单次可以安全传接近 1MB”
-
-约 1MB 是进程内所有尚未完成事务的共享预算，还要扣除内存页和元数据开销；估算单次上限时，并发中的其他事务要一起算进去。
-
-#### “共享内存就是零拷贝”
-
-映射后可以避免的是重复的 IPC 复制；生产方写入、消费方转换、缺页异常和缓存同步的成本还在。
-
-#### “FMQ 是双向队列”
-
-单个 FMQ 只有一个写入方；双向协议通常建立两条方向相反的队列。
-
-#### “Signal 延迟为零”
-
-信号是内核管理的异步通知，交付与处理函数执行仍受信号掩码和线程调度的影响。
-
-#### “Android 17 HAL 都走 AIDL”
-
-新接口优先 AIDL，设备仍可保留受支持的 HIDL HAL。
-
-#### “通过 vsock 的 Binder RPC 仍受 Binder 1MB 缓冲区限制”
-
-它复用 Binder 对象与 RPC 模型，传输走 socket/vsock，内核 Binder 的接收映射在这条路径上并不存在。
-
 ## Binder 慢调用的事务与等待链
 
-前文站在选型视角说明了 Binder 的同步语义、共享缓冲区和线程池约束；本节我们换个视角，把同一组事实重新组织成慢调用的调查顺序——先还原事务层次，再区分服务端排队、锁、I/O、嵌套调用和回复。同步与 `oneway` 只改变等待方式，服务端工作和资源约束一样都在。
+确定采用 Binder 后，排查慢调用需要将上述同步语义、共享缓冲区和线程池约束放到真实调用链中——先还原事务层次，再区分服务端排队、锁、I/O、嵌套调用和回复。同步与 `oneway` 只改变调用方的等待方式，服务端工作和资源约束依然存在。
 
 性能分析要先回答三个问题：
 
@@ -977,13 +941,11 @@ libbinder 仍使用以下大小：
 - 分页读取列表，并为每页设置明确上限。
 - 界面状态只保存重建 UI 所需的最小信息。
 
-“单次不到 1 MB”当不了安全线：并发量和对端响应同样占用各自进程的缓冲区。
+因此，判断缓冲区压力不能只看单次事务大小，并发事务量与对端响应同样占用各自进程的缓冲区。
 
 ### Binder 线程池的按需增长
 
-`DEFAULT_MAX_BINDER_THREADS = 15` 是原生 libbinder 的默认 `mMaxThreads`，「每个 Android 进程恰好只有 15 个 Binder 线程」是误读。
-
-`ProcessState::startThreadPool()` 会先创建线程池的首个工作线程；驱动在没有足够工作线程时返回 `BR_SPAWN_LOOPER`，libbinder 再按需创建线程，直到配置上限。手工调用 `joinThreadPool()`、Java 运行时的接入方式和服务自身配置都会影响最终可见线程数。诊断时读目标进程的实际线程与配置，数到 15 就断定线程池耗尽是常见误判。
+`DEFAULT_MAX_BINDER_THREADS = 15` 是原生 libbinder 的默认 `mMaxThreads`。`ProcessState::startThreadPool()` 会先创建线程池的首个工作线程；驱动在没有足够工作线程时返回 `BR_SPAWN_LOOPER`，libbinder 再按需创建线程，直到配置上限。手工调用 `joinThreadPool()`、Java 运行时的接入方式和服务自身配置都会影响最终可见线程数，因此诊断时应核对目标进程的实际线程数与上限配置。
 
 线程池有几条稳定的行为：
 
@@ -1019,7 +981,7 @@ binder thread pool (<N> threads) starved for <M> ms
 - 服务端排队、锁、I/O、下游 IPC 和业务执行。
 - 响应的编组、复制和调用线程再次调度。
 
-这里没有跨设备固定的“上下文切换次数”或“基础微秒数”——嵌套事务、同进程调用、CPU 负载与调度位置都会改变实际路径。主线程只要发起同步 Binder，服务端慢请求就可能直接拖长当前帧或启动阶段。
+由于嵌套事务、同进程直调、CPU 负载与调度位置都会改变实际路径，不存在跨设备固定的上下文切换次数或基础微秒数。主线程只要发起同步 Binder，服务端慢请求就可能直接拖长当前帧或启动阶段。
 
 #### `oneway` 事务
 
@@ -1115,7 +1077,7 @@ ORDER BY client_dur DESC
 LIMIT 50;
 ```
 
-`client_dur` 是客户端事务时间片段（slice）实际经过的总时间（墙钟时间，包括等待），`server_dur` 是服务端响应时间片段实际经过的时间。两者之差里除了驱动，还可能有客户端调度、服务端开始前排队、嵌套调用、系统挂起（suspend）边界和跟踪数据建模差异，直接叫「Binder 驱动耗时」会误导。
+`client_dur` 是客户端事务时间片段（slice）实际经过的总时间（墙钟时间，包括等待），`server_dur` 是服务端响应时间片段实际经过的时间。两者之差除了驱动开销，还包含客户端调度、服务端开始前排队、嵌套调用、系统挂起（suspend）边界和跟踪数据建模差异，不宜简单归结为 Binder 驱动本身耗时。
 
 Perfetto 标准库还提供：
 
@@ -1131,7 +1093,7 @@ INCLUDE PERFETTO MODULE android.binder_breakdown;
 2. 沿事务流向找到服务端 `binder reply` 或 AIDL 服务端时间片段，记录 `server_ts` 与 `server_dur`。
 3. 服务端开始得晚：检查工作线程、调度唤醒、线程池和前序事务。
 4. 服务端执行得久：展开子时间片段，检查锁、I/O、GC、直接内存回收（direct reclaim）和下游 Binder。
-5. 接口名缺失：不要猜方法，补采 AIDL atrace 事件，或用事务码与服务端调用栈交叉确认。
+5. 接口名缺失：补采 AIDL atrace 事件，或用事务码与服务端调用栈交叉确认。
 6. 事务失败：检查 `FAILED_TRANSACTION`、缓冲区、进程死亡与冻结记录。
 
 空闲的 Binder 工作线程本来就睡在 `binder_thread_read` 或 ioctl 等待路径上，看到这个阻塞函数先别判卡死；只有承载关键事务的调用线程长时间等待，或目标端迟迟没有开始执行时，它才是我们要追的线索。
@@ -1146,28 +1108,6 @@ INCLUDE PERFETTO MODULE android.binder_breakdown;
 - Android 17：原生 libbinder 仍以 `BINDER_VM_SIZE = 1 MiB - 2 × page_size`、`DEFAULT_MAX_BINDER_THREADS = 15` 为默认源码参考；实际服务可以改变线程池配置。Perfetto `android.binder` 与 `android.binder_breakdown` 应以当前 Trace Processor 模块和实际录制事件为准。
 
 厂商内核的扩展钩子、服务线程池大小、SELinux 的可见性和 user build 的调试权限，仍要在目标设备上确认。
-
-### 常见误区
-
-#### 在主线程循环查询系统服务
-
-单次调用很短，远端慢请求也会拖长每一帧。能由回调维护的状态不要每帧查询；多项读取优先使用批量接口或本地快照。
-
-#### 用 `oneway` 掩盖服务端过载
-
-调用方不等待以后，延迟转移到了队列。没有合并、丢弃和流量控制，最终会表现为旧事件集中回放、异步缓冲区耗尽或目标进程被终止。
-
-#### 看到 15 个线程就直接加大线程池
-
-先确认工作线程在做什么。锁竞争和 I/O 不会因为等待线程增多而变快；更大的线程池还会增加并发内存开销、锁竞争和下游压力。
-
-#### 用大 `Bundle` 省接口设计
-
-Binder 缓冲区是进程级共享资源。大列表、`Bitmap` 和完整对象图改为分页、文件描述符或共享内存，并给协议设置明确的大小上限。
-
-#### 持锁调用远端回调
-
-远端可能同步回调、阻塞、死亡或重入当前进程。锁内只准备不可变快照，锁外再调用。
 
 ## 诊断与验证清单
 

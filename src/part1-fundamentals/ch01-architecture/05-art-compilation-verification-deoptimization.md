@@ -150,7 +150,7 @@ consolidated_from:
 
 一个方法在 Android 上运行时（Android Runtime，ART），可能同时存在几种执行形态：ART 可以解释 DEX 字节码，可以在运行期用 JIT（运行时即时编译） 处理热点代码，也可以加载 `dex2oat` 预先生成的 AOT（提前编译） 代码。
 
-分析启动性能时，我们先把“AOT 还是 JIT 更快”这类笼统问题拆开，依次确认：
+分析启动性能时，需要将不同执行形态的耗时拆成四个具体问题依次确认：
 
 1. 启动路径上的方法当前有没有可用的 AOT 代码？
 2. 没有 AOT 代码时，是解释执行，还是已经被 JIT 编译？
@@ -204,7 +204,7 @@ DEX
 | Android 14+ | ART Service 管理应用在设备上执行的 DEX 优化 | 编译原因、优先级和产物管理集中到 ART 模块 |
 | Android 17 | 延续混合执行与 ART Service 架构 | 仍应以代码使用画像、编译过滤器和设备状态解释结果 |
 
-云端画像（Cloud Profile）分发的是代码使用画像；机器码仍由设备按本机指令集、运行时和依赖生成，谈不上“云端机器码”或“全量 AOT”。
+云端画像（Cloud Profile）分发的是代码使用画像；机器码仍由设备按本机指令集、运行时和依赖生成，因此不存在跨设备通用的预编译机器码包。
 
 ### 编译过滤器决定 AOT 范围
 
@@ -245,7 +245,7 @@ pm.dexopt.inactive=verify
 pm.dexopt.cmdline=verify
 ```
 
-设备厂商（OEM）可以调整这些属性，ART Service 也会根据代码使用画像、共享代码、存储压力和编译原因选择或降低过滤器级别。所以设备上落到哪个级别，要以 `pm art dump` 的实际输出为准；“Android 17 安装后一定是 `speed-profile`（current profile）”只是想当然。
+设备厂商（OEM）可以调整这些属性，ART Service 也会根据代码使用画像、共享代码、存储压力和编译原因选择或降低过滤器级别。因此，具体设备上的应用包最终落到哪个编译级别，应以 `pm art dump` 的实际输出为准。
 
 ### dex2oat 做了什么
 
@@ -270,7 +270,7 @@ pm.dexopt.cmdline=verify
 - ART/APEX 与编译产物格式；
 - 目标指令集架构、运行时特性和编译选项。
 
-ART 会校验这些依赖。把另一台设备或另一版本的 `.odex` 硬拷过来，即使文件名相同也未必能加载，Play 也就没有一份适用于所有设备的通用 ODEX 可发。
+ART 会校验这些依赖。另一台设备或另一版本的 `.odex` 即使文件名相同，若校验和或依赖不匹配也无法直接加载，因此分发渠道也无法向所有设备提供同一份通用 ODEX。
 
 #### ART Service 与编译并发
 
@@ -321,7 +321,7 @@ static size_t GetInitialCapacity() {
 
 空间压力下，`JitCodeCache::DoCollection(Thread*)` 扫描活动栈和代码缓存状态，保留仍然需要的代码并回收可移除项。
 
-是否允许回收还受模式影响：调试信息、Java 虚拟机工具接口（JVMTI）、首次使用即编译（JIT-at-first-use）等模式都会改变回收行为。固定的最近最少使用（LRU）策略，或“大型应用通常稳定在 4 MB”这类简化说法，在这里都立不住。
+是否允许回收还受模式影响：调试信息、Java 虚拟机工具接口（JVMTI）、首次使用即编译（JIT-at-first-use）等模式都会改变回收行为，因此实际代码缓存占用与回收策略需结合具体工作负载与运行模式测量确认。
 
 #### 去优化用于撤销不再成立的投机优化
 
@@ -511,7 +511,7 @@ VDEX / ODEX(OAT) / ART image
 运行时：AOT + 解释器 + JIT
 ```
 
-单个产物文件或一种 filter，都撑不起“启动已经达到最佳状态”的判断，我们逐条看：
+单个产物文件或编译器过滤器名称本身不足以说明启动路径已充分编译，判断时需区分各层边界：
 
 - `verify` 复用的是验证结果，这一级下 Java/Kotlin 方法没有 AOT 机器码。
 - `speed-profile` 只编译 profile 覆盖的方法；没有可用 profile 时，实际结果可以降为 `verify`。
@@ -689,7 +689,7 @@ adb logcat -b all -d |
 - 如果当前 filter 高于 `verify`，把本轮编译降为 `verify`；
 - 输出 `Very large app, downgrading to verify.` 日志。
 
-这段代码里没有固定的“某个 APK 大小”可作为阈值：`dex2oat` 的字段默认是最大值，实际阈值由调用方参数和产品配置决定；比较对象是 DEX 累计大小，而非 APK 下载体积。文档或排障脚本里写死一个通用 MB 数，是靠不住的。
+这段代码里没有固定的“某个 APK 大小”可作为阈值：`dex2oat` 的字段默认是最大值，实际阈值由调用方参数和产品配置决定；比较对象是 DEX 累计大小，与 APK 下载体积不同，因此排查脚本不应硬编码固定的 MB 阈值。
 
 即使上层请求了 `speed-profile` 或 `speed`，实际工作也可能降为 `verify` 级别。源码在降级前已将编译过滤器写入 OAT 文件头，内部降级不会回写该字段，以便后续判断产物是否需要更新。
 
@@ -737,7 +737,7 @@ adb shell pm compile -m speed-profile -f -v com.example.app
 adb shell pm art dump com.example.app
 ```
 
-`-f` 表示即使现有产物“不差于”目标也强制执行。命令成功离“最终一定是 `speed-profile`”还差一步：没有可用 profile 时仍可能得到 `verify`，所以必须再次运行 `pm art dump` 查看结果。
+`-f` 表示即使现有产物“不差于”目标也强制执行。命令执行成功仅说明请求已发出：没有可用 profile 时仍可能得到 `verify`，所以必须再次运行 `pm art dump` 查看最终结果。
 
 如需建立“尽可能全面 AOT”的实验对照，可执行：
 
@@ -745,7 +745,7 @@ adb shell pm art dump com.example.app
 adb shell pm compile -m speed -f -v com.example.app
 ```
 
-这个结果只用于定位 AOT 覆盖是否影响性能，离产品默认策略还远。
+`pm compile` 是设备调试命令，应用侧无法将其作为线上分发策略；这一对照实验只用于验证 AOT 覆盖是否影响性能，线上应使用基准画像、启动画像、代码瘦身和合理的关键路径。
 
 #### 5. 手动运行系统后台 dexopt 流程
 
@@ -785,7 +785,7 @@ adb shell pm compile -r bg-dexopt -f -v com.example.app
 - 是否因超大 DEX 阈值而降为 `verify`；
 - `dex2oat` 的优先级与并发是否符合交互安装场景。
 
-若最终只是 `verify`，就不要把耗时描述成“完整 AOT 编译”；验证、提取、I/O 或其他 PackageManager 阶段更值得检查。
+若最终只是 `verify`，说明本轮并未生成应用方法的 AOT 机器码，应重点检查验证、提取、I/O 或其他 PackageManager 阶段。
 
 #### 首次启动慢
 
@@ -810,7 +810,7 @@ adb shell pm compile -r bg-dexopt -f -v com.example.app
 - 后台 `dexopt` 是否长期被取消；
 - SystemUI 和桌面启动器是否符合各自的单独策略。
 
-把“更新后慢”一律归因于旧 ODEX 被删除，这个结论下得太快：系统会尽量复用仍可信的验证信息，只放弃依赖不匹配的优化层。
+更新后出现慢启动或掉帧时，系统会尽量复用仍可信的验证信息，只放弃依赖不匹配的优化层，因此排查重点仍应放在上述依赖变化与后台任务状态上。
 
 
 ## 去优化触发、栈重建与诊断
@@ -844,7 +844,7 @@ adb shell pm compile -r bg-dexopt -f -v com.example.app
 | `kFullFrame` | Instrumentation / 异常投递 | 需要转换一段已编译调用栈 |
 | `kMethodHandleTypeMismatch` | `instruction_builder.cc` | `MethodHandle.invokeExact` 的类型与调用点（call site）不匹配 |
 
-`HCheckCast` 或 `HLoadClass` 出现在守卫条件的构造过程中，离“自身必然触发 deopt”还远：判断某条优化是否可能去优化，应查找它是否生成 `HDeoptimize`，以及用了哪个 `DeoptimizationKind`。
+`HCheckCast` 或 `HLoadClass` 虽然常出现在守卫条件的构造过程中，但自身并不必然触发 deopt；判断某条优化是否可能去优化，应查找它是否生成 `HDeoptimize`，以及用了哪个 `DeoptimizationKind`。
 
 #### 1.2 从 `HDeoptimize` 到解释器
 
@@ -865,12 +865,12 @@ guard 条件失败
 
 `artDeoptimizeFromCompiledCode()` 会压入 `DeoptimizationContextRecord`，保存返回值、原有异常以及 DEX PC 推进策略。随后只转换触发 deopt 的最外层编译帧；若该机器码内联了多个 Java 方法，栈访问器会为每个内联帧建立一个 `ShadowFrame`。`ShadowFrame` 是 ART 用于保存解释器方法、DEX PC 和虚拟寄存器状态的数据结构。
 
-这条路径直接调用 `Thread::Deoptimize()`。它没有先抛出一个普通 Java 异常，因此把所有 deopt 概括为“特殊异常”会掩盖入口差异。
+这条路径直接调用 `Thread::Deoptimize()`，并没有先抛出普通 Java 异常，与经过异常投递的入口路径有所区别。
 
 <!-- gracker-diagram: ch01-05-single-frame-deopt -->
 ![显式单帧去优化与解释器状态恢复](../../assets/diagrams/ch01/ch01-05-single-frame-deopt.png)
 
-图：这张图只描述优化代码显式触发的单帧 deopt。一个编译帧若内联多个 Java 方法，可能重建多个 ShadowFrame；随后从相应 DEX PC 继续，不是从方法开头重跑。
+图：这张图只描述优化代码显式触发的单帧 deopt。一个编译帧若内联多个 Java 方法，可能重建多个 ShadowFrame；随后从相应 DEX PC 继续执行，无需从方法开头重跑。
 
 #### 1.3 守卫条件的代价分为未命中和命中两部分
 
@@ -884,7 +884,7 @@ guard 条件失败
 - 必要时更新 JIT inline cache；
 - 通过 long jump 跳到解释器入口。
 
-代价随内联深度、dex register 数量和栈映射复杂度变化，任何固定毫秒数都代表不了所有设备和方法。
+代价随内联深度、dex register 数量和栈映射复杂度变化，具体耗时需结合目标设备与方法实测。
 
 ### 二、ShadowFrame 怎样恢复 Java 执行状态
 
@@ -899,7 +899,7 @@ guard 条件失败
 - 是否跳过方法退出、低开销跟踪等事件的标记；
 - 指向上层 ShadowFrame 的链接。
 
-API 37 的 `EnterInterpreterFromDeoptimize()` 明确说明，它不会为了锁计数恢复一套 monitor（Java 对象监视器锁）状态；编译器只应编译通过结构化锁（structured-locking）检查的方法。“逐个恢复 monitor 持有列表”不符合该标签实现。
+API 37 的 `EnterInterpreterFromDeoptimize()` 明确说明，它不会为了锁计数逐个恢复 monitor（Java 对象监视器锁）持有状态；编译器只应编译通过结构化锁（structured-locking）检查的方法。
 
 #### 2.2 DEX PC 是否重试取决于入口
 
@@ -924,7 +924,7 @@ sentinel exception（哨兵异常）是 ART 保留的假对象指针，用于传
 
 `ClassHierarchyAnalysis::UpdateAfterLoadingOf()` 在类进入已解析状态前检查虚方法表（vtable）和接口方法表（iftable）。只有新类让某个虚方法或接口方法的“单一实现”（single-implementation）信息失效，并且 JIT code cache（JIT 编译代码缓存）中存在依赖该假设的编译体时，才需要处理编译代码。
 
-所以“动态加载一个 DEX 一定发生 deopt”“创建一个 `Proxy` 一定让相关调用点 deopt”“用了 MultiDex、ServiceLoader 或依赖注入框架就必然触发 CHA”，这些判断都下得太宽：它们只是增加了“晚到实现类”出现的概率；是否真的 deopt，取决于实际继承关系、此前是否形成单实现假设，以及是否已有依赖代码。
+动态加载 DEX、生成 `Proxy`，或使用 MultiDex、`ServiceLoader` 与依赖注入框架，只是增加了晚到实现类出现的概率；是否实际触发 deopt，仍取决于真实继承关系、此前是否已形成单实现假设，以及 JIT code cache 中是否存在依赖该假设的已编译代码。
 
 #### 3.2 API 37 的实际链路
 
@@ -985,7 +985,7 @@ JVMTI 事件的作用域映射也分得很清楚：
 - 字段访问 / 修改、单步执行、弹出栈帧、强制提前返回，在没有目标线程时需要完整 deopt，有目标线程时限制到该线程；
 - 类加载、已编译方法加载、GC 等事件不要求 deopt。
 
-所以“启用任意 JVMTI 代理都会让全进程永久解释执行”的说法站不住；要看代理具体启用了哪些事件、有没有线程过滤器。
+因此，启用 JVMTI 代理后进程是否会退回全局解释执行，取决于代理具体启用了哪些事件以及是否设置了线程过滤器。
 
 ### 五、Debugger、方法追踪与类重定义
 
@@ -1000,7 +1000,7 @@ JVMTI 事件的作用域映射也分得很清楚：
 - 全局单步调试、异常捕获等事件才请求全局解释器；
 - 方法跟踪可以选择进入 / 退出钩子，也可以要求使用解释器。
 
-因此，性能报告要写清是否 debuggable、是否 attach、启用了哪些事件，只写一句“开了调试器”等于没写。
+因此，性能报告需明确记录应用是否设为 debuggable、是否已连接调试器以及实际启用的事件类型。
 
 #### 5.2 普通与结构性类重定义的代价不同
 
@@ -1013,13 +1013,13 @@ JVMTI 事件的作用域映射也分得很清楚：
 - 调用 `InvalidateAllCompiledCode()` 清空 JIT 编译代码；
 - 让后续边界检查把活动编译帧转入解释器。
 
-Android Studio Apply Changes 最终走哪条路径，取决于修改内容和部署机制；把每次 Apply Changes 都当成结构性全量 deopt，就描述过头了。
+Android Studio Apply Changes 最终走哪条路径，取决于具体修改内容和部署机制，只有涉及字段或方法布局变更时才会落入结构性重定义。
 
 #### 5.3 第三方 hook 要按实现判断
 
 Hook 工具可能使用 JVMTI 断点 / 类重定义、修改方法入口点，或调用非 SDK 的 ART 内部接口。不同方案影响的调用者、被调用者和全局插桩级别并不相同。
 
-诊断时我们要确认三点：它是否只改目标方法，是否处理已经内联该方法的调用者，以及是否长期保持 interpreter stubs。这三点没弄清之前，把一次卡顿直接归因于“Xposed 导致全进程 deopt”为时过早。
+诊断时需确认三点：它是否只改目标方法，是否处理已经内联该方法的调用者，以及是否长期保持 interpreter stubs。确认这三点细节，才能准确界定第三方 hook 工具的实际去优化范围。
 
 ### 六、deopt 后会执行什么代码
 
@@ -1032,7 +1032,7 @@ Hook 工具可能使用 JVMTI 断点 / 类重定义、修改方法入口点，�
 - 全局解释器级别生效时，JIT 会跳过所有方法编译；
 - 结构性类重定义会使全部 JIT 编译代码失效，恢复速度取决于后续热度与 JIT 调度。
 
-“每次 deopt 后一定立即重编译”并不准确。JIT 是否再次编译取决于方法热度（hotness）、code cache、当前插桩级别、方法是否可编译，以及进程随后是否继续执行该路径。
+deopt 之后 JIT 是否再次编译该方法，取决于方法热度（hotness）、code cache 状态、当前插桩级别、方法是否可编译，以及进程随后是否继续执行该路径。
 
 基准画像也拦不住守卫条件、CHA 或调试器触发的 deopt：它能改变安装期编译范围和正常启动成本，但全局 interpreter stubs 生效时，已有 AOT / JIT 代码仍要换一种执行方式。评估基准画像时，要把 deopt 前的编译收益和 deopt 后的运行状态分开。
 
@@ -1056,7 +1056,7 @@ JVMTI 方法级 / 全局操作通常在 suspend-all 区间内更新执行入口�
 
 失效的 JIT 代码要等没有线程再执行它才能释放：`JitCodeCache::DoCollection()` 会通过 checkpoint 标记线程栈上仍在执行的编译代码，再由 `RemoveUnmarkedCode()` 清理已不可达、等待回收的 zombie code。
 
-deopt 后看到 `DoCollection` 或密集的 `JIT compiling`，说明 runtime 正在处理 code cache 或重新编译；两者相关，但把每次回收都归给 deopt 就过头了。同一方法、同一原因的 deopt 与重编译反复交替，更接近 deopt thrashing（去优化与重编译反复发生的抖动）。
+deopt 后看到 `DoCollection` 或密集的 `JIT compiling`，说明 runtime 正在处理 code cache 或重新编译；分析时需区分正常的缓存回收与同一方法、同一原因反复交替出现的 deopt thrashing（去优化与重编译反复发生的抖动）。
 
 ### 八、deopt 的可观测性
 
@@ -1149,11 +1149,11 @@ adb shell pidof com.example.app
 
 `pm art dump` 反映 dexopt 产物与编译过滤器（compiler filter），看不到某个活动帧是否刚刚发生 deopt。三组信息要与系统构建指纹（build fingerprint）、应用版本、是否连接调试器、JVMTI 代理配置一起记录。
 
-`-verbose:deopt,jit` 是当前版本支持的 ART runtime 日志选项，但必须在目标 runtime 启动参数中生效。临时修改启动参数或属性、又不重启对应 runtime / 进程，已有应用未必获得该选项；量产设备也可能限制这类日志。启动参数未经确认时，“logcat 没有 Deoptimizing”离“零 deopt”的结论还差得远。
+`-verbose:deopt,jit` 是当前版本支持的 ART runtime 日志选项，但必须在目标 runtime 启动参数中生效。临时修改启动参数或属性、又不重启对应 runtime / 进程，已有应用未必获得该选项；量产设备也可能限制这类日志。若未确认启动参数已生效，仅靠 logcat 中未出现 `Deoptimizing` 尚不能断定进程没有发生去优化。
 
 ### 九、一次可复现的实验
 
-无调试的性能测量与调试事件实验要分组。ART TI 从 Android 8.0 起提供；普通应用通过系统接口附加 JVMTI 代理时，ActivityManager 与 ART 都会检查应用是否可调试。`debuggable=false` 的发布 APK 只用于无调试基线，带代理的后续步骤要换可调试的测试包来做；手动启动 `dalvikvm` 的 ART 测试环境另有限制，结论也别直接套用到普通应用。
+无调试的性能测量与调试事件实验要分组。ART TI 从 Android 8.0 起提供；普通应用通过系统接口附加 JVMTI 代理时，ActivityManager 与 ART 都会检查应用是否可调试。`debuggable=false` 的发布 APK 只用于无调试基线，带代理的后续步骤要换可调试的测试包来做；手动启动 `dalvikvm` 的 ART 测试环境另有限制，结论不应直接套用到普通应用。
 
 1. 使用 `debuggable=false` 的基准 APK，记录 `pm art dump` 和包标志；
 2. 预热固定次数，保存 SIGQUIT deopt 原因计数基线；
@@ -1163,7 +1163,7 @@ adb shell pidof com.example.app
 6. 对重复 deopt 的方法检查守卫失败原因、接收者类型、CHA 依赖，或仍在生效的 Instrumentation 客户端；
 7. 去掉调试或代理后重新运行同一工作负载，确认 interpreter stubs 和方法 deopt 是否已经撤销。
 
-“健康应用必须零 deopt”不是有效标准。JIT 推测优化允许少量守卫未命中，动态类加载也可能产生一次合法的 CHA 修正。需要处理的是落在关键路径、反复命中同一原因、触发长期解释执行，或与大范围 JIT 失效共同出现的事件。
+在实际运行中，JIT 推测优化允许少量守卫未命中，动态类加载也可能产生一次合法的 CHA 修正，因此不必以零 deopt 作为健康应用的绝对标准。需要重点处理的是落在关键路径、反复命中同一原因、触发长期解释执行，或与大范围 JIT 失效共同出现的事件。
 
 ### 十、版本差异与源码入口
 
@@ -1205,33 +1205,7 @@ adb shell pidof com.example.app
 - 21.4：Baseline、Startup、Cloud Profile 与安装后编译验证。
 
 
-## 常见误区
-
-### “存在 ODEX 就说明应用已经全量编译”
-
-ODEX 可以只包含部分方法的机器码，编译过滤器甚至可能只做验证。应以 `pm art dump` 和 OAT 文件头为准。
-
-### “基准画像会加速所有代码”
-
-它只引导命中的方法和类。未覆盖路径仍可能解释执行或 JIT，业务自身的 I/O、锁和算法成本也不会消失。
-
-### “JIT 代码缓存上限就是进程实际内存”
-
-上限只是容量配置。实际映射、已经提交的内存页、RSS/PSS 和有效机器码大小需要分别测量。
-
-### “云端画像就是云端编译”
-
-云端画像是汇总后的编译提示，设备用它指导本地 `dex2oat`。它不是跨设备复用的机器码包。
-
-### “把应用强制编成 `speed`，启动变快就应该上线这个设置”
-
-`pm compile` 是设备调试命令，应用拿它当发布策略是行不通的。线上应使用基准画像、启动画像、代码瘦身和合理的关键路径。
-
-### “Mainline 更新后所有应用一定全部重编译”
-
-是否失效取决于启动类路径、ART 版本、产物校验和依赖。要看具体的 DEX 优化原因和编译产物状态，“发生过更新”本身推不出全量重编译。
-
-ART 性能优化需要可重复验证：确认当前编译过滤器与代码使用画像，测出解释执行、JIT 和 AOT 的实际成本，再修改画像或代码，并用相同发布构建的应用包和相同设备复测。只看版本号、文件扩展名或一条 JIT 时间片段，都不足以解释启动性能。
+ART 性能优化需要可重复验证：确认当前编译过滤器与代码使用画像，测出解释执行、JIT 和 AOT 的实际成本，再调整画像或代码并用相同发布构建的应用包和相同设备复测，从而将启动与运行期耗时归因到具体的编译器、验证器或去优化路径。
 
 
 ## 参考资料

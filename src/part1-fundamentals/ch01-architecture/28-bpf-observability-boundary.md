@@ -230,7 +230,7 @@ mount bpf bpf /sys/fs/bpf nodev noexec nosuid
 | `lock_contention/bpfLockContention.bpf` | `load_bpf_lock_contention` flag，内核至少 6.1 | 自动附着到 contention begin/end 事件 | 汇总锁竞争延迟 |
 | `cpucycleperuid/cyclePerUid.bpf` | 仅 x86_64，且 `x86_cpu_energy_attribution` flag 开启 | loader pin 程序 | 按 UID 聚合 CPU cycle |
 
-这张表解释了为什么 `cyclePerUid` 不能写成 Android 17 arm64 手机的通用能力，也解释了“镜像里有文件”和“设备上正在采集”之间的差别。
+可见 `cyclePerUid` 仅适用于满足条件的 x86_64 设备，并不属于 arm64 手机的通用能力；同时这也体现出镜像中存在 `.bpf` 文件与设备运行时实际加载并采集数据之间的差异。
 
 测试用的 `bpfMemEventsTest.bpf`、`bpfRingbufProg.bpf` 和 `kernelWakelockDurationTest.bpf` 带有 user build 跳过或 debuggable 构建条件，不应列入量产 user build 的功能基线。
 
@@ -291,7 +291,7 @@ Arena 可能降低 BPF 与用户空间交换特定数据结构时的开销，减
 - 让普通应用绕开 SELinux 和 bpffs 权限。
 - 直接减少系统内存占用或改善任务响应时间。
 
-要把 Arena 用于 Android 观测，仍要编写 BPF 程序、选择稳定的 attach 点、定义共享数据结构、编写有权限的用户空间消费程序，并测量引入的内存和 CPU 开销。“内存减少 40%”若没有测试对象、对照基线、设备和复现步骤，不能作为平台结论。
+要把 Arena 用于 Android 观测，仍要编写 BPF 程序、选择稳定的 attach 点、定义共享数据结构、编写有权限的用户空间消费程序，并测量引入的内存和 CPU 开销。因此任何内存降幅宣称，都必须绑定具体的测试对象、对照基线、设备和复现步骤才有参考价值。
 
 <!-- gracker-diagram: ch01-28-arena-shared-memory -->
 ![BPF Arena 是稀疏共享内存，不是自动观测器](../../assets/diagrams/ch01/ch01-28-arena-shared-memory.png)
@@ -333,7 +333,7 @@ adb shell 'cat /sys/kernel/sched_ext/enable_seq 2>/dev/null'
 
 图：CONFIG_SCHED_CLASS_EXT 提供框架，初始仍为 disabled。成功加载并附着 sched_ext_ops 后才接管符合条件的任务；错误、退出或 watchdog 可使其停用并回到内置调度器。enable_seq 是历史成功启用次数，当前状态应读 state。
 
-Android 17 AOSP 平台源码没有提供名为“ML Scheduler”的系统级 BPF 调度器，也没有 `bpf_runqueue_hook` 或 `bpf_cpufreq_hook` 这类通用接口。调度观测通常依赖已有的 sched/power tracepoint、BPF tracing 程序或 Perfetto；调度控制则需要单独实现 `sched_ext` 策略，并完成权限配置和产品验证。“关键任务响应时间改善 35%”如果缺少可复现实验，不能作为平台结论。
+Android 17 AOSP 平台源码并未内置系统级通用 BPF 调度器（亦无 `bpf_runqueue_hook` 或 `bpf_cpufreq_hook` 这类通用接口）。调度观测通常依赖已有的 sched/power tracepoint、BPF tracing 程序或 Perfetto；调度控制则需要单独实现 `sched_ext` 策略，并完成权限配置和基于可复现实验的产品级验证。
 
 内核文档还把 `sched_ext` 的 BPF 调度器接口列为 ABI 不稳定：`struct sched_ext_ops`、`include/linux/sched/ext.h` 常量和 `scx_bpf_*` kfunc 可能随内核版本变化。把策略从一个 ACK 或月度 tag 搬到另一个版本前，应重新编译并验证。
 
@@ -426,7 +426,7 @@ Android 17 的 BPF 边界应同时锚定平台源码和运行内核：
 2. Android 17 也支持多条较早 ACK，所以 6.18 中存在的能力不能直接代表所有 Android 17 设备。
 3. ACK 6.18 编译了 BPF JIT、BTF、BPF LSM、cgroup BPF、Arena 和 `sched_ext` 等基础能力。
 4. AOSP Rust loader 使用显式描述表，并按功能开关、构建类型、架构和内核版本筛选程序；加载、attach 和读取权限是不同阶段。
-5. 平台程序覆盖 CPU time-in-state、内存事件、GPU、FUSE，以及有条件启用的 wakeup source、DMA-BUF iterator、锁竞争和 x86 cycle 统计，不能压缩成“四个固定程序”。
+5. 平台程序覆盖 CPU time-in-state、内存事件、GPU、FUSE，以及有条件启用的 wakeup source、DMA-BUF iterator、锁竞争和 x86 cycle 统计，各探针的适用条件因架构与开关而异。
 6. Arena 是有明确地址与页管理约束的共享内存机制；`sched_ext` 需要主动加载 BPF ops 才会启用。两者都不会仅因 GKI 配置开启而自动改变产品行为。
 
-面对任何“Android 已支持某项 BPF 能力”的说法，都要回到四个问题：内核有没有、配置开没开、程序装载并附着了吗、调用方有权限吗。四项证据齐全后，结论才适用于目标设备。
+评估任何一项 BPF 能力是否在目标设备上生效时，都可以依次核对四个问题：内核有没有、配置开没开、程序装载并附着了吗、调用方有权限吗。四项证据齐全后，结论才适用于该设备。

@@ -99,7 +99,7 @@ consolidated_from:
 
 JNI 用于在 Java/Kotlin 与 C/C++ 之间调用代码，NDK 提供 Android 原生开发工具链。我们优化 JNI 时，先减少跨语言调用次数，再减少数据编组——也就是参数在两侧表示之间来回转换的功夫——然后管好线程与引用生命周期；把单次边界切换（transition）再压十几纳秒，排在这两件事之后。
 
-音视频、图像、游戏和设备端 AI 推理经常需要 C/C++，但“原生代码天生比 Java/Kotlin 快”不是可靠结论。一个原本能被 ART 的 JIT 或 AOT 优化好的短循环，一旦被拆成大量小粒度 JNI 调用，再叠加字符串转换、数组复制、引用管理和异常检查，整体可能更慢。
+音视频、图像、游戏和设备端 AI 推理常借助 C/C++ 实现核心计算，但最终耗时仍取决于调用粒度与数据转换成本。一个原本能被 ART 的 JIT 或 AOT 优化好的短循环，如果被拆成大量小粒度 JNI 调用，再叠加字符串转换、数组复制、引用管理和异常检查，整体耗时可能高于纯托管代码。
 
 我们分析 JNI 路径时，把成本拆成四段：
 
@@ -112,7 +112,7 @@ Managed caller
           └─ Managed caller 继续执行
 ```
 
-这里的“托管代码”指由 ART 管理内存和线程状态的 Java/Kotlin 代码，“原生代码”指 C/C++。我们要区分的是 JNI 边界本身的成本与原生函数内部的成本，选错优化位置，后面的功夫就都花偏了。
+文中的“托管代码”指由 ART 管理内存和线程状态的 Java/Kotlin 代码，“原生代码”指 C/C++。定位性能瓶颈时，需要先分清 JNI 边界本身的成本与原生函数内部的成本，再确定优化落点。
 
 <!-- gracker-diagram: ch01-06-jni-cost-boundaries -->
 ![普通 JNI 调用的成本与进程边界](../../assets/diagrams/ch01/ch01-06-jni-cost-boundaries.png)
@@ -584,7 +584,7 @@ AOSP 源码中的 `benchmark/jni-perf` 可作为实验设计参考：它比较�
 
 ### 10. 16KB 内存页的发布验收
 
-这一节站在 JNI/NDK 发布验收视角，只回答“最终 App 产物要检查什么”；运行时页大小、linker 兼容装载和 libc 内部实现的机制放在后文 Bionic 部分。同一个主题在两处的分工是：这里检查产物，那里解释机制。
+面向 JNI/NDK 发布验收时，重点在于最终 App 产物的对齐与运行假设检查；至于运行时页大小读取、linker 兼容装载和 libc 内部实现机制，将在后文 Bionic 部分展开。
 
 Android 15 起支持使用 16KB 内存页的设备，内存页是操作系统管理内存映射的基本单位。只要 APK 或 SDK 包含 `.so`，我们就要同时检查 ELF 文件、APK 打包布局，以及代码对运行时页大小所作的假设；ELF 是 Android 原生共享库 `.so` 使用的二进制格式。
 
@@ -682,7 +682,7 @@ Bionic 位于 Android 原生运行时的公共路径上。系统调用封装、�
 
 ### 1. Bionic 的职责边界
 
-Bionic 是 Android 的 C 库、数学库和动态链接器；NDK 使用的 C++ 标准库是 libc++，两者不是一回事。这里的动态链接器负责在进程启动或 `dlopen()` 时装载共享库、解析符号并完成重定位。
+Bionic 是 Android 的 C 库、数学库和动态链接器；NDK 使用的 C++ 标准库则是独立的 libc++。这里的动态链接器负责在进程启动或 `dlopen()` 时装载共享库、解析符号并完成重定位。
 
 | 组件 | Android 17 中的职责 | 容易混淆的边界 |
 |---|---|---|
@@ -692,7 +692,7 @@ Bionic 是 Android 的 C 库、数学库和动态链接器；NDK 使用的 C++ �
 | `/system/bin/linker`、`/system/bin/linker64` | 装载 ELF、解析依赖、重定位、管理限制共享库可见范围的 linker namespace | Android 的名称不是 `ld-android.so` |
 | `libstdc++.so` | 少量 C++ ABI（已编译二进制之间的调用约定）支持与兼容符号 | 它不是完整的 STL 实现 |
 
-Bionic 源码也没有单一的“BSD 实现”来源。`libc/upstream-freebsd/`、`upstream-netbsd/`、`upstream-openbsd/` 保存可直接复用的上游代码；`libc/bionic/` 包含 Android 自己维护的实现；系统调用桩由描述文件生成；部分 arm/arm64 字符串、内存和数学例程来自 `external/arm-optimized-routines/` 或 `external/llvm-libc/`。“Bionic 比 glibc 小，所以一定更快”这句话在性能上站不住，结论要在目标 Android 设备和目标 API 上测出来。
+Bionic 源码也没有单一的“BSD 实现”来源。`libc/upstream-freebsd/`、`upstream-netbsd/`、`upstream-openbsd/` 保存可直接复用的上游代码；`libc/bionic/` 包含 Android 自己维护的实现；系统调用桩由描述文件生成；部分 arm/arm64 字符串、内存和数学例程来自 `external/arm-optimized-routines/` 或 `external/llvm-libc/`。不同 C 库的体积差异并不直接决定运行速度，具体性能仍需在目标 Android 设备和目标 API 上实测。
 
 调用路径的边界如下：
 
@@ -770,9 +770,9 @@ malloc()
 | Android 5.0 至 10 前后 | jemalloc | 用多个 arena（相对独立的分配区域）和 size class 改善并发扩展 | 具体参数由 Android 分支配置决定 |
 | Android 11 至 17 | Scudo | 强化 chunk（一次分配对应的内存块）元数据、状态与分配行为检查 | 低内存产品仍可能使用 jemalloc |
 
-这条时间线解释设计变化，基准测试仍然要自己做。分配器开销受对象尺寸分布、线程数、存活期、RSS（进程当前驻留在物理内存中的页面总量）压力、MTE 模式和采样工具影响，固定写成“增加 2%～5%”再套用到别的设备或工作负载上都会失真。
+这条时间线解释设计变化，实际开销仍需结合基准测试确认。分配器开销受对象尺寸分布、线程数、存活期、RSS（进程当前驻留在物理内存中的页面总量）压力、MTE 模式和采样工具影响，具体占比需要在目标设备与工作负载下实测，而不宜套用固定经验比例。
 
-Scudo 是面向堆漏洞的强化分配器。它能检测部分内存块头部损坏、重复释放（double free）、无效状态、未对齐指针和分配/释放类型不匹配。对没有触发这些检查的越界访问或释放后使用（use-after-free），Scudo 不一定能在第一次非法访问处报告。官方因此把它定义为安全缓解措施（mitigation），而不是 ASan/HWASan 那类覆盖范围更完整的错误检测器。出现 `Scudo ERROR:` 时，应把短错误摘要作为排查入口，再结合崩溃转储（tombstone）、HWASan、MTE 或可复现测试定位第一次非法访问。
+Scudo 是面向堆漏洞的强化分配器。它能检测部分内存块头部损坏、重复释放（double free）、无效状态、未对齐指针和分配/释放类型不匹配。对没有触发这些检查的越界访问或释放后使用（use-after-free），Scudo 不一定能在第一次非法访问处报告。官方因此将其定位为安全缓解措施（mitigation），与 ASan/HWASan 这类覆盖范围更完整的错误检测器属于不同工具层级。出现 `Scudo ERROR:` 时，应把短错误摘要作为排查入口，再结合崩溃转储（tombstone）、HWASan、MTE 或可复现测试定位第一次非法访问。
 
 #### 2.3 API 37 的回收接口
 
@@ -805,7 +805,7 @@ Android 的 `mallopt` 提供若干分配器控制项：
 
 因此，Bionic 创建的子线程默认 `pthread_attr_t::stack_size` 在指针和 `long` 都是 64 位的 LP64（指针和 `long` 都为 64 位的 ABI） 上是 992 KiB，在 32 位进程上是 1008 KiB。源码随后会从栈顶划出 `pthread_internal_t`，所以这两个数字离业务代码可用的最大栈深还要再减一块。
 
-主线程走另一条路径。`pthread_attr_getstack` 根据 `RLIMIT_STACK`（进程栈资源限制）和进程映射计算主栈；只有当限制为 `RLIM_INFINITY` 时，Bionic 才把报告值收敛为 8 MiB，避免调用者把无限值当成可用映射。“Android 主线程固定 8 MiB”并不成立。
+主线程走另一条路径。`pthread_attr_getstack` 根据 `RLIMIT_STACK`（进程栈资源限制）和进程映射计算主栈；只有当限制为 `RLIM_INFINITY` 时，Bionic 才把报告值收敛为 8 MiB，避免调用者把无限值当成可用映射，因此主线程栈大小随环境与资源限制变化，并非固定不变的 8 MiB。
 
 #### 3.2 一个子线程包含哪些映射
 
@@ -835,7 +835,7 @@ Android 的 `mallopt` 提供若干分配器控制项：
 
 `pthread_attr_setschedpolicy` 接受的是 Linux 调度策略，例如 `SCHED_OTHER`/`SCHED_NORMAL`、`SCHED_BATCH`、`SCHED_IDLE`、`SCHED_FIFO` 和 `SCHED_RR`。实时策略还受权限、优先级范围与系统策略约束。
 
-Android 的 `top-app` 属于 task profile（系统为一组线程应用的资源策略）、cgroup 控制组和系统调度配置，`SCHED_TOP_APP` 不是 Bionic 或 Linux 的 `SCHED_*` 常量。前台进程获得怎样的 CPU 集合、uclamp 调度利用率限制或其他参数，由 framework、libprocessgroup、设备配置和内核共同决定。`pthread_attr_setschedpolicy(..., 5)` 设置的只是 Linux 调度策略数值，变不出 `top-app`；数值碰巧相同也没有这层语义。
+Android 的 `top-app` 属于 task profile（系统为一组线程应用的资源策略）、cgroup 控制组和系统调度配置，Bionic 与 Linux 均未定义 `SCHED_TOP_APP` 调度策略常量。前台进程获得怎样的 CPU 集合、uclamp 调度利用率限制或其他参数，由 framework、`libprocessgroup`、设备配置和内核共同决定。`pthread_attr_setschedpolicy(..., 5)` 设置的只是 Linux 调度策略数值，并不会让线程进入 `top-app` 分组。
 
 ### 4. mutex 与 condition variable：用户态快路径和内核等待
 
@@ -847,7 +847,7 @@ Android 的 `top-app` 属于 task profile（系统为一组线程应用的资源
 - `1`：已锁、尚未发现竞争；
 - `2`：已锁、存在竞争。
 
-无竞争的 `pthread_mutex_lock` 通过原子比较并交换（compare-and-exchange）把状态从 `0` 改为 `1`，不进入内核。竞争路径把状态改为 `2`，然后通过 futex（Linux 用户空间锁的内核等待/唤醒机制）等待；解锁发现旧状态为 `2` 时，再用 futex 唤醒一个等待者。源码中没有能够证明“Android 17 新增乐观自旋（optimistic spinning）”的分支。
+无竞争的 `pthread_mutex_lock` 通过原子比较并交换（compare-and-exchange）把状态从 `0` 改为 `1`，不进入内核。竞争路径把状态改为 `2`，然后通过 futex（Linux 用户空间锁的内核等待/唤醒机制）等待；解锁发现旧状态为 `2` 时，再用 futex 唤醒一个等待者。`android-17.0.0_r1` 的普通互斥锁实现中没有乐观自旋（optimistic spinning）分支。
 
 <!-- gracker-diagram: ch01-06-mutex-fast-contended -->
 ![普通非 PI mutex 的用户态快路径与 futex 等待](../../assets/diagrams/ch01/ch01-06-mutex-fast-contended.png)
@@ -918,7 +918,7 @@ Android 17 在 arm/arm64 上保留的 Bionic TCB slot 包括：
 
 这些定义位于私有头文件 `tls_defines.h`，不属于 NDK 公共 ABI。业务代码要避开对 slot（固定槽位）编号的依赖；普通线程局部数据用 C++ `thread_local`、编译器 ELF TLS 或 `pthread_key_create`。
 
-`TLS_SLOT_STACK_MTE` 也不表示“整个 TLS 区域被 MTE 标记”。Android 17 的 `pthread_create.cpp` 会在需要时让它指向栈 MTE 使用的环形缓冲区；线程主映射在 `__libc_memtag_stack` 开启时可带 `PROT_MTE`。这是栈内存标记支持，需要与 TLS 寻址机制分开说明。
+`TLS_SLOT_STACK_MTE` 指向 stack MTE 使用的环形缓冲区，并不表示整个 TLS 区域都带有 MTE 标签；线程主映射只有在 `__libc_memtag_stack` 开启时才会带有 `PROT_MTE`。这是栈内存标记支持，需要与 TLS 寻址机制分开说明。
 
 ### 6. MTE：诊断精度、运行成本和适用环境要一起看
 
@@ -930,7 +930,7 @@ Android 17 在 arm/arm64 上保留的 Bionic TCB slot 包括：
 | ASYNC | 记录标签不匹配，延迟到后续内核入口附近以 `SEGV_MTEAERR` 终止；故障地址和主回溯通常不精确 | 经过充分测试后的低开销生产监测 |
 | ASYMM | 读访问同步报告、写访问异步报告；系统可在应用请求 async 时按 CPU 首选模式升级 | 硬件支持时的生产候选 |
 
-ASYNC 并不会“只记录而不终止”。进程仍会收到 `SIGSEGV`，只是终止点可能靠近下一次系统调用或中断，主回溯通常对应报告时刻。
+ASYNC 模式检测到标签不匹配后同样会触发 `SIGSEGV` 终止进程，只是信号延迟到下一次系统调用或中断边界发出，主回溯通常对应报告时刻。
 
 Android 17 的 Bionic 包含 `note_memtag_heap_async.S` 和 `note_memtag_heap_sync.S`，用于把构建时的 heap memtag 要求写入 ELF note（ELF 文件中的元数据记录）。当前控制边界如下：
 
@@ -1001,7 +1001,7 @@ Android 17 将部分 arm64 字符串/内存例程链接自 `external/arm-optimiz
 | `memchr`、`strchr`、`strlen` 等 | 支持 MTE 时选择能正确处理 tagged address 的 MTE 版本 |
 | `memcmp`、`strcmp`、`strcpy` 等 | 当前选择 arm64 实现；源码中的 SVE 可伸缩向量指令分支仍是待启用注释 |
 
-“所有大于 64 字节的拷贝都走 NEON”不符合源码。具体汇编内部可能使用成对加载/存储、SIMD 向量指令、预取（prefetch）或尽量减少缓存污染的 non-temporal store，但阈值和收益取决于最终选中的实现及 CPU 微架构，从 Bionic API 层推导不出来。
+各汇编实现内部可能根据场景使用成对加载/存储、SIMD 向量指令、预取（prefetch）或尽量减少缓存污染的 non-temporal store，具体分支阈值和收益取决于最终解析到的实现及 CPU 微架构，无法仅从 Bionic API 层直接推导。
 
 我们排查 `memcpy` 热点时，要先判断：
 
@@ -1030,7 +1030,7 @@ Android 17 将部分 arm64 字符串/内存例程链接自 `external/arm-optimiz
 
 `pthread_cancel` 缺失时，应采用协作式取消，让任务在安全检查点自行退出，例如使用原子标志、`eventfd`/pipe 唤醒、可中断队列或上层任务状态。用信号模拟任意点取消则可能让库代码、锁状态和资源释放停在不可恢复的位置，属于要避开的做法。
 
-glibc 的 benchmark 拿来直接预测 Android 行不通。Android 设备的分配器、动态链接器、内核配置、SoC 缓存、温控和进程策略都不同，需要在 Android 目标设备上使用相同编译器选项和数据集测试。
+由于分配器、动态链接器、内核配置、SoC 缓存、温控和进程策略均不相同，glibc 环境下的基准测试结果无法直接套用到 Android，仍需在目标设备上使用相同编译器选项与数据集验证。
 
 ### 10. 诊断工具如何选择
 
@@ -1081,37 +1081,6 @@ Native Heap 与 Scudo 的进一步分析见 **23.3 Native 内存管理与优化*
 | Android 14（API 34） | `@FastNative` / `@CriticalNative` 成为通过兼容性测试套件（CTS）验证的公开 API |
 | Android 15（API 35） | AOSP 支持使用 16KB 内存页的设备；Play 要求面向 Android 15 及以上版本的新提交与更新兼容该页大小 |
 | Android 17（API 37） | 当前 JNI 语义继续沿用；16KB 测试增加 `fatal` 兼容模式，可让不兼容的原生库立即失败；AOSP 源码统一以 `android-17.0.0_r1` 为准 |
-
-
-## 常见误区
-
-### “Native 一定比 Java/Kotlin 快”
-
-不成立。ART 已能很好地优化许多 Java/Kotlin 高频路径；频繁 JNI 调用、数据复制和内存安全处理的成本，可能抵消 C/C++ 算法的收益。
-
-### “Perfetto 默认会显示每次 JNI 跨界”
-
-不成立。没有主动插桩时，通常只能结合 CPU 采样、函数符号和相邻轨迹进行判断。
-
-### “`@CriticalNative` 可以传基本类型数组”
-
-不成立。数组是托管对象，CriticalNative 会因对象参数触发校验错误。它只能使用基本类型标量，以及生命周期已经明确的原生句柄。
-
-### “`AttachCurrentThread()` 可以每个任务调一次”
-
-从接口行为看，对已经附着的线程再次调用只是空操作；但清晰的资源边界仍是在线程启动时附着、退出前分离。按任务反复管理，会让线程与虚拟机连接的所有权更难确认。
-
-### “`GetPrimitiveArrayCritical()` 一定零拷贝”
-
-不成立。虚拟机仍可选择复制；Critical 约束的是运行时协调方式和临界区规则，并不承诺零拷贝。
-
-### “DirectByteBuffer 会自动管理 C/C++ 内存”
-
-不成立。`NewDirectByteBuffer()` 不负责释放外部地址指向的内存；缓冲区对象或底层内存失效后，这个地址对 C/C++ 代码也就作废了。
-
-### “App 在 16KB 兼容模式能启动就算完成迁移”
-
-不成立。兼容模式只是过渡机制。最终仍要验证 ELF 对齐、APK 中的 ZIP 对齐、所有第三方 `.so`，以及代码对运行时页大小的假设。
 
 
 ## 结论
