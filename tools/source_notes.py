@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Move inline source audit records into footnotes in a staging book tree.
+
+The source Markdown is kept unchanged. Run this on the temporary copy used
+for publication, after the front matter filter and before mdBook.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
+ANNOTATION = re.compile(r"(?<!\\)\[((?:来源|已验证)\s*[:：][^\]\n]+)\](?!\()")
+INLINE_CODE = re.compile(r"(`+)(.*?)(\1)")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+URL = re.compile(r"https?://[^\s；，、）)<>]+")
+
+
+def source_notes(text: str) -> str:
+    """Replace audit annotations outside code with ordinary footnotes."""
+    labels: dict[str, str] = {}
+    marker = "source-audit-note"
+    while f"[^{marker}-" in text:
+        marker += "x"
+    fence_char = ""
+    fence_len = 0
+    out: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        value = match.group(1)
+        if value not in labels:
+            labels[value] = f"{marker}-{len(labels) + 1}"
+        return f"[^{labels[value]}]"
+
+    for line in text.splitlines(keepends=True):
+        fence = FENCE.match(line)
+        if fence:
+            token = fence.group(1)
+            if not fence_char:
+                fence_char, fence_len = token[0], len(token)
+            elif token[0] == fence_char and len(token) >= fence_len:
+                fence_char, fence_len = "", 0
+            out.append(line)
+            continue
+        if fence_char or line.startswith(("    ", "\t")):
+            out.append(line)
+            continue
+        # Records can contain code spans; only skip a record that starts
+        # inside one, rather than splitting the record at its inner spans.
+        code_spans = [(code.start(), code.end()) for code in INLINE_CODE.finditer(line)]
+
+        def replace_outside_code(match: re.Match[str]) -> str:
+            if any(start <= match.start() < end for start, end in code_spans):
+                return match.group(0)
+            return replace(match)
+
+        out.append(ANNOTATION.sub(replace_outside_code, line))
+
+    if not labels:
+        return text
+    body = "".join(out).rstrip() + "\n\n"
+    for value, label in labels.items():
+        linked = URL.sub(lambda match: f"<{match.group(0)}>", value)
+        body += f"[^{label}]: {linked}\n"
+    return body
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", type=Path)
+    args = parser.parse_args()
+    changed = 0
+    for path in sorted(args.root.rglob("*.md")):
+        original = path.read_text(encoding="utf-8")
+        result = source_notes(original)
+        if result != original:
+            path.write_text(result, encoding="utf-8")
+            changed += 1
+    print(f"Moved source records to footnotes in {changed} files")
+
+
+if __name__ == "__main__":
+    main()

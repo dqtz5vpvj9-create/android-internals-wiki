@@ -32,7 +32,8 @@ jobs:
           rm -rf src_filtered book
           mkdir -p src_filtered/src
           cp -R src/. src_filtered/src/
-          python3 tools/filter_frontmatter.py src_filtered/src
+          python3 tools/filter_frontmatter.py src_filtered/src --force-python
+          python3 tools/source_notes.py src_filtered/src
           cp book.toml src_filtered/
           cp -R theme src_filtered/
           cp -R static src_filtered/
