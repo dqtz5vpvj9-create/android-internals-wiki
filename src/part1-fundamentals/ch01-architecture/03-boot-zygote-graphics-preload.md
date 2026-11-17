@@ -265,35 +265,35 @@ on zygote-start
 
 ### Zygote：预加载、创建 SystemServer、等待应用请求
 
-init 的 Zygote `.rc` 服务通过 `app_process` 启动 `ZygoteInit.main()`，并给主 Zygote 传入 `--start-system-server`。主 Zygote 的执行顺序是：[已验证: `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java`（android-17.0.0_r1） @ AOSP `android-17.0.0_r1`]
+init 的 Zygote `.rc` 服务通过 `app_process` 启动 `ZygoteInit.main()`，并给主 Zygote 传入 `--start-system-server`。主 Zygote 的执行顺序是：[^source-audit-note-1]
 
-1. 默认模式调用 `preload()`，加载类、资源、共享库和其他公共运行时内容。[已验证: `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
-2. 创建 `ZygoteServer`。[已验证: `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
-3. `--start-system-server` 存在时，主动调用 `forkSystemServer()` 创建 SystemServer 进程。[已验证: `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
-4. 子进程进入 `handleSystemServerProcess()` 并最终运行 `SystemServer.main()`。[已验证: `ZygoteInit.java` 与 `SystemServer.java` @ AOSP `android-17.0.0_r1`]
-5. Zygote 父进程进入 `runSelectLoop()`，处理后续应用进程创建请求。[已验证: `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
+1. 默认模式调用 `preload()`，加载类、资源、共享库和其他公共运行时内容。[^source-audit-note-2]
+2. 创建 `ZygoteServer`。[^source-audit-note-2]
+3. `--start-system-server` 存在时，主动调用 `forkSystemServer()` 创建 SystemServer 进程。[^source-audit-note-2]
+4. 子进程进入 `handleSystemServerProcess()` 并最终运行 `SystemServer.main()`。[^source-audit-note-3]
+5. Zygote 父进程进入 `runSelectLoop()`，处理后续应用进程创建请求。[^source-audit-note-2]
 
-这里要区分两条创建路径：SystemServer 进程由 Zygote 主动 fork；普通应用进程则由 `system_server` 通过 Zygote 命令套接字请求创建。[已验证: `ZygoteInit.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`]
+这里要区分两条创建路径：SystemServer 进程由 Zygote 主动 fork；普通应用进程则由 `system_server` 通过 Zygote 命令套接字请求创建。[^source-audit-note-4]
 
-`frameworks/base/config/preloaded-classes` 在 `android-17.0.0_r1` 中去掉注释和空行后有 18,784 条（具体条数随版本和厂商构建变化）。预加载过少会把公共类加载成本留给进程启动，过多则增加整机开机时间、Zygote 常驻内存和可能被写脏的页面，因此调整列表时需同时测量整机启动、进程启动与 PSS（按共享比例分摊后的进程物理内存）。[已验证: `frameworks/base/config/preloaded-classes` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
+`frameworks/base/config/preloaded-classes` 在 `android-17.0.0_r1` 中去掉注释和空行后有 18,784 条（具体条数随版本和厂商构建变化）。预加载过少会把公共类加载成本留给进程启动，过多则增加整机开机时间、Zygote 常驻内存和可能被写脏的页面，因此调整列表时需同时测量整机启动、进程启动与 PSS（按共享比例分摊后的进程物理内存）。[^source-audit-note-5]
 
-Zygote 创建进程时使用写时复制（Copy-on-Write）共享未修改页面，公共运行时因此不必在每个进程里重复占用物理内存。但私有页照样会来：ART 线程、应用类加载、堆写入和原生代码初始化都会逐步产生。[已验证: `ZygoteInit.java` 与 ART/Zygote fork 路径 @ AOSP `android-17.0.0_r1`]
+Zygote 创建进程时使用写时复制（Copy-on-Write）共享未修改页面，公共运行时因此不必在每个进程里重复占用物理内存。但私有页照样会来：ART 线程、应用类加载、堆写入和原生代码初始化都会逐步产生。[^source-audit-note-6]
 
 默认预加载有两种进入方式：eager 与 lazy，区别落在主 Zygote 和次 Zygote 的启动参数上。
 
 主 Zygote 的常规 `init.zygote64.rc` 命令行不带 `--enable-lazy-preload`，因此在启动期执行 `preload()`。
 
-64/32 mixed 配置中的 `init.zygote64_32.rc` 会让 `zygote_secondary` 携带 `--enable-lazy-preload`，次 Zygote 先进入 socket 监听，等待后续默认预加载命令。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md][已验证: `system/core/rootdir/init.zygote64.rc`、`system/core/rootdir/init.zygote64_32.rc` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
+64/32 mixed 配置中的 `init.zygote64_32.rc` 会让 `zygote_secondary` 携带 `--enable-lazy-preload`，次 Zygote 先进入 socket 监听，等待后续默认预加载命令。[^source-audit-note-7][^source-audit-note-8]
 
 SystemServer 在 `startOtherServices()` 期间提交 `SecondaryZygotePreload` 线程池任务：当 `Build.SUPPORTED_32_BIT_ABIS` 非空时，它调用 `Process.ZYGOTE_PROCESS.preloadDefault(abis32[0])`，向匹配 ABI 的 Zygote socket 写入 `1\n--preload-default\n`。
 
-Zygote 端的 `ZygoteConnection.handlePreload()` 若发现默认预加载尚未完成，就调用 `ZygoteInit.lazyPreload()` 并回写 `0`，已完成时回写 `1`。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md][已验证: `frameworks/base/services/java/com/android/server/SystemServer.java`、`frameworks/base/core/java/android/os/ZygoteProcess.java`、`frameworks/base/core/java/com/android/internal/os/ZygoteConnection.java` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`]
+Zygote 端的 `ZygoteConnection.handlePreload()` 若发现默认预加载尚未完成，就调用 `ZygoteInit.lazyPreload()` 并回写 `0`，已完成时回写 `1`。[^source-audit-note-7][^source-audit-note-9]
 
 这个 lazy preload 链路主要服务 32-bit WebView RELRO 准备：`SystemServer.java` 的注释把触发点放在 WebView factory 准备前约 1 秒，`WebViewFactoryPreparation` 会等待 `mZygotePreload`，从而让 32-bit RELRO 进程 fork 前先拿到次 Zygote 的默认预加载结果。
 
-这次 socket 调用本身同步，但它运行在线程池任务中，SystemServer 主线程可以继续推进其他服务。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md][已验证: `SystemServer.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`]
+这次 socket 调用本身同步，但它运行在线程池任务中，SystemServer 主线程可以继续推进其他服务。[^source-audit-note-7][^source-audit-note-10]
 
-排查 Zygote 预加载时，我们先区分来源：启动期 eager 预加载通常表现为 `ZygotePreload` 与 `Zygote32Timing`/`Zygote64Timing`，lazy 预加载会出现 `SecondaryZygotePreload`、`WebViewFactoryPreparation` 和 `ZygoteInitTiming_lazy`；再结合 32-bit ABI 是否存在，才能判断次 Zygote lazy preload 是否位于关键路径。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md][已验证: `ZygoteInit.java`、`SystemServer.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`]
+排查 Zygote 预加载时，我们先区分来源：启动期 eager 预加载通常表现为 `ZygotePreload` 与 `Zygote32Timing`/`Zygote64Timing`，lazy 预加载会出现 `SecondaryZygotePreload`、`WebViewFactoryPreparation` 和 `ZygoteInitTiming_lazy`；再结合 32-bit ABI 是否存在，才能判断次 Zygote lazy preload 是否位于关键路径。[^source-audit-note-7][^source-audit-note-11]
 
 ### SystemServer：四组服务与 APEX 服务阶段
 
@@ -1351,9 +1351,9 @@ adb logcat -v threadtime \
 3. SELinux 初始化：`system/core/init/selinux.cpp`，AOSP `android-17.0.0_r1`。
 4. 第二阶段与 `.rc` 解析：`system/core/init/init.cpp`，AOSP `android-17.0.0_r1`。
 5. `zygote-start` 动作：`system/core/rootdir/init.rc`，AOSP `android-17.0.0_r1`。
-6. 主/次 Zygote `.rc` 入口：`system/core/rootdir/init.zygote64.rc` 与 `system/core/rootdir/init.zygote64_32.rc`，AOSP `android-17.0.0_r1`。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md]
+6. 主/次 Zygote `.rc` 入口：`system/core/rootdir/init.zygote64.rc` 与 `system/core/rootdir/init.zygote64_32.rc`，AOSP `android-17.0.0_r1`。[^source-audit-note-7]
 7. Zygote 预加载、创建进程和套接字循环：`frameworks/base/core/java/com/android/internal/os/ZygoteInit.java`，AOSP `android-17.0.0_r1`。
-8. Zygote socket 命令解析：`frameworks/base/core/java/com/android/internal/os/ZygoteConnection.java` 与 `frameworks/base/core/java/android/os/ZygoteProcess.java`，AOSP `android-17.0.0_r1`。[来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md]
+8. Zygote socket 命令解析：`frameworks/base/core/java/com/android/internal/os/ZygoteConnection.java` 与 `frameworks/base/core/java/android/os/ZygoteProcess.java`，AOSP `android-17.0.0_r1`。[^source-audit-note-7]
 9. SystemServer 四组服务：`frameworks/base/services/java/com/android/server/SystemServer.java`，AOSP `android-17.0.0_r1`。
 10. 各用户的启动完成广播：`frameworks/base/services/core/java/com/android/server/am/UserController.java`，AOSP `android-17.0.0_r1`。
 11. 启动事件命令：`system/core/bootstat/bootstat.cpp`，AOSP `android-17.0.0_r1`。
@@ -1384,3 +1384,15 @@ adb logcat -v threadtime \
 - [版本演进：GraphicBufferMapper.cpp @ android-16.0.0_r1](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-16.0.0_r1/libs/ui/GraphicBufferMapper.cpp)
 - [版本演进：zygote_preload_graphics（android-13.0.0_r1） @ android-13.0.0_r1](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-13.0.0_r1/libs/hwui/apex/jni_runtime.cpp)
 - [版本演进：zygote_preload_graphics（android-15.0.0_r1） @ android-15.0.0_r1](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-15.0.0_r1/libs/hwui/apex/jni_runtime.cpp)
+
+[^source-audit-note-1]: 已验证: `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java`（android-17.0.0_r1） @ AOSP `android-17.0.0_r1`
+[^source-audit-note-2]: 已验证: `ZygoteInit.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-3]: 已验证: `ZygoteInit.java` 与 `SystemServer.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-4]: 已验证: `ZygoteInit.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-5]: 已验证: `frameworks/base/config/preloaded-classes` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-6]: 已验证: `ZygoteInit.java` 与 ART/Zygote fork 路径 @ AOSP `android-17.0.0_r1`
+[^source-audit-note-7]: 来源: DeepResearch/2026-07-15-android17-zygote-lazy-preload-true-triggers-securefs-not-in-aosp17.md
+[^source-audit-note-8]: 已验证: `system/core/rootdir/init.zygote64.rc`、`system/core/rootdir/init.zygote64_32.rc` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-9]: 已验证: `frameworks/base/services/java/com/android/server/SystemServer.java`、`frameworks/base/core/java/android/os/ZygoteProcess.java`、`frameworks/base/core/java/com/android/internal/os/ZygoteConnection.java` 与 `ZygoteInit.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-10]: 已验证: `SystemServer.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`
+[^source-audit-note-11]: 已验证: `ZygoteInit.java`、`SystemServer.java` 与 `ZygoteProcess.java` @ AOSP `android-17.0.0_r1`

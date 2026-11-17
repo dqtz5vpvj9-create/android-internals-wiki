@@ -205,9 +205,9 @@ UI 线程表面上被低优先级线程阻塞，实际等待时间还被中优�
 
 #### 哪些业务更容易暴露旧结构的上限
 
-一个容易漏看的入口是“切回主线程”本身。后台线程不需要直接改 UI：只要它调用 `Handler.post()`，或经 `runOnUiThread()`、RxJava 主线程调度、协程主线程调度等封装把回调送到主线程，它就是在给主 Looper 增加生产者压力。[来源: https://juejin.cn/post/7682633827692658740]
+一个容易漏看的入口是“切回主线程”本身。后台线程不需要直接改 UI：只要它调用 `Handler.post()`，或经 `runOnUiThread()`、RxJava 主线程调度、协程主线程调度等封装把回调送到主线程，它就是在给主 Looper 增加生产者压力。[^source-audit-note-1]
 
-对旧实现来说，这类入口最终会汇聚到同一条 MessageQueue 入队路径；DeliQueue 优化的也是这段投递与排序的结构，回调自身的工作量不在其列。[已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java @ android-17.0.0_r1]
+对旧实现来说，这类入口最终会汇聚到同一条 MessageQueue 入队路径；DeliQueue 优化的也是这段投递与排序的结构，回调自身的工作量不在其列。[^source-audit-note-2]
 
 - 多个后台线程高频向主线程 `post()`。
 - 队列已经积压大量延时消息，生产者需要在长链表中寻找插入位置。
@@ -343,7 +343,7 @@ do {
 - `mSyncHeap`：同步消息和同步屏障。
 - `mAsyncHeap`：异步消息。
 
-加入堆后，消息仍链接在共享栈中，直到被分发或物理删除。堆保存的是同一批 `Message` 的引用；其他线程仍可沿栈查找并标记待删除消息，不需要访问 Looper 私有堆。[已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/README.md，Sweeping Messages into the Heap；MessageStack.heapSweep()/removeFromStack() @ android-17.0.0_r1]
+加入堆后，消息仍链接在共享栈中，直到被分发或物理删除。堆保存的是同一批 `Message` 的引用；其他线程仍可沿栈查找并标记待删除消息，不需要访问 Looper 私有堆。[^source-audit-note-3]
 
 `MessageHeap` 是用数组实现的最小堆，主要按 `when` 排序；普通消息执行时间相同时，再用插入序号 `insertSeq` 保持 FIFO。`sendMessageAtFrontOfQueue()` 是例外，源码用递减的负序号让队首消息按 LIFO 顺序排列。只有 Looper 线程会实际调整堆结构，每次向上或向下调整也就无需再取得 Java 锁。
 
@@ -397,11 +397,11 @@ public static Message obtain() {
 
 消息容器之外还要处理唤醒竞争。生产者入队时可能让一条更早的消息成为新队首，需要唤醒正在执行原生轮询的 Looper；Looper 准备休眠时，也可能恰好有另一个线程入队。
 
-DeliQueue 使用原子等待状态（wait state）协调“预计睡到何时”和“期间发生过多少次需要重新判断的事件”，避免遗漏唤醒信号。Looper 已记录唤醒期限时，早于该期限的异步消息会请求唤醒；同步消息还要结合 `mSyncBarrier` 判断自己是否被屏障挡住，被挡住时可以不唤醒。若生产者据此决定不唤醒，成功更新等待状态后又发现屏障已变化，就会重新判断，防止漏掉该唤醒的消息。[已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java，enqueueMessageUnchecked() @ android-17.0.0_r1]
+DeliQueue 使用原子等待状态（wait state）协调“预计睡到何时”和“期间发生过多少次需要重新判断的事件”，避免遗漏唤醒信号。Looper 已记录唤醒期限时，早于该期限的异步消息会请求唤醒；同步消息还要结合 `mSyncBarrier` 判断自己是否被屏障挡住，被挡住时可以不唤醒。若生产者据此决定不唤醒，成功更新等待状态后又发现屏障已变化，就会重新判断，防止漏掉该唤醒的消息。[^source-audit-note-4]
 
 退出阶段的竞争更敏感：其他线程可能正在通过 `mPtr` 调用原生唤醒，而 Looper 正准备销毁原生对象。当前实现使用带退出标志的引用计数，确保仍有线程使用时不会销毁 `mPtr` 指向的对象。`quitSafely()` 仍然只处理已经到期的消息并移除未来消息；销毁原生对象则要等正在使用它的线程离开临界阶段。
 
-该 tag 的 `quit(boolean safe)` 源码注释还指出一处并发时序限制：入队和退出分别读取当前时间，可能出现 `Handler.post()` 返回 `true`，消息却未执行的情况。提交成功不能作为退出前必定完成回调的保证；需要可靠收尾的任务，还应协调停止提交与完成确认。[已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java，quit(boolean safe) @ android-17.0.0_r1]
+该 tag 的 `quit(boolean safe)` 源码注释还指出一处并发时序限制：入队和退出分别读取当前时间，可能出现 `Handler.post()` 返回 `true`，消息却未执行的情况。提交成功不能作为退出前必定完成回调的保证；需要可靠收尾的任务，还应协调停止提交与完成确认。[^source-audit-note-5]
 
 ### 6. “无锁”指哪一段路径
 
@@ -442,7 +442,7 @@ Looper next    ── sweep + 私有 sync/async 最小堆
 
 ### 8. 官方性能数字应该怎样解读
 
-外部技术文章常把 DeliQueue 的收益压缩成“多线程入队速度提升 5000 倍、主线程锁等待减少 15%”这类结论。[来源: https://juejin.cn/post/7682633827692658740] 这些数字可以引用，但必须回到官方博客 `Impact` 一节的适用范围：`5,000×` 是合成高竞争基准里“多线程向繁忙队列插入”的最高值，`15%` 是 Google 内部 beta 测试 Perfetto 轨迹中的应用主线程锁竞争耗时下降。[已验证: https://android-developers.googleblog.com/2026/02/under-hood-android-17s-lock-free.html]
+外部技术文章常把 DeliQueue 的收益压缩成“多线程入队速度提升 5000 倍、主线程锁等待减少 15%”这类结论。[^source-audit-note-1] 这些数字可以引用，但必须回到官方博客 `Impact` 一节的适用范围：`5,000×` 是合成高竞争基准里“多线程向繁忙队列插入”的最高值，`15%` 是 Google 内部 beta 测试 Perfetto 轨迹中的应用主线程锁竞争耗时下降。[^source-audit-note-6]
 
 Android Developers Blog 给出了 DeliQueue 的内部验证结果：
 
@@ -480,7 +480,7 @@ Android Developers Blog 给出了 DeliQueue 的内部验证结果：
 - Robolectric 4.17 或更高版本，并从 `@LooperMode(LEGACY)` 迁移到 `@LooperMode(PAUSED)`。
 - 设备端插桩测试（instrumentation test）使用 `TestLooperManager`，包括 Android 16（API 36）引入的 `peekWhen()`、`poll()` 等能力，不再依赖 MessageQueue 私有字段。
 
-`TestLooperManager` 类从 API 26 起可用，通过 `Instrumentation.acquireLooperManager(Looper)` 获取。持有期间，Looper 不再自动分发消息，只有显式调用 `execute(Message)` 才会执行选定消息；它不适合当作持续运行的只读监控器。测试结束时应在 `finally` 中调用 `release()`，否则 Looper 无法恢复正常循环；通过 `next()` 或 `poll()` 取出的消息，也应在处理完后交给 `recycle(Message)`。其中 `next()` 可能阻塞，API 36 的 `peekWhen()` 与 `poll()` 不阻塞。[已验证: https://developer.android.com/reference/android/os/TestLooperManager，类说明及 next()/peekWhen()/poll()/recycle()/release()]
+`TestLooperManager` 类从 API 26 起可用，通过 `Instrumentation.acquireLooperManager(Looper)` 获取。持有期间，Looper 不再自动分发消息，只有显式调用 `execute(Message)` 才会执行选定消息；它不适合当作持续运行的只读监控器。测试结束时应在 `finally` 中调用 `release()`，否则 Looper 无法恢复正常循环；通过 `next()` 或 `poll()` 取出的消息，也应在处理完后交给 `recycle(Message)`。其中 `next()` 可能阻塞，API 36 的 `peekWhen()` 与 `poll()` 不阻塞。[^source-audit-note-7]
 
 #### 9.3 用兼容性开关做同版本 A/B
 
@@ -707,7 +707,7 @@ PI 解决的是调度这一段，锁设计本身的问题——临界区过大�
 
 ### 5. Binder 等待与 Java 锁等待是两条不同路径
 
-下面的驱动、线程池和事务查询针对跨进程 kernel Binder。Android 17 的 `BpBinder::transact()` 会区分代理类型：kernel Binder 交给 `IPCThreadState`，RPC Binder 交给 `RpcSession`。分析前先确认实际传输路径，驱动等待队列与事务优先级的解释不直接套用到 Binder RPC。[来源: https://juejin.cn/post/7703412433470046246；已验证: frameworks/native/libs/binder/BpBinder.cpp，BpBinder::transact() @ android-17.0.0_r1]
+下面的驱动、线程池和事务查询针对跨进程 kernel Binder。Android 17 的 `BpBinder::transact()` 会区分代理类型：kernel Binder 交给 `IPCThreadState`，RPC Binder 交给 `RpcSession`。分析前先确认实际传输路径，驱动等待队列与事务优先级的解释不直接套用到 Binder RPC。[^source-audit-note-8]
 
 同步 kernel Binder 调用跨越调用端（client）、Binder 驱动和服务端（server）：
 
@@ -766,13 +766,13 @@ Android 17 的 `ProcessState.cpp` 定义：
 
 #### 5.3 `oneway` 的提交、串行与容量边界
 
-跨进程 kernel Binder 的 `oneway` 让调用方不等待业务回复，提交本身仍有成本。Android 17 的 `IPCThreadState::transact()` 在 `TF_ONE_WAY` 分支中也会调用 `waitForResponse(nullptr, nullptr)`；正常提交后，收到 `BR_TRANSACTION_COMPLETE` 就结束提交等待。这个通知不表示服务方法已经执行完，不能据此保证调用方完全不会等待。[来源: https://juejin.cn/post/7703412433470046246；已验证: frameworks/native/libs/binder/IPCThreadState.cpp，transact()/waitForResponse() @ android-17.0.0_r1]
+跨进程 kernel Binder 的 `oneway` 让调用方不等待业务回复，提交本身仍有成本。Android 17 的 `IPCThreadState::transact()` 在 `TF_ONE_WAY` 分支中也会调用 `waitForResponse(nullptr, nullptr)`；正常提交后，收到 `BR_TRANSACTION_COMPLETE` 就结束提交等待。这个通知不表示服务方法已经执行完，不能据此保证调用方完全不会等待。[^source-audit-note-9]
 
-提交成功也不保证最终执行：服务端进程可能在处理前死亡或被冻结，调用方未必会收到这笔业务调用失败的通知。因此，提交完成不能当作业务完成确认。[已验证: https://source.android.com/docs/core/architecture/ipc/binder-threading，Identify a synchronous or asynchronous function 的 Note]
+提交成功也不保证最终执行：服务端进程可能在处理前死亡或被冻结，调用方未必会收到这笔业务调用失败的通知。因此，提交完成不能当作业务完成确认。[^source-audit-note-10]
 
-服务端还有单节点串行约束。在 ACK `android17-6.18-2026-06_r6` 中，`binder_proc_transaction()` 发现目标节点已有异步事务时，会把后续事务放入该节点的 `async_todo`；当前事务的 buffer 释放时，`binder_free_buf()` 才推进下一项。因此，增加线程池线程不能让同一个 Binder node 的多个 `oneway` 事务同时执行；不同 node 仍可由不同线程并行处理。[已验证: kernel/common/drivers/android/binder.c，binder_proc_transaction()/binder_free_buf() @ android17-6.18-2026-06_r6；https://source.android.com/docs/core/architecture/ipc/binder-threading，Serialization of asynchronous transactions]
+服务端还有单节点串行约束。在 ACK `android17-6.18-2026-06_r6` 中，`binder_proc_transaction()` 发现目标节点已有异步事务时，会把后续事务放入该节点的 `async_todo`；当前事务的 buffer 释放时，`binder_free_buf()` 才推进下一项。因此，增加线程池线程不能让同一个 Binder node 的多个 `oneway` 事务同时执行；不同 node 仍可由不同线程并行处理。[^source-audit-note-11]
 
-异步队列也受目标进程的 buffer 额度约束：`binder_alloc_new_buf_locked()` 会检查 `free_async_space`，不足时用 `ERR_PTR(-ENOSPC)` 返回分配错误，不会无限接收事务。排查高频回调积压时，既要看服务端处理速度，也要检查提交失败与异步资源压力。合并事件或仅保留最新值前，要先确认业务允许丢弃中间状态。[来源: https://juejin.cn/post/7703412433470046246；已验证: kernel/common/drivers/android/binder_alloc.c，binder_alloc_new_buf_locked() @ android17-6.18-2026-06_r6]
+异步队列也受目标进程的 buffer 额度约束：`binder_alloc_new_buf_locked()` 会检查 `free_async_space`，不足时用 `ERR_PTR(-ENOSPC)` 返回分配错误，不会无限接收事务。排查高频回调积压时，既要看服务端处理速度，也要检查提交失败与异步资源压力。合并事件或仅保留最新值前，要先确认业务允许丢弃中间状态。[^source-audit-note-12]
 
 ### 6. `system_server` 的 Binder 等待与服务端锁
 
@@ -828,17 +828,17 @@ void updateOomAdjLocked(@OomAdjReason int oomAdjReason) {
 
 #### 6.2 ATMS/WMS 的窗口锁与跨域通知
 
-ATMS 与 WMS 共享窗口管理全局锁。服务职责分开后，跨服务调用仍需检查持锁范围，尤其是 AMS 与窗口侧相互调用的路径。[来源: 2026-11-06-77034107-AMS 为什么越拆越强？从 Androi.md]
+ATMS 与 WMS 共享窗口管理全局锁。服务职责分开后，跨服务调用仍需检查持锁范围，尤其是 AMS 与窗口侧相互调用的路径。[^source-audit-note-13]
 
 在 `android-17.0.0_r1` 中，几处同名字段对应的锁对象如下：
 
-- `ActivityTaskManagerService.mGlobalLock` 初始化为 `new WindowManagerGlobalLock()`；它的 `getGlobalLock()` 返回这个对象。[已验证: frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java @ android-17.0.0_r1]
-- `WindowManagerService` 在构造时执行 `mGlobalLock = atm.getGlobalLock()`，因此它与 ATMS 持有同一把窗口管理锁。[已验证: frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java @ android-17.0.0_r1]
-- AMS 的 `mGlobalLock` 是上一节的 `ActivityManagerService.this`，与上述窗口管理锁是不同对象。[已验证: frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java @ android-17.0.0_r1]
+- `ActivityTaskManagerService.mGlobalLock` 初始化为 `new WindowManagerGlobalLock()`；它的 `getGlobalLock()` 返回这个对象。[^source-audit-note-14]
+- `WindowManagerService` 在构造时执行 `mGlobalLock = atm.getGlobalLock()`，因此它与 ATMS 持有同一把窗口管理锁。[^source-audit-note-15]
+- AMS 的 `mGlobalLock` 是上一节的 `ActivityManagerService.this`，与上述窗口管理锁是不同对象。[^source-audit-note-16]
 
-跨域通知里也能看到这条边界。`WindowProcessController.appDied(String reason)` 把 `WindowProcessListener::appDied` 包装成消息，通过 `mAtm.mH.sendMessage()` 投递；源码注释说明，这样安排是为了在调用 AM 时不持有 WM 锁。这里只说明这条进程死亡通知路径，其他跨域调用仍需逐一检查。[已验证: frameworks/base/services/core/java/com/android/server/wm/WindowProcessController.java，appDied(String reason) @ android-17.0.0_r1]
+跨域通知里也能看到这条边界。`WindowProcessController.appDied(String reason)` 把 `WindowProcessListener::appDied` 包装成消息，通过 `mAtm.mH.sendMessage()` 投递；源码注释说明，这样安排是为了在调用 AM 时不持有 WM 锁。这里只说明这条进程死亡通知路径，其他跨域调用仍需逐一检查。[^source-audit-note-17]
 
-排查慢事务时，先沿 Binder 事务找到服务端线程，再把第 8 节锁竞争查询中的 `lock_name`、等待者方法和持锁者方法对回源码的同步对象。AMS 与窗口侧的字段都叫 `mGlobalLock`，不能据此把两把锁合并；等待者和持锁者分别位于 ATMS、WMS，也不能据此拆成两条无关等待链。确认锁对象后，再检查持锁者的调度状态和嵌套调用范围。[已验证: 上述 AMS/ATMS/WMS 锁初始化位置 @ android-17.0.0_r1；本文第 8 节 Perfetto 查询]
+排查慢事务时，先沿 Binder 事务找到服务端线程，再把第 8 节锁竞争查询中的 `lock_name`、等待者方法和持锁者方法对回源码的同步对象。AMS 与窗口侧的字段都叫 `mGlobalLock`，不能据此把两把锁合并；等待者和持锁者分别位于 ATMS、WMS，也不能据此拆成两条无关等待链。确认锁对象后，再检查持锁者的调度状态和嵌套调用范围。[^source-audit-note-18]
 
 ### 7. 把 DeliQueue 放回等待链中
 
@@ -878,9 +878,9 @@ LIMIT 30;
 
 查询保留了竞争区段的 `contention_id`、起点 `ts` 和双方 `utid`，便于按时间区间回查线程状态。`android_monitor_contention_chain` 还能表达多段锁竞争之间的依赖关系；检查持锁者时，可用 `blocking_utid` 关联 `thread_state.utid`，查看与竞争区间相交的状态。但这只是该线程在等待窗口内的状态，不能认定它始终持有同一把锁。`wait_ms` 是等待者经历的墙上时间，不是持锁者完整的临界区时长；多名等待者的重叠区间也不能直接相加当作持锁时间。
 
-要分析持锁期间的状态，可继续查 `android_monitor_contention_chain_thread_state` 或聚合视图 `android_monitor_contention_chain_thread_state_by_txn`。标准库只对首个等待者构造这组状态数据，并按同组等待者最早取得锁的时刻截短区间，避免把锁已交给其他等待者之后的时间继续归给原持锁者；因此它们不覆盖每一条竞争记录。[已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql，_first_blocked_contention 与线程状态表说明 @ android-17.0.0_r1]
+要分析持锁期间的状态，可继续查 `android_monitor_contention_chain_thread_state` 或聚合视图 `android_monitor_contention_chain_thread_state_by_txn`。标准库只对首个等待者构造这组状态数据，并按同组等待者最早取得锁的时刻截短区间，避免把锁已交给其他等待者之后的时间继续归给原持锁者；因此它们不覆盖每一条竞争记录。[^source-audit-note-19]
 
-`lock_name` 来自竞争区段前后的 `*_lock_acquire` / `*_lock_held` 埋点，只有名称匹配时才被提取，否则为 `NULL`。它是埋点标签，不能当作 Java 对象的唯一标识；对回 AMS 或窗口锁时，还要核对双方方法与源码中的锁对象。[已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql，android_monitor_contention 定义及 contention_lock_names @ android-17.0.0_r1]
+`lock_name` 来自竞争区段前后的 `*_lock_acquire` / `*_lock_held` 埋点，只有名称匹配时才被提取，否则为 `NULL`。它是埋点标签，不能当作 Java 对象的唯一标识；对回 AMS 或窗口锁时，还要核对双方方法与源码中的锁对象。[^source-audit-note-20]
 
 这张表还有两个限制：
 
@@ -889,7 +889,7 @@ LIMIT 30;
 
 #### 8.2 原生 futex 等待
 
-普通 futex 等待通常表现为可中断睡眠 `S`，不能靠 `thread_state.blocked_function` 的函数名筛选来完整识别。Android 17 的 Perfetto 从 `sched_blocked_reason` 事件解析这个字段；在 ACK `android17-6.18-2026-06_r6` 中，调度器只对含 `TASK_UNINTERRUPTIBLE` 的睡眠状态发出该事件，普通 futex 等待却设置为 `TASK_INTERRUPTIBLE | TASK_FREEZABLE`。因此，筛选 `blocked_function GLOB '*futex*'` 会漏掉这类等待，即使已经启用 `sched_blocked_reason` 采集也一样。[已验证: kernel/common/kernel/sched/core.c，try_to_wake_up()；kernel/common/kernel/futex/waitwake.c，futex_wait_setup() @ android17-6.18-2026-06_r6；external/perfetto/src/trace_processor/importers/ftrace/ftrace_parser.cc，ParseSchedBlockedReason() @ android-17.0.0_r1]
+普通 futex 等待通常表现为可中断睡眠 `S`，不能靠 `thread_state.blocked_function` 的函数名筛选来完整识别。Android 17 的 Perfetto 从 `sched_blocked_reason` 事件解析这个字段；在 ACK `android17-6.18-2026-06_r6` 中，调度器只对含 `TASK_UNINTERRUPTIBLE` 的睡眠状态发出该事件，普通 futex 等待却设置为 `TASK_INTERRUPTIBLE | TASK_FREEZABLE`。因此，筛选 `blocked_function GLOB '*futex*'` 会漏掉这类等待，即使已经启用 `sched_blocked_reason` 采集也一样。[^source-audit-note-21]
 
 没有锁埋点时，先从 `thread_state` 的 `S` 状态保留候选。下面的查询列出最长的 50 个已结束睡眠区间；用于具体问题时，应在 `WHERE` 中再限定进程、线程和问题发生的时间窗口：
 
@@ -941,15 +941,15 @@ ORDER BY client_dur DESC
 LIMIT 30;
 ```
 
-`interface` 与 `method_name` 依赖相应的 AIDL 埋点，可能为 `NULL`，不影响已经关联起来的事务与回复。此时用 `binder_txn_id`、双方时间点和 `utid` 回到原始区段与线程状态，不要把“没有方法名”当成“没有事务”。[已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql，android_binder_txns 字段定义 @ android-17.0.0_r1]
+`interface` 与 `method_name` 依赖相应的 AIDL 埋点，可能为 `NULL`，不影响已经关联起来的事务与回复。此时用 `binder_txn_id`、双方时间点和 `utid` 回到原始区段与线程状态，不要把“没有方法名”当成“没有事务”。[^source-audit-note-22]
 
 找到慢事务后，可以再按 `binder_txn_id` 查询 `android_sync_binder_thread_state_by_txn` 或 `android_sync_binder_blocked_functions_by_txn`，分解调用端与服务端的线程状态。若服务端处理区间叠加 Java 监视器锁竞争，就继续查询 `android_monitor_contention` 给出的持锁者。
 
 “调用端时间长、服务端时间短”可能意味着事务排队、线程调度或回复返回延迟；“服务端时间长”也不等同于一直执行 CPU 计算，服务端可能大部分时间都在等待锁、I/O 或嵌套 Binder 调用。
 
-上述查询的 `WHERE is_sync` 只覆盖同步事务。排查 `oneway` 时，把筛选改为 `WHERE NOT is_sync`；若要找发送到接收间隔较长的候选，再把排序改为 `ORDER BY server_ts - client_ts DESC`，沿事务 flow 核对两端。这个间隔包含事务送达与调度等开销，不能直接当作纯排队时间或调用方阻塞时间。[已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql，_binder_async_txn_raw/_binder_async_txn/android_binder_txns @ android-17.0.0_r1]
+上述查询的 `WHERE is_sync` 只覆盖同步事务。排查 `oneway` 时，把筛选改为 `WHERE NOT is_sync`；若要找发送到接收间隔较长的候选，再把排序改为 `ORDER BY server_ts - client_ts DESC`，沿事务 flow 核对两端。这个间隔包含事务送达与调度等开销，不能直接当作纯排队时间或调用方阻塞时间。[^source-audit-note-23]
 
-异步行中的 `client_dur` 与 `server_dur` 分别来自 `binder transaction async` 和 `binder async rcv` 区段，不能沿用同步事务的耗时解释。服务方法执行范围要结合 `aidl_ts`、`aidl_dur` 或业务埋点确认；方法埋点可能缺失，接收标记的时长也不能替代业务处理时长。[已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql，_async_binder_reply/_binder_async_txn 与 aidl_ts/aidl_dur 字段 @ android-17.0.0_r1]
+异步行中的 `client_dur` 与 `server_dur` 分别来自 `binder transaction async` 和 `binder async rcv` 区段，不能沿用同步事务的耗时解释。服务方法执行范围要结合 `aidl_ts`、`aidl_dur` 或业务埋点确认；方法埋点可能缺失，接收标记的时长也不能替代业务处理时长。[^source-audit-note-24]
 
 ### 9. 三个常见现场怎样推理
 
@@ -989,7 +989,7 @@ LIMIT 30;
 - 可以先在锁内复制输入、锁外计算、再在锁内提交结果的长计算；
 - 不需要共享状态保护的回调。
 
-官方 Binder 线程指南建议 `oneway` 调用同样避免持锁，防止接口改为同步后引入等待和死锁。同步嵌套事务还可能沿调用链回到原线程；即使进程只有一个 Binder 工作线程，也要防止重入调用修改正在遍历的共享状态。[已验证: https://source.android.com/docs/core/architecture/ipc/binder-threading，Asynchronous calls and deadlocks / Single binder thread and deadlocks]
+官方 Binder 线程指南建议 `oneway` 调用同样避免持锁，防止接口改为同步后引入等待和死锁。同步嵌套事务还可能沿调用链回到原线程；即使进程只有一个 Binder 工作线程，也要防止重入调用修改正在遍历的共享状态。[^source-audit-note-25]
 
 把代码移出锁前，要重新确认临界区保护的不变量，也就是共享状态始终必须满足的约束。盲目缩小范围可能引入竞态（check-then-act race）：在“先检查”和“后操作”之间，共享状态已被其他线程改变。性能改善要以正确性为前提。
 
@@ -1037,7 +1037,7 @@ LIMIT 30;
 
 ### 结论
 
-锁竞争分析要还原完整的等待链。Java Monitor 用 `android_monitor_contention` 查找等待者与持锁者；原生互斥锁要从 futex 候选回到原生调用栈和初始化代码。同步 Binder 用事务与回复连起调用端和服务端，`oneway` 则核对发送、接收与服务端业务区段。[已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql @ android-17.0.0_r1] MessageQueue 还要区分正常的原生轮询与旧版监视器锁竞争。
+锁竞争分析要还原完整的等待链。Java Monitor 用 `android_monitor_contention` 查找等待者与持锁者；原生互斥锁要从 futex 候选回到原生调用栈和初始化代码。同步 Binder 用事务与回复连起调用端和服务端，`oneway` 则核对发送、接收与服务端业务区段。[^source-audit-note-26] MessageQueue 还要区分正常的原生轮询与旧版监视器锁竞争。
 
 我们找到持锁者后还要继续判断：它正在 CPU 上运行，还是处于 Runnable 状态却没有被调度？它是否阻塞在另一把锁、I/O 或 Binder 上？找到整条等待链中推不动的节点，缩短临界区、拆锁、调整线程模型、启用 PI 或采用无锁结构才有明确目标。
 
@@ -1091,3 +1091,30 @@ LIMIT 30;
 - [Perfetto：`android.monitor_contention` stdlib](https://perfetto.dev/docs/analysis/stdlib-docs#androidmonitor_contention)
 - [Perfetto：`android.binder` stdlib](https://perfetto.dev/docs/analysis/stdlib-docs#androidbinder)
 - [Android Developers Blog：Android 17 lock-free MessageQueue](https://android-developers.googleblog.com/2026/02/under-hood-android-17s-lock-free.html)
+
+[^source-audit-note-1]: 来源: <https://juejin.cn/post/7682633827692658740>
+[^source-audit-note-2]: 已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java @ android-17.0.0_r1
+[^source-audit-note-3]: 已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/README.md，Sweeping Messages into the Heap；MessageStack.heapSweep()/removeFromStack() @ android-17.0.0_r1
+[^source-audit-note-4]: 已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java，enqueueMessageUnchecked() @ android-17.0.0_r1
+[^source-audit-note-5]: 已验证: frameworks/base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java，quit(boolean safe) @ android-17.0.0_r1
+[^source-audit-note-6]: 已验证: <https://android-developers.googleblog.com/2026/02/under-hood-android-17s-lock-free.html>
+[^source-audit-note-7]: 已验证: <https://developer.android.com/reference/android/os/TestLooperManager>，类说明及 next()/peekWhen()/poll()/recycle()/release()
+[^source-audit-note-8]: 来源: <https://juejin.cn/post/7703412433470046246>；已验证: frameworks/native/libs/binder/BpBinder.cpp，BpBinder::transact() @ android-17.0.0_r1
+[^source-audit-note-9]: 来源: <https://juejin.cn/post/7703412433470046246>；已验证: frameworks/native/libs/binder/IPCThreadState.cpp，transact()/waitForResponse() @ android-17.0.0_r1
+[^source-audit-note-10]: 已验证: <https://source.android.com/docs/core/architecture/ipc/binder-threading>，Identify a synchronous or asynchronous function 的 Note
+[^source-audit-note-11]: 已验证: kernel/common/drivers/android/binder.c，binder_proc_transaction()/binder_free_buf() @ android17-6.18-2026-06_r6；<https://source.android.com/docs/core/architecture/ipc/binder-threading>，Serialization of asynchronous transactions
+[^source-audit-note-12]: 来源: <https://juejin.cn/post/7703412433470046246>；已验证: kernel/common/drivers/android/binder_alloc.c，binder_alloc_new_buf_locked() @ android17-6.18-2026-06_r6
+[^source-audit-note-13]: 来源: 2026-11-06-77034107-AMS 为什么越拆越强？从 Androi.md
+[^source-audit-note-14]: 已验证: frameworks/base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java @ android-17.0.0_r1
+[^source-audit-note-15]: 已验证: frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java @ android-17.0.0_r1
+[^source-audit-note-16]: 已验证: frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java @ android-17.0.0_r1
+[^source-audit-note-17]: 已验证: frameworks/base/services/core/java/com/android/server/wm/WindowProcessController.java，appDied(String reason) @ android-17.0.0_r1
+[^source-audit-note-18]: 已验证: 上述 AMS/ATMS/WMS 锁初始化位置 @ android-17.0.0_r1；本文第 8 节 Perfetto 查询
+[^source-audit-note-19]: 已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql，_first_blocked_contention 与线程状态表说明 @ android-17.0.0_r1
+[^source-audit-note-20]: 已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql，android_monitor_contention 定义及 contention_lock_names @ android-17.0.0_r1
+[^source-audit-note-21]: 已验证: kernel/common/kernel/sched/core.c，try_to_wake_up()；kernel/common/kernel/futex/waitwake.c，futex_wait_setup() @ android17-6.18-2026-06_r6；external/perfetto/src/trace_processor/importers/ftrace/ftrace_parser.cc，ParseSchedBlockedReason() @ android-17.0.0_r1
+[^source-audit-note-22]: 已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql，android_binder_txns 字段定义 @ android-17.0.0_r1
+[^source-audit-note-23]: 已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql，_binder_async_txn_raw/_binder_async_txn/android_binder_txns @ android-17.0.0_r1
+[^source-audit-note-24]: 已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql，_async_binder_reply/_binder_async_txn 与 aidl_ts/aidl_dur 字段 @ android-17.0.0_r1
+[^source-audit-note-25]: 已验证: <https://source.android.com/docs/core/architecture/ipc/binder-threading>，Asynchronous calls and deadlocks / Single binder thread and deadlocks
+[^source-audit-note-26]: 已验证: external/perfetto/src/trace_processor/perfetto_sql/stdlib/android/binder.sql @ android-17.0.0_r1

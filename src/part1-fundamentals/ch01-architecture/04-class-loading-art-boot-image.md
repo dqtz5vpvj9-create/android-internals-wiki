@@ -366,17 +366,17 @@ LoadedApk.makeApplicationInner()
 
 #### 插件加载与进程隔离
 
-把插件 APK 追加到宿主的 `DexClassLoader`、`PathClassLoader` 或其他 `BaseDexClassLoader` 链路，改变的是宿主进程内的 DEX 查找路径和类定义归属；插件的静态初始化、View/Compose 运行时代码仍在宿主进程里执行，进程级崩溃也会影响宿主。外部材料中的车载多 App 同屏案例把这种 ClassLoader 方案当作第一版：插件 APK 被加载进宿主进程，插件 View 直接挂在宿主视图树，该集成方式要求插件与宿主的 Compose 版本一致。这个要求适用于材料中的共享运行时方案；独立加载器可以隔离部分依赖版本，但共享接口和跨加载器传递的对象仍须满足类型身份与兼容性约束。[来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md；源码: libcore/dalvik/src/main/java/dalvik/system/DelegateLastClassLoader.java 与 art/runtime/class_linker.cc 的 ValidateSuperClassDescriptors() @ android-17.0.0_r1]
+把插件 APK 追加到宿主的 `DexClassLoader`、`PathClassLoader` 或其他 `BaseDexClassLoader` 链路，改变的是宿主进程内的 DEX 查找路径和类定义归属；插件的静态初始化、View/Compose 运行时代码仍在宿主进程里执行，进程级崩溃也会影响宿主。外部材料中的车载多 App 同屏案例把这种 ClassLoader 方案当作第一版：插件 APK 被加载进宿主进程，插件 View 直接挂在宿主视图树，该集成方式要求插件与宿主的 Compose 版本一致。这个要求适用于材料中的共享运行时方案；独立加载器可以隔离部分依赖版本，但共享接口和跨加载器传递的对象仍须满足类型身份与兼容性约束。[^source-audit-note-1]
 
-类加载器的依赖隔离不提供进程级故障隔离。需要“插件独立进程渲染、宿主只展示结果”的场景，应使用 IPC 与跨进程 UI 嵌入：材料中的 `SurfaceControlViewHost` 方案由宿主通过 AIDL 传出 `hostToken`，Provider 在自己的进程中创建内容并把 `SurfacePackage` 回传，最终由 SurfaceFlinger 合成到同一屏。分析时要分别测量宿主与 Provider 的类加载、初始化和通信成本。[来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md]
+类加载器的依赖隔离不提供进程级故障隔离。需要“插件独立进程渲染、宿主只展示结果”的场景，应使用 IPC 与跨进程 UI 嵌入：材料中的 `SurfaceControlViewHost` 方案由宿主通过 AIDL 传出 `hostToken`，Provider 在自己的进程中创建内容并把 `SurfacePackage` 回传，最终由 SurfaceFlinger 合成到同一屏。分析时要分别测量宿主与 Provider 的类加载、初始化和通信成本。[^source-audit-note-2]
 
 展示型卡片也可以用 RemoteCompose 传递 UI 描述：Provider 把 UI 描述序列化成字节文档，通过 AIDL 交给宿主；宿主用自己的播放器解释并绘制这份文档，插件 View 不进宿主视图树，也不共享 Provider 的实时 `Surface`，插件代码不在宿主进程执行。Provider 交付文档后无需持续持有渲染面；已有文档可以继续由宿主绘制，新的远端业务处理和数据更新仍依赖 Provider 可用。
 
 交互能力取决于文档指令和播放器。材料示例通过预声明动作、回传 `actionId`、重新生成文档处理业务更新；`1.0.0-alpha15` 的 `remote-core` 已有 `ScrollModifierOperation` 和 `TouchExpression`，同版本 `remote-player-view` 的 `RemoteComposeView.onTouchEvent()` 会把移动事件交给文档的 `touchDrag()`，支持在宿主侧处理文档内的滚动和触摸状态。连续交互是否可用，应核对创建端生成的操作、播放器支持范围和两端版本，不能仅凭按钮往返示例判断。[源码: remote-core 与 remote-player-view 的 1.0.0-alpha15 Google Maven sources.jar]
 
-该材料使用的是应用层 `androidx.compose.remote:*` alpha 实现；上述内部类在 `1.0.0-alpha15` 中仍有 `@RestrictTo(LIBRARY_GROUP)` 限制。平台侧 `com.android.internal.widget.remotecompose.*` 属于隐藏实现，应用层库与平台隐藏类均不能当作 Android 17 稳定 SDK 契约。[来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；官方版本说明: https://developer.android.com/jetpack/androidx/releases/compose-remote]
+该材料使用的是应用层 `androidx.compose.remote:*` alpha 实现；上述内部类在 `1.0.0-alpha15` 中仍有 `@RestrictTo(LIBRARY_GROUP)` 限制。平台侧 `com.android.internal.widget.remotecompose.*` 属于隐藏实现，应用层库与平台隐藏类均不能当作 Android 17 稳定 SDK 契约。[^source-audit-note-3]
 
-排查这类方案时，应先确认代码实际运行在哪个进程：同进程插件的类加载、`<clinit>` 和崩溃栈会出现在宿主进程，SIGQUIT/Perfetto 中也应在宿主进程看到对应加载器、DEX 路径或类加载 slice；SCVH 这类跨进程嵌入则要同时观察宿主进程、Provider 进程、Binder 连接和 surface 可见性，Provider 死亡可能导致嵌入区域黑屏或停更；RemoteCompose 这类字节文档路径，优先核对宿主播放器、Binder 文档传输和 Provider 重新生成文档的时机，若宿主出现插件 DEX 加载或插件 `<clinit>` 热点，说明架构中混入了同进程加载，需将其与 RemoteCompose 文档渲染本身的开销区分排查。[来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md；来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；已验证: system/core/debuggerd/debuggerd.cpp 与 art/runtime/class_linker.cc @ android-17.0.0_r1]
+排查这类方案时，应先确认代码实际运行在哪个进程：同进程插件的类加载、`<clinit>` 和崩溃栈会出现在宿主进程，SIGQUIT/Perfetto 中也应在宿主进程看到对应加载器、DEX 路径或类加载 slice；SCVH 这类跨进程嵌入则要同时观察宿主进程、Provider 进程、Binder 连接和 surface 可见性，Provider 死亡可能导致嵌入区域黑屏或停更；RemoteCompose 这类字节文档路径，优先核对宿主播放器、Binder 文档传输和 Provider 重新生成文档的时机，若宿主出现插件 DEX 加载或插件 `<clinit>` 热点，说明架构中混入了同进程加载，需将其与 RemoteCompose 文档渲染本身的开销区分排查。[^source-audit-note-4]
 
 ### 如何在 API 37 上定位成本
 
@@ -795,3 +795,8 @@ OEM 可以调整 Boot Class Path、Boot Image Profile、`preloaded-classes` 和 
 Boot Image 是一组可校验、可重定位、可扩展的 ART 运行时产物。`.art` 保存选入镜像的对象和元数据，`.oat` 提供编译代码，`.vdex` 保存 DEX 与验证相关数据；运行时可能从系统分区加载，也可能使用 `odrefresh` 在 ART APEX 数据目录生成的版本。
 
 Boot Image Profile、Boot Image Extension、Zygote `preloaded-classes`、应用 Baseline Profile 和应用 Startup Profile 分属不同环节。性能分析要把文件来源、映射类型、私有脏页、Zygote 预加载和 ART 产物更新原因分别确认下来，改动配置才算有据可依。
+
+[^source-audit-note-1]: 来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md；源码: libcore/dalvik/src/main/java/dalvik/system/DelegateLastClassLoader.java 与 art/runtime/class_linker.cc 的 ValidateSuperClassDescriptors() @ android-17.0.0_r1
+[^source-audit-note-2]: 来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md
+[^source-audit-note-3]: 来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；官方版本说明: <https://developer.android.com/jetpack/androidx/releases/compose-remote>
+[^source-audit-note-4]: 来源: 技术文章/source/juejin-android/2026-09-12-76841401-车载多 App 同屏渲染二 SurfaceControlView.md；来源: 技术文章/source/juejin-android/2026-09-15-76851907-车载多 App 同屏渲染(三) RemoteCompose 序列.md；已验证: system/core/debuggerd/debuggerd.cpp 与 art/runtime/class_linker.cc @ android-17.0.0_r1

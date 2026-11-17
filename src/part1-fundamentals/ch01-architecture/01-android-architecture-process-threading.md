@@ -285,26 +285,26 @@ flowchart TB
 
 系统开机时，内核启动用户空间的第一个进程 `init`，`init` 按第一阶段（first stage）、SELinux 访问控制初始化、第二阶段（second stage）的顺序执行。第二阶段的 `init` 解析 `.rc` 启动脚本，拉起 SurfaceFlinger 等核心原生服务以及 Zygote 进程（预加载 Android 运行环境并派生后续 Java 进程的模板进程）。
 
-`init.zygote64.rc` 将 `zygote` 服务定义为 `/system/bin/app_process64 ... --zygote --start-system-server --socket-name=zygote`，`init.rc` 中的 `zygote-start` 动作再执行 `start zygote`。[来源: https://juejin.cn/post/7679264879620374568；已验证: system/core/rootdir/init.zygote64.rc 与 init.rc @ android-17.0.0_r1] 随后进程进入 `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` 的 `main()`，按以下四步推进：
+`init.zygote64.rc` 将 `zygote` 服务定义为 `/system/bin/app_process64 ... --zygote --start-system-server --socket-name=zygote`，`init.rc` 中的 `zygote-start` 动作再执行 `start zygote`。[^source-audit-note-1] 随后进程进入 `frameworks/base/core/java/com/android/internal/os/ZygoteInit.java` 的 `main()`，按以下四步推进：
 
 1. 未启用延迟预加载（lazy preload）时，调用 `preload()` 预加载常用类与共享资源。
 2. 创建 `ZygoteServer` 准备接收请求。
 3. 主 Zygote 调用 `forkSystemServer()` 派生 `system_server` 进程。
 4. 父进程进入 `zygoteServer.runSelectLoop()`，开始监听来自后续应用启动请求的 socket。
 
-这里需要分清两层创建关系：`init` 直接拉起并管理 Zygote，而 `system_server` 则由主 Zygote 在进入 `runSelectLoop()` 之前通过 `forkSystemServer()` 直接派生，并不走后续普通应用冷启动时先经 `system_server` 再写入 Zygote socket 的请求路径。[已验证: frameworks/base/core/java/com/android/internal/os/ZygoteInit.java @ android-17.0.0_r1] 无论派生 `system_server` 还是后续派生普通应用，Zygote 的 `fork()` 都借助 Linux 写时复制（Copy-on-Write）机制让父子进程共享未修改的预加载内存页面；直到后续写入、ART 运行或各自初始化发生，子进程才会逐步产生私有内存页。
+这里需要分清两层创建关系：`init` 直接拉起并管理 Zygote，而 `system_server` 则由主 Zygote 在进入 `runSelectLoop()` 之前通过 `forkSystemServer()` 直接派生，并不走后续普通应用冷启动时先经 `system_server` 再写入 Zygote socket 的请求路径。[^source-audit-note-2] 无论派生 `system_server` 还是后续派生普通应用，Zygote 的 `fork()` 都借助 Linux 写时复制（Copy-on-Write）机制让父子进程共享未修改的预加载内存页面；直到后续写入、ART 运行或各自初始化发生，子进程才会逐步产生私有内存页。
 
-在进入 `SystemServer.main()` 之前，`system_server` 子进程会先完成身份专化（specialize）。`nativeForkSystemServer()` 在 `pid == 0` 分支调用 `SpecializeCommon(..., is_system_server=true, ...)`，依次配置控制组与 task profile、补充组和资源限制、seccomp 过滤规则、`setresgid()`/`setresuid()`、capabilities、SELinux 上下文以及 post-fork hooks；随后 `handleSystemServerProcess()` 经由 `ZygoteInit.zygoteInit()` 和 `RuntimeInit.applicationInit()` 反射定位到 `com.android.server.SystemServer.main()`。[来源: https://juejin.cn/post/7679264879620374568；已验证: frameworks/base/core/jni/com_android_internal_os_Zygote.cpp、ZygoteInit.java 与 RuntimeInit.java @ android-17.0.0_r1]
+在进入 `SystemServer.main()` 之前，`system_server` 子进程会先完成身份专化（specialize）。`nativeForkSystemServer()` 在 `pid == 0` 分支调用 `SpecializeCommon(..., is_system_server=true, ...)`，依次配置控制组与 task profile、补充组和资源限制、seccomp 过滤规则、`setresgid()`/`setresuid()`、capabilities、SELinux 上下文以及 post-fork hooks；随后 `handleSystemServerProcess()` 经由 `ZygoteInit.zygoteInit()` 和 `RuntimeInit.applicationInit()` 反射定位到 `com.android.server.SystemServer.main()`。[^source-audit-note-3]
 
-`zygoteInit()` 还会先调用 `nativeZygoteInit()`，触发 `app_process/app_main.cpp` 中 `AppRuntime::onZygoteInit()` 执行 `ProcessState::self()->startThreadPool()`。因此，`system_server` 接收 Binder 事务的线程池在进入 `SystemServer.main()` 之前就已经启动。[已验证: frameworks/base/cmds/app_process/app_main.cpp @ android-17.0.0_r1]
+`zygoteInit()` 还会先调用 `nativeZygoteInit()`，触发 `app_process/app_main.cpp` 中 `AppRuntime::onZygoteInit()` 执行 `ProcessState::self()->startThreadPool()`。因此，`system_server` 接收 Binder 事务的线程池在进入 `SystemServer.main()` 之前就已经启动。[^source-audit-note-4]
 
 #### `SystemServer.main()` 之后的装配过程
 
-到达 `SystemServer.main()` 时，`system_server` 已经具备专化后的进程身份、ART 运行时、Framework JNI、预加载页面以及 Binder 线程池；而 System Context、主 `Looper` 循环、`SystemServiceManager` 以及 AMS、PMS、WMS 等系统服务对象，则由 `SystemServer.run()` 组织建立。[来源: https://juejin.cn/post/7681897078311108623；已验证: frameworks/base/core/jni/com_android_internal_os_Zygote.cpp、frameworks/base/cmds/app_process/app_main.cpp 与 frameworks/base/services/java/com/android/server/SystemServer.java @ android-17.0.0_r1]
+到达 `SystemServer.main()` 时，`system_server` 已经具备专化后的进程身份、ART 运行时、Framework JNI、预加载页面以及 Binder 线程池；而 System Context、主 `Looper` 循环、`SystemServiceManager` 以及 AMS、PMS、WMS 等系统服务对象，则由 `SystemServer.run()` 组织建立。[^source-audit-note-5]
 
-这里需要分清几个相近的称呼：`system_server` 是操作系统进程名，`SystemServer` 是 `main()` 中 `new SystemServer().run()` 启动的 Java 装配总控，AMS 等是运行其中的系统服务实例，而它们向全局 `ServiceManager` 注册发布的是对外的 Binder 服务端对象。[来源: https://juejin.cn/post/7681897078311108623；已验证: frameworks/base/services/java/com/android/server/SystemServer.java @ android-17.0.0_r1]
+这里需要分清几个相近的称呼：`system_server` 是操作系统进程名，`SystemServer` 是 `main()` 中 `new SystemServer().run()` 启动的 Java 装配总控，AMS 等是运行其中的系统服务实例，而它们向全局 `ServiceManager` 注册发布的是对外的 Binder 服务端对象。[^source-audit-note-6]
 
-`SystemServer.run()` 的装配流程分为四段：首先设置系统进程规则，例如 Binder 阻塞告警、SQLite/Parcel 策略、Binder 后台调度与最大线程数；接着准备主线程 `Looper` 与 `SystemServerInitThreadPool`；随后加载 `android_servers` 原生库、建立 System Context 与 System UI Context，并执行每进程 Mainline 模块初始化；最后创建 `SystemServiceManager`，依次启动以下四组服务（相比早期只列前三组的旧版本，Android 17 额外包含第四个 `startApexServices()` 阶段，用于拉起 APEX 可更新系统模块中的服务）：[来源: https://juejin.cn/post/7681897078311108623；已验证: frameworks/base/services/java/com/android/server/SystemServer.java @ android-17.0.0_r1]
+`SystemServer.run()` 的装配流程分为四段：首先设置系统进程规则，例如 Binder 阻塞告警、SQLite/Parcel 策略、Binder 后台调度与最大线程数；接着准备主线程 `Looper` 与 `SystemServerInitThreadPool`；随后加载 `android_servers` 原生库、建立 System Context 与 System UI Context，并执行每进程 Mainline 模块初始化；最后创建 `SystemServiceManager`，依次启动以下四组服务（相比早期只列前三组的旧版本，Android 17 额外包含第四个 `startApexServices()` 阶段，用于拉起 APEX 可更新系统模块中的服务）：[^source-audit-note-6]
 
 ```java
 // AOSP android-17.0.0_r1
@@ -315,11 +315,11 @@ startOtherServices(t);
 startApexServices(t);
 ```
 
-`SystemServiceManager` 是 `system_server` 内部的 Java 管理对象及 `LocalServices` 注册载体。调用它的 `startService(Class<T>)` 时，它会传入 `Context` 构造 `SystemService`、将其登记到 `mServices`，再调用服务的 `onStart()`；它负责已纳管 `SystemService` 的启动及后续 Boot Phase、User 生命周期分发，而各服务的创建顺序仍由 `SystemServer.run()` 的调用序列决定，部分遗留服务也并未交由它创建。[来源: https://juejin.cn/post/7681897078311108623；已验证: frameworks/base/services/core/java/com/android/server/SystemServiceManager.java @ android-17.0.0_r1]
+`SystemServiceManager` 是 `system_server` 内部的 Java 管理对象及 `LocalServices` 注册载体。调用它的 `startService(Class<T>)` 时，它会传入 `Context` 构造 `SystemService`、将其登记到 `mServices`，再调用服务的 `onStart()`；它负责已纳管 `SystemService` 的启动及后续 Boot Phase、User 生命周期分发，而各服务的创建顺序仍由 `SystemServer.run()` 的调用序列决定，部分遗留服务也并未交由它创建。[^source-audit-note-7]
 
-从线程协作看，启动过程中的 `system_server` 存在三条执行路径：主线程按 `SystemServer.run()` 顺序推进，末尾进入 `Looper.loop()` 开启长期消息循环；Binder 线程池各自独立响应远端 transaction；`SystemServerInitThreadPool` 与各服务自有线程则承载允许并行的初始化任务或服务内部逻辑。[来源: https://juejin.cn/post/7681897078311108623；已验证: frameworks/base/services/java/com/android/server/SystemServer.java 与 frameworks/base/services/core/java/com/android/server/SystemServiceManager.java @ android-17.0.0_r1] 因此，主线程进入 `Looper.loop()` 仅说明启动主控制流进入了长期消息循环，判断系统是否真正就绪以及定位开机耗时，还要结合 `SystemServerTiming`、init 服务事件、具体服务的 `StartService ...` 时间片、Binder 线程状态以及 Boot Phase/`systemReady()` 事件还原实际执行。[来源: https://juejin.cn/post/7681897078311108623；已验证: frameworks/base/services/java/com/android/server/SystemServer.java 与 frameworks/base/services/core/java/com/android/server/SystemServiceManager.java @ android-17.0.0_r1]
+从线程协作看，启动过程中的 `system_server` 存在三条执行路径：主线程按 `SystemServer.run()` 顺序推进，末尾进入 `Looper.loop()` 开启长期消息循环；Binder 线程池各自独立响应远端 transaction；`SystemServerInitThreadPool` 与各服务自有线程则承载允许并行的初始化任务或服务内部逻辑。[^source-audit-note-8] 因此，主线程进入 `Looper.loop()` 仅说明启动主控制流进入了长期消息循环，判断系统是否真正就绪以及定位开机耗时，还要结合 `SystemServerTiming`、init 服务事件、具体服务的 `StartService ...` 时间片、Binder 线程状态以及 Boot Phase/`systemReady()` 事件还原实际执行。[^source-audit-note-8]
 
-取证进程关系时，可以通过 `ps -A -o PID,PPID,NAME,ARGS`（或读取 `/proc/<pid>/status` 的 `PPid`）确认 `system_server` 的父进程指向 Zygote。若 `system_server` 异常退出，Zygote 的 `SIGCHLD` 处理路径会经 `waitpid()` 匹配 `gSystemServerPid` 并终止 Zygote 自身，随后由 `init` 对 Zygote 服务的监督链路拉起新一轮重启。[已验证: frameworks/base/core/jni/com_android_internal_os_Zygote.cpp 与 system/core/rootdir/init.zygote64.rc @ android-17.0.0_r1]
+取证进程关系时，可以通过 `ps -A -o PID,PPID,NAME,ARGS`（或读取 `/proc/<pid>/status` 的 `PPid`）确认 `system_server` 的父进程指向 Zygote。若 `system_server` 异常退出，Zygote 的 `SIGCHLD` 处理路径会经 `waitpid()` 匹配 `gSystemServerPid` 并终止 Zygote 自身，随后由 `init` 对 Zygote 服务的监督链路拉起新一轮重启。[^source-audit-note-9]
 
 系统就绪后，应用冷启动则会沿着另一条混合链路反向串联起多个进程：桌面或调用方通过 Binder 请求 `system_server` 中的 Activity/Task 管理服务，系统服务再通过 Zygote 本地 socket 请求派生新进程，子进程进入 `ActivityThread.main()` 后再次经由 Binder 向 `system_server` 完成 attach。这条路径同时跨越了 Binder 与本地 socket，不宜笼统归为单一的“Binder 调用”。
 
@@ -348,7 +348,7 @@ Binder 由用户态 `libbinder` 与内核 Binder 驱动共同实现。`framework
 
 安全授权同样嵌在驱动事务路径中。ACK `android17-6.18-2026-06_r6` 的 `security/selinux/hooks.c` 中，`selinux_binder_transaction()` 会执行 `BINDER__CALL` 检查；当当前线程的 SELinux 安全标识符（SID）与事务发起方凭据的 SID 不一致时，还会先检查 `BINDER__IMPERSONATE`，通过后再继续检查 `BINDER__CALL`。
 
-需要留意的是，Framework Java API 所在的进程位置未必等于服务端进程。以启用 A/B 系统更新的设备为例，`android.os.UpdateEngine` 是带有 `@SystemApi` 和 `@hide` 的 Framework 客户端类，它通过 `ServiceManager` 查找 `android.os.UpdateEngineService`，再经 Binder 转发请求；而真正执行升级的服务端由 `init` 拉起为独立原生进程 `/system/bin/update_engine`，并在 `DaemonAndroid::OnInit()` 中注册该 Binder 服务，并不运行在 `system_server` 里。排查升级问题时，需先在进程列表中确认 `update_engine`，再沿 Binder 事务追踪双方线程。[来源: 2026-11-03-77028958-AOSP 14 OTA 升级指导（三）：.md；已验证: frameworks/base/core/java/android/os/UpdateEngine.java、system/update_engine/update_engine.rc 与 system/update_engine/aosp/daemon_android.cc @ android-17.0.0_r1]
+需要留意的是，Framework Java API 所在的进程位置未必等于服务端进程。以启用 A/B 系统更新的设备为例，`android.os.UpdateEngine` 是带有 `@SystemApi` 和 `@hide` 的 Framework 客户端类，它通过 `ServiceManager` 查找 `android.os.UpdateEngineService`，再经 Binder 转发请求；而真正执行升级的服务端由 `init` 拉起为独立原生进程 `/system/bin/update_engine`，并在 `DaemonAndroid::OnInit()` 中注册该 Binder 服务，并不运行在 `system_server` 里。排查升级问题时，需先在进程列表中确认 `update_engine`，再沿 Binder 事务追踪双方线程。[^source-audit-note-10]
 
 #### JNI：同一进程内的托管与原生边界
 
@@ -504,15 +504,15 @@ Perfetto 的各个数据源按采集维度切分，与五层架构之间是交�
 
 #### Zygote socket 与 USAP 创建路径
 
-普通应用冷启动时，是否需要新建进程、整理启动参数由 `system_server` 决定，实际的进程派生则交由 Zygote 处理。`ProcessList` 将 UID/GID、运行时标志、目标 SDK、SELinux `seInfo`、ABI、数据目录、包名与入口类 `android.app.ActivityThread` 传入 `Process.start()`，随后经由 `ZygoteProcess.startViaZygote()` 把参数编码为换行分隔的命令写入本地 `LocalSocket`。[来源: https://juejin.cn/post/7681511201547255842；已验证: frameworks/base/services/core/java/com/android/server/am/ProcessList.java、frameworks/base/core/java/android/os/Process.java 与 ZygoteProcess.java @ android-17.0.0_r1]
+普通应用冷启动时，是否需要新建进程、整理启动参数由 `system_server` 决定，实际的进程派生则交由 Zygote 处理。`ProcessList` 将 UID/GID、运行时标志、目标 SDK、SELinux `seInfo`、ABI、数据目录、包名与入口类 `android.app.ActivityThread` 传入 `Process.start()`，随后经由 `ZygoteProcess.startViaZygote()` 把参数编码为换行分隔的命令写入本地 `LocalSocket`。[^source-audit-note-11]
 
-Zygote 监听的端点是在系统启动阶段由 `init` 托管的 Unix domain socket。`init.zygote64.rc` 为主 Zygote 声明了 `socket zygote stream 660 root system` 与 `socket usap_pool_primary stream 660 root system`。Zygote 继承这些文件描述符后，在 `ZygoteServer.runSelectLoop()` 中轮询服务端与会话描述符；收到连接后进入 `ZygoteConnection.processCommand()`，依次读取 peer credentials、解析 `ZygoteArguments`、校验参数与身份策略，再执行 `fork` 与身份专化（specialize）。[来源: https://juejin.cn/post/7681511201547255842；已验证: system/core/rootdir/init.zygote64.rc、frameworks/base/core/java/com/android/internal/os/ZygoteServer.java、ZygoteConnection.java 与 Zygote.java @ android-17.0.0_r1]
+Zygote 监听的端点是在系统启动阶段由 `init` 托管的 Unix domain socket。`init.zygote64.rc` 为主 Zygote 声明了 `socket zygote stream 660 root system` 与 `socket usap_pool_primary stream 660 root system`。Zygote 继承这些文件描述符后，在 `ZygoteServer.runSelectLoop()` 中轮询服务端与会话描述符；收到连接后进入 `ZygoteConnection.processCommand()`，依次读取 peer credentials、解析 `ZygoteArguments`、校验参数与身份策略，再执行 `fork` 与身份专化（specialize）。[^source-audit-note-12]
 
-为缩短冷启动中的派生耗时，系统还提供了 USAP（Unspecialized App Process）进程池，用于复用 Zygote 预先 `fork` 好、尚未专化具体应用身份的空闲进程。`ZygoteProcess.startViaZygote()` 先调用 `openZygoteSocketIfNeeded(abi)`，按目标 ABI 选定主或次 Zygote；对应的 `ZygoteState` 中同时维护了常规 socket 与 USAP pool socket。只有当进程池受支持、已启用、策略允许且当前命令形态兼容时，请求才会尝试走 USAP 路径。如果 `zygoteSendArgsAndGetResult()` 在尝试 USAP 时捕获 `IOException`，它会沿着当前选中的 `ZygoteState` 回退到对应的常规 Zygote socket；如果 USAP 侧返回负 PID，则会直接抛出 `ZygoteStartFailedEx("USAP specialization failed")` 向上传播，不会回退重连。因此排查进程创建失败时，需要区分本地 socket 通信 I/O 异常与身份专化失败，并核对目标 ABI 所对应的 Zygote 实例。[已验证: frameworks/base/core/java/android/os/ZygoteProcess.java 的 startViaZygote()、openZygoteSocketIfNeeded()、zygoteSendArgsAndGetResult() 与 attemptUsapSendArgsAndGetResult() @ android-17.0.0_r1]
+为缩短冷启动中的派生耗时，系统还提供了 USAP（Unspecialized App Process）进程池，用于复用 Zygote 预先 `fork` 好、尚未专化具体应用身份的空闲进程。`ZygoteProcess.startViaZygote()` 先调用 `openZygoteSocketIfNeeded(abi)`，按目标 ABI 选定主或次 Zygote；对应的 `ZygoteState` 中同时维护了常规 socket 与 USAP pool socket。只有当进程池受支持、已启用、策略允许且当前命令形态兼容时，请求才会尝试走 USAP 路径。如果 `zygoteSendArgsAndGetResult()` 在尝试 USAP 时捕获 `IOException`，它会沿着当前选中的 `ZygoteState` 回退到对应的常规 Zygote socket；如果 USAP 侧返回负 PID，则会直接抛出 `ZygoteStartFailedEx("USAP specialization failed")` 向上传播，不会回退重连。因此排查进程创建失败时，需要区分本地 socket 通信 I/O 异常与身份专化失败，并核对目标 ABI 所对应的 Zygote 实例。[^source-audit-note-13]
 
-在 AOSP Android 17 中，普通应用创建请求经由上述 `init` 托管的 Zygote/USAP 本地 socket 完成，Zygote 本身未暴露为常规 Binder 服务；这一路径的访问控制由 `init` socket 权限、SELinux 策略、peer credentials、Zygote 参数校验及原生 specialize 共同保障（而常规 Binder 通道同样具备调用方身份校验与 SELinux 检查）。[来源: https://juejin.cn/post/7681511201547255842；已验证: frameworks/base/core/java/com/android/internal/os/ZygoteConnection.java、frameworks/base/cmds/app_process/app_main.cpp @ android-17.0.0_r1；drivers/android/binder.c 与 security/selinux/hooks.c @ android17-6.18-2026-06_r6]
+在 AOSP Android 17 中，普通应用创建请求经由上述 `init` 托管的 Zygote/USAP 本地 socket 完成，Zygote 本身未暴露为常规 Binder 服务；这一路径的访问控制由 `init` socket 权限、SELinux 策略、peer credentials、Zygote 参数校验及原生 specialize 共同保障（而常规 Binder 通道同样具备调用方身份校验与 SELinux 检查）。[^source-audit-note-14]
 
-无论经由常规 Zygote socket 还是 USAP 池，AMS 都需要维护 `ProcessRecord`、启动序号与 PID 映射。[来源: https://juejin.cn/post/7681511201547255842；已验证: frameworks/base/core/java/android/os/ZygoteProcess.java 与 frameworks/base/services/core/java/com/android/server/am/ProcessList.java @ android-17.0.0_r1] 追踪应用冷启动的“出生点”时，需要把三个时间节点分开观察：`ProcessList` 发出启动请求、Zygote/USAP 返回新进程 PID，以及应用进程进入 `ActivityThread.main()` 并通过 Binder 回连附着到 AMS。实际排查时，可以先通过 `ps -A -o PID,PPID,NAME,ARGS` 确认父子进程关系，再用 `dumpsys activity processes` 核对 AMS 中的进程记录；仅仅看到 PID 返回时，`bindApplication`、组件生命周期与首帧绘制都尚未完成。[来源: https://juejin.cn/post/7681511201547255842；已验证: frameworks/base/services/core/java/com/android/server/am/ProcessList.java 与 frameworks/base/core/java/android/app/ActivityThread.java @ android-17.0.0_r1]
+无论经由常规 Zygote socket 还是 USAP 池，AMS 都需要维护 `ProcessRecord`、启动序号与 PID 映射。[^source-audit-note-15] 追踪应用冷启动的“出生点”时，需要把三个时间节点分开观察：`ProcessList` 发出启动请求、Zygote/USAP 返回新进程 PID，以及应用进程进入 `ActivityThread.main()` 并通过 Binder 回连附着到 AMS。实际排查时，可以先通过 `ps -A -o PID,PPID,NAME,ARGS` 确认父子进程关系，再用 `dumpsys activity processes` 核对 AMS 中的进程记录；仅仅看到 PID 返回时，`bindApplication`、组件生命周期与首帧绘制都尚未完成。[^source-audit-note-16]
 
 <!-- gracker-diagram: ch01-01-app-birth -->
 ![普通应用进程创建与回连](../../assets/diagrams/ch01/ch01-01-app-birth.png)
@@ -749,7 +749,7 @@ public static void main(String[] args) {
 - 投递到主线程 `Handler`、主线程 `Executor` 或 `Dispatchers.Main` 的任务；
 - 直接在主线程发起的同步 Binder 调用。
 
-与之相对，来自其他进程的远程 AIDL 回调默认落在进程的 Binder 线程池中，是否再切回主线程取决于具体组件和接口约定。例如 `UpdateEngine.bind(callback, handler)` 在收到远端状态或完成回调时，若调用方传入了非空 `Handler`，客户端 Binder Stub 会通过 `handler.post()` 将业务回调投递到该 `Handler` 绑定的 `Looper` 线程；而单参数重载 `bind(callback)` 等价于 `bind(callback, null)`，此时业务回调会直接在接收 Binder 事务的线程上执行。排查进度界面卡顿时，应记录回调实际所在的线程名、核对 `Handler` 绑定的 `Looper`，再查看对应线程的执行耗时。[已验证: frameworks/base/core/java/android/os/UpdateEngine.java 的 bind() 两个重载与 IUpdateEngineCallback.Stub @ android-17.0.0_r1]
+与之相对，来自其他进程的远程 AIDL 回调默认落在进程的 Binder 线程池中，是否再切回主线程取决于具体组件和接口约定。例如 `UpdateEngine.bind(callback, handler)` 在收到远端状态或完成回调时，若调用方传入了非空 `Handler`，客户端 Binder Stub 会通过 `handler.post()` 将业务回调投递到该 `Handler` 绑定的 `Looper` 线程；而单参数重载 `bind(callback)` 等价于 `bind(callback, null)`，此时业务回调会直接在接收 Binder 事务的线程上执行。排查进度界面卡顿时，应记录回调实际所在的线程名、核对 `Handler` 绑定的 `Looper`，再查看对应线程的执行耗时。[^source-audit-note-17]
 
 ### Looper、MessageQueue 与 Handler
 
@@ -821,11 +821,11 @@ fun updateUiLater() {
 - 进程处于冻结状态、受省电策略限制或系统整体负载较高；
 - `SystemClock.uptimeMillis()` 作为时间基准时，设备深度睡眠时间不计入该时钟，导致实际挂钟时间延后。
 
-此外，`postDelayed()` 返回 `true` 仅代表消息成功入队；如果所属 `Looper` 在分发之前退出，消息仍可能被丢弃。对于需要持久化、进程重建后继续执行或按系统条件约束调度的任务，应选用 `AlarmManager`、`JobScheduler` 或 `WorkManager`。[已验证: frameworks/base/core/java/android/os/Handler.java 的 postDelayed()、sendMessageDelayed() 与 sendMessageAtTime() @ android-17.0.0_r1]
+此外，`postDelayed()` 返回 `true` 仅代表消息成功入队；如果所属 `Looper` 在分发之前退出，消息仍可能被丢弃。对于需要持久化、进程重建后继续执行或按系统条件约束调度的任务，应选用 `AlarmManager`、`JobScheduler` 或 `WorkManager`。[^source-audit-note-18]
 
 #### IdleHandler 的适用范围
 
-当所属 `Looper` 的消息队列进入空闲条件时，线程会调用注册的 `MessageQueue.IdleHandler`。在 legacy 路径中，空闲条件要求队列为空或队首消息尚未到期；Android 17 的 `CombinedDeliMessageQueue` 还会分别检查同步队列头与异步队列头，如果队列中存在已到期的同步屏障，空闲检查同样会判定为未空闲。[已验证: frameworks/base/core/java/android/os/LegacyMessageQueue/MessageQueue.java 的 next()、CombinedMessageQueue/MessageQueue.java 的 next() 与 CombinedDeliMessageQueue/MessageQueue.java 的 looperCheckIsIdle() @ android-17.0.0_r1]
+当所属 `Looper` 的消息队列进入空闲条件时，线程会调用注册的 `MessageQueue.IdleHandler`。在 legacy 路径中，空闲条件要求队列为空或队首消息尚未到期；Android 17 的 `CombinedDeliMessageQueue` 还会分别检查同步队列头与异步队列头，如果队列中存在已到期的同步屏障，空闲检查同样会判定为未空闲。[^source-audit-note-19]
 
 系统并不会为 `IdleHandler` 预先划出一段受保护的空闲窗口：回调执行期间如果有新消息入队，这些新消息必须等到当前 `IdleHandler` 返回后才会被分发。因此，无论是一次性初始化还是周期性收尾，`IdleHandler` 都只适合耗时短暂且可控的操作，磁盘扫描、网络请求、大对象反序列化与长循环仍应放在后台线程。回调返回 `false` 会在本次执行后自动注销，返回 `true` 则保留以便下次队列空闲时继续触发。
 
@@ -1035,3 +1035,23 @@ API 是否暴露与运行时是否真正支持可挂起、可恢复的 continuat
 - 持久后台任务：[Worker 运行时限](https://developer.android.com/reference/androidx/work/Worker)、[长任务、配额与前台服务类型](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running)。
 - 消息延迟与空闲条件：[Handler.java](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/core/java/android/os/Handler.java)、[LegacyMessageQueue](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/core/java/android/os/LegacyMessageQueue/MessageQueue.java)、[CombinedMessageQueue](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/core/java/android/os/CombinedMessageQueue/MessageQueue.java)、[CombinedDeliMessageQueue](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java)。
 - Android 17 线程实现：[目标 API 37 的 MessageQueue 变更](https://developer.android.com/about/versions/17/behavior-changes-17)、[libcore API 文本](https://android.googlesource.com/platform/libcore/+/refs/tags/android-17.0.0_r1/api/current.txt)、[ThreadBuilders.java](https://android.googlesource.com/platform/libcore/+/refs/tags/android-17.0.0_r1/ojluni/src/main/java/java/lang/ThreadBuilders.java)、[ContinuationSupport.java](https://android.googlesource.com/platform/libcore/+/refs/tags/android-17.0.0_r1/ojluni/src/main/java/jdk/internal/vm/ContinuationSupport.java)。
+
+[^source-audit-note-1]: 来源: <https://juejin.cn/post/7679264879620374568>；已验证: system/core/rootdir/init.zygote64.rc 与 init.rc @ android-17.0.0_r1
+[^source-audit-note-2]: 已验证: frameworks/base/core/java/com/android/internal/os/ZygoteInit.java @ android-17.0.0_r1
+[^source-audit-note-3]: 来源: <https://juejin.cn/post/7679264879620374568>；已验证: frameworks/base/core/jni/com_android_internal_os_Zygote.cpp、ZygoteInit.java 与 RuntimeInit.java @ android-17.0.0_r1
+[^source-audit-note-4]: 已验证: frameworks/base/cmds/app_process/app_main.cpp @ android-17.0.0_r1
+[^source-audit-note-5]: 来源: <https://juejin.cn/post/7681897078311108623>；已验证: frameworks/base/core/jni/com_android_internal_os_Zygote.cpp、frameworks/base/cmds/app_process/app_main.cpp 与 frameworks/base/services/java/com/android/server/SystemServer.java @ android-17.0.0_r1
+[^source-audit-note-6]: 来源: <https://juejin.cn/post/7681897078311108623>；已验证: frameworks/base/services/java/com/android/server/SystemServer.java @ android-17.0.0_r1
+[^source-audit-note-7]: 来源: <https://juejin.cn/post/7681897078311108623>；已验证: frameworks/base/services/core/java/com/android/server/SystemServiceManager.java @ android-17.0.0_r1
+[^source-audit-note-8]: 来源: <https://juejin.cn/post/7681897078311108623>；已验证: frameworks/base/services/java/com/android/server/SystemServer.java 与 frameworks/base/services/core/java/com/android/server/SystemServiceManager.java @ android-17.0.0_r1
+[^source-audit-note-9]: 已验证: frameworks/base/core/jni/com_android_internal_os_Zygote.cpp 与 system/core/rootdir/init.zygote64.rc @ android-17.0.0_r1
+[^source-audit-note-10]: 来源: 2026-11-03-77028958-AOSP 14 OTA 升级指导（三）：.md；已验证: frameworks/base/core/java/android/os/UpdateEngine.java、system/update_engine/update_engine.rc 与 system/update_engine/aosp/daemon_android.cc @ android-17.0.0_r1
+[^source-audit-note-11]: 来源: <https://juejin.cn/post/7681511201547255842>；已验证: frameworks/base/services/core/java/com/android/server/am/ProcessList.java、frameworks/base/core/java/android/os/Process.java 与 ZygoteProcess.java @ android-17.0.0_r1
+[^source-audit-note-12]: 来源: <https://juejin.cn/post/7681511201547255842>；已验证: system/core/rootdir/init.zygote64.rc、frameworks/base/core/java/com/android/internal/os/ZygoteServer.java、ZygoteConnection.java 与 Zygote.java @ android-17.0.0_r1
+[^source-audit-note-13]: 已验证: frameworks/base/core/java/android/os/ZygoteProcess.java 的 startViaZygote()、openZygoteSocketIfNeeded()、zygoteSendArgsAndGetResult() 与 attemptUsapSendArgsAndGetResult() @ android-17.0.0_r1
+[^source-audit-note-14]: 来源: <https://juejin.cn/post/7681511201547255842>；已验证: frameworks/base/core/java/com/android/internal/os/ZygoteConnection.java、frameworks/base/cmds/app_process/app_main.cpp @ android-17.0.0_r1；drivers/android/binder.c 与 security/selinux/hooks.c @ android17-6.18-2026-06_r6
+[^source-audit-note-15]: 来源: <https://juejin.cn/post/7681511201547255842>；已验证: frameworks/base/core/java/android/os/ZygoteProcess.java 与 frameworks/base/services/core/java/com/android/server/am/ProcessList.java @ android-17.0.0_r1
+[^source-audit-note-16]: 来源: <https://juejin.cn/post/7681511201547255842>；已验证: frameworks/base/services/core/java/com/android/server/am/ProcessList.java 与 frameworks/base/core/java/android/app/ActivityThread.java @ android-17.0.0_r1
+[^source-audit-note-17]: 已验证: frameworks/base/core/java/android/os/UpdateEngine.java 的 bind() 两个重载与 IUpdateEngineCallback.Stub @ android-17.0.0_r1
+[^source-audit-note-18]: 已验证: frameworks/base/core/java/android/os/Handler.java 的 postDelayed()、sendMessageDelayed() 与 sendMessageAtTime() @ android-17.0.0_r1
+[^source-audit-note-19]: 已验证: frameworks/base/core/java/android/os/LegacyMessageQueue/MessageQueue.java 的 next()、CombinedMessageQueue/MessageQueue.java 的 next() 与 CombinedDeliMessageQueue/MessageQueue.java 的 looperCheckIsIdle() @ android-17.0.0_r1
