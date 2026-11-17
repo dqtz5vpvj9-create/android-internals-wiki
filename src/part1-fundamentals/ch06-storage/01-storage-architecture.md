@@ -222,7 +222,7 @@ Physical Partition: super
 
 **vendor 分区**：包含 HAL（硬件抽象层）实现、固件和厂商定制配置。Project Treble 借助这道分区界线把 vendor 实现与 Android framework 分离开来，使 framework 升级不必等待全部厂商实现同步更新。`vendor` 分区同样以只读方式使用，并受 `dm-verity` 保护。
 
-**data 分区**：这是整机最主要的大容量可写分区，承载安装包（`/data/app/`）、应用私有数据（`/data/user/<user_id>/`）、共享媒体的底层存储（`/data/media/`）以及系统数据库等。设备上通常还另有 `metadata`、`persist` 等小型可写分区。应用日常的持久化流量几乎都落在这里，因此 I/O 性能分析的重点也在 `/data`。
+**data 分区**：这是整机最主要的大容量可写分区，承载安装包（`/data/app/`）、应用私有数据（`/data/user/<user_id>/`）、共享媒体的底层存储（`/data/media/`）以及系统数据库等。设备还可能有 `metadata`、`persist` 等小型可写分区。应用日常的持久化流量几乎都落在这里，因此 I/O 性能分析的重点也在 `/data`。
 
 **metadata 分区**：这是一个在启动早期即可使用的独立小分区，AOSP metadata encryption 文档建议容量为 16 MB，通常挂载到 `/metadata`。它保存用于保护 metadata encryption key 的 KeyMint blobs（由 KeyMint 保护的密钥数据），也可能承载 `vold`（Volume Daemon，存储卷守护进程）、checkpoint（检查点）、Virtual A/B 等功能在 `/data` 挂载前必须访问的少量状态。启动过程中，系统先挂载 `/metadata` 取得 key material（密钥材料），随后再建立 `/data` 的 metadata-encrypted block device（元数据加密块设备）——取密钥和建加密设备是先后两步，分析启动挂载依赖时需要分开追踪。
 
@@ -328,7 +328,7 @@ Android 10 前后，共享存储的权限模型经历了一次彻底重构。在
 
 **先核对版本再下结论**：同样是“共享媒体访问慢”，Android 10 需要区分 `MediaProvider` API 与当时的 SDCardFS/设备存储模拟路径；Android 11 才由 `MediaProvider` FUSE 支持 direct file path；Android 12+ 设备则可能启用了 passthrough。排查时务必先确认设备的首发版本、`MediaProvider` 模块版本、内核版本与产品属性。
 
-在 Perfetto trace 中，未走 passthrough 的 FUSE 请求通常会表现为应用线程等待与 `MediaProvider` 的 FUSE worker（工作线程）活动在时间轴上对齐；启用 passthrough 后，后续数据读写可能不再唤醒用户态处理线程。因此，确认某次请求是否经过 FUSE，需要综合 `MediaProvider` 日志、产品属性、内核 capability 与实际调用路径，应用侧的 I/O wait 只是指向问题的线索。
+在 Perfetto trace 中，未走 passthrough 的 FUSE 请求可能表现为应用线程等待与 `MediaProvider` 的 FUSE worker（工作线程）活动在时间轴上对齐；启用 passthrough 后，后续数据读写可能不再唤醒用户态处理线程。因此，确认某次请求是否经过 FUSE，需要综合 `MediaProvider` 日志、产品属性、内核 capability 与实际调用路径，应用侧的 I/O wait 只是指向问题的线索。
 
 ### 版本断点速查
 
