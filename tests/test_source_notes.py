@@ -37,6 +37,13 @@ class SourceNotesTest(unittest.TestCase):
         self.assertIn("[`Surface.java`](<https://example.org/b>)", result)
         self.assertEqual(source_notes(result), result)
 
+    def test_frontmatter_is_unchanged(self):
+        frontmatter = '---\ntitle: "[来源: metadata]"\n---\n'
+        result = source_notes(frontmatter + '正文。[来源: body]\n')
+        self.assertTrue(result.startswith(frontmatter))
+        self.assertIn('正文。[^source-audit-note-1]', result)
+        self.assertIn('[^source-audit-note-1]: 来源: body', result)
+
 
 if __name__ == "__main__":
     unittest.main()

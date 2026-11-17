@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Move inline source audit records into footnotes in a staging book tree.
-
-The source Markdown is kept unchanged. Run this on the temporary copy used
-for publication, after the front matter filter and before mdBook.
-"""
+"""Move inline source audit records into Markdown footnotes."""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +15,19 @@ URL = re.compile(r"(?<!<)https?://[^\s；，、）)<>]+")
 
 def source_notes(text: str) -> str:
     """Replace audit annotations outside code with ordinary footnotes."""
+    original = text
+    frontmatter = ""
+    # Source files may contain YAML with their own provenance records.
+    # Keep that metadata byte-for-byte and transform only the body.
+    if text.startswith("---\n") or text.startswith("---\r\n"):
+        boundary = re.search(r"^---[ \t]*\r?$", text[text.find("\n") + 1:], re.M)
+        if boundary:
+            offset = text.find("\n") + 1 + boundary.end()
+            if text[offset:offset + 2] == "\r\n":
+                offset += 2
+            elif text[offset:offset + 1] == "\n":
+                offset += 1
+            frontmatter, text = text[:offset], text[offset:]
     labels: dict[str, str] = {}
     marker = "source-audit-note"
     while f"[^{marker}-" in text:
@@ -77,12 +86,12 @@ def source_notes(text: str) -> str:
         out.append("".join(pieces))
 
     if not labels:
-        return text
+        return original
     body = "".join(out).rstrip() + "\n\n"
     for value, label in labels.items():
         linked = URL.sub(lambda match: f"<{match.group(0)}>", value)
         body += f"[^{label}]: {linked}\n"
-    return body
+    return frontmatter + body
 
 
 def main() -> None:
