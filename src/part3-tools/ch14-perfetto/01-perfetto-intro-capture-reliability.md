@@ -539,7 +539,7 @@ Data Source 是 Perfetto 对“可采集能力”的抽象，涵盖内核事件�
 
 Perfetto 可以追踪 lmkd（Low Memory Killer Daemon）的杀进程行为，但具体观测路径取决于 Android 版本和内核配置。
 
-**Legacy kernel LMK（Android 9 及更早，部分设备延续到 Android 10）**：旧实现主要在内核中选择并杀死进程，通过 ftrace 事件 `lowmemorykiller/lowmemory_kill` 记录。⚠️ 解析器版本差异：Android 10 tag 的[旧 ProtoTraceParser](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-10.0.0_r1/src/trace_processor/proto_trace_parser.cc) 会将该事件转为 `instant` 表中的 `mem.lmk`。按 [v54 事件 schema](https://raw.githubusercontent.com/google/perfetto/v54.0/protos/perfetto/trace/ftrace/ftrace_event.proto) 编码相同合成事件并输入 v54.0 与 v58.2 主机 TP 后，两者都在 `ftrace_event` 保留 `lowmemory_kill` 与参数，而 `instant / slice` 未生成 `mem.lmk`。这项主机试验不代表设备采集结果；实际分析应先查当前工具的表与参数，不能把历史映射当作跨版本保证。下面的命令用于确认目标内核是否注册了旧 tracepoint：
+**Legacy kernel LMK（Android 9 及更早，部分设备延续到 Android 10）**：旧实现主要在内核中选择并杀死进程，通过 ftrace 事件 `lowmemorykiller/lowmemory_kill` 记录。不同版本的解析器对这一事件的处理有所变化。Android 10 tag 的[旧 ProtoTraceParser](https://android.googlesource.com/platform/external/perfetto/+/refs/tags/android-10.0.0_r1/src/trace_processor/proto_trace_parser.cc) 会将该事件转为 `instant` 表中的 `mem.lmk`。按 [v54 事件 schema](https://raw.githubusercontent.com/google/perfetto/v54.0/protos/perfetto/trace/ftrace/ftrace_event.proto) 编码相同合成事件并输入 v54.0 与 v58.2 主机 TP 后，两者都在 `ftrace_event` 保留 `lowmemory_kill` 与参数，而 `instant / slice` 未生成 `mem.lmk`。这项主机试验不代表设备采集结果；实际分析应先查当前工具的表与参数，不能把历史映射当作跨版本保证。下面的命令用于确认目标内核是否注册了旧 tracepoint：
 
 ```bash
 adb shell cat /sys/kernel/tracing/events/lowmemorykiller/enable
@@ -1316,7 +1316,7 @@ chmod +x ./trace_processor
 .quit
 ```
 
-其中 `.read` 用于执行 SQL 文件，`.quit` 用于退出。⚠️ 命令差异：Perfetto shell 不支持 SQLite CLI 的 `.tables` 和 `.schema` 命令，查看表与列应改用 SQL 查询：
+其中 `.read` 用于执行 SQL 文件，`.quit` 用于退出。Perfetto shell 不支持 SQLite CLI 的 `.tables` 和 `.schema` 命令，查看表与列应改用 SQL 查询：
 
 ```sql
 SELECT name, type FROM sqlite_master
@@ -1531,7 +1531,7 @@ ORDER BY overlap_ms DESC;
 SQL 脚本可以包含多条以分号分隔的语句。`android-17.0.0_r1` 的 `query.cc` 会检查前序语句是否产生结果行：只有末尾语句可以返回结果，前面可放置不返回行的建表、插入或模块加载语句。非交互查询结果以 CSV（逗号分隔的结构化文本）格式输出，由于字段内容可能包含引号、逗号或换行，解析时应使用成熟的 CSV 库。
 
 
-⚠️ 版本差异（2026-10-24 复核）：Android 17 固定的 `query.cc` 与上游 v54.0 shell 均要求只有末尾语句返回结果；而官方启动脚本当前固定的 v58.2（在两个主机二进制上执行同一组两条 `SELECT` 语句实测）已经可以依次输出多个 CSV 结果集，早期的 v57.2 记录属于旧版边界。因此，自动化流程应记录实际使用的版本，并按对应行为拆分或解析输出。
+根据 2026 年 10 月 24 日的核对，Android 17 固定的 `query.cc` 与上游 v54.0 shell 均要求只有末尾语句返回结果；而官方启动脚本当前固定的 v58.2（在两个主机二进制上执行同一组两条 `SELECT` 语句实测）已经可以依次输出多个 CSV 结果集，早期的 v57.2 记录属于旧版边界。因此，自动化流程应记录实际使用的版本，并按对应行为拆分或解析输出。
 
 <!-- gracker-diagram: ed14-01-query-version-and-csv -->
 ![先固定单／多结果集契约，再按 CSV 边界解析](../../assets/diagrams/ch14/ed14-01-query-version-and-csv.png)
@@ -1589,7 +1589,7 @@ done
   trace.pftrace "SELECT COUNT(*) AS slice_count FROM slice"
 ```
 
-`export sqlite` 便于把数据交给 SQLite 工具链继续处理，但导出前仍需完整解析输入。⚠️ 版本更新：早期的 v57.2 记录仅列出 SQLite 导出，而在 v58.2 的 `export --help` 中已经列出 `sqlite`、`arrow_tar` 和 `perfetto` 三种目标格式。其中 `perfetto` 归档可由同版 Trace Processor 重新加载，而 `arrow_tar` 面向外部 Arrow 消费端，不能重新载入 Trace Processor，使用时不可混淆。无论哪种格式转换，都无法消除原始解析的内存需求。`--no-ftrace-raw` 可跳过类型化 ftrace 额外写入通用原始表的路径，`--perf-file` 用于拆分解析与查询各自耗时，`--full-sort` 则可能增加排序阶段的内存占用。
+`export sqlite` 便于把数据交给 SQLite 工具链继续处理，但导出前仍需完整解析输入。早期的 v57.2 记录仅列出 SQLite 导出，而在 v58.2 的 `export --help` 中已经列出 `sqlite`、`arrow_tar` 和 `perfetto` 三种目标格式。其中 `perfetto` 归档可由同版 Trace Processor 重新加载，而 `arrow_tar` 面向外部 Arrow 消费端，不能重新载入 Trace Processor，使用时不可混淆。无论哪种格式转换，都无法消除原始解析的内存需求。`--no-ftrace-raw` 可跳过类型化 ftrace 额外写入通用原始表的路径，`--perf-file` 用于拆分解析与查询各自耗时，`--full-sort` 则可能增加排序阶段的内存占用。
 
 <!-- gracker-diagram: ch14-01-59-export-format-boundaries -->
 ![三种导出格式的消费方](../../assets/diagrams/ch14/ch14-01-59-export-format-boundaries.png)
@@ -2236,7 +2236,7 @@ trace 只能解释已经采到的数据。要把调度时长换算成毫瓦时�
 
 通过完整性检查后，可以用 Data Explorer 构造查询图。按 2026-10-24 的官方文档，`Table`、`Slices` 或 `Query` 提供数据，`Time Range` 提供区间，再通过 `Filter During` / `Interval Intersect` 等节点限定或计算时间关系；`Join` 按键连接，`Aggregation` 按维度聚合，`Charts` 可显示 bar 或 histogram。具体节点名称与配置仍须按实际 UI 版本核对。
 
-⚠️ 接口边界：当前文档中的 Query 节点只接受一条 `SELECT`（前面可带 `INCLUDE PERFETTO MODULE`），这与 v58.2 命令行可输出多个结果集属于不同的契约。如果图内探索出了有价值的结果，应保存生成的 SQL 或带版本的查询图供复核。Data Explorer 适合完成以下工作：
+当前文档中的 Query 节点只接受一条 `SELECT`（前面可带 `INCLUDE PERFETTO MODULE`），这与 v58.2 命令行可输出多个结果集属于不同的契约。如果图内探索出了有价值的结果，应保存生成的 SQL 或带版本的查询图供复核。Data Explorer 适合完成以下工作：
 
 - 从 Table 或 Query 源快速确认字段；
 - 用 Time Range 与问题窗口对齐；

@@ -514,7 +514,7 @@ v57.1 的 `TrackEvent.Type` 新增了 `TYPE_STATE = 5`，v57.2 延续了同一 w
 
 状态字符串的实际编码走的是 TrackEvent 的事件名路径，即 `name` 或经过 string interning（把重复字符串换成整数 ID）的 `name_iid`。虽然 v57.2 `track_event.proto` 的枚举注释仍提到 `state` 字段，但 schema 已把原字段号 51 标为 `reserved`（保留编号，不再用作普通字段），C++ `TRACE_STATE` 同样把状态值传给事件名参数。
 
-⚠️ 实现差异：“空字符串”与“省略事件名”属于两种不同的编码。使用 v57.2 发布 C++ SDK 录制并由 v57.2/v58.2 主机分析器读取时，`TRACE_STATE(..., "", track)` 会生成空字符串状态行，而 `TRACE_STATE(..., nullptr, track)` 才会关闭当前状态且不生成 idle 行。手工构造 packet 时，省略 `name` / `name_iid` 表达清空；显式传入 `name: ""` 在这两个版本分析器中仍被视为有效状态值。该行为可对照固定版本源码与合成/SDK trace 验证，见 [ParseStateEvent](https://github.com/google/perfetto/blob/v57.2/src/trace_processor/importers/proto/track_event_event_importer.h) 与 [StateTracker](https://github.com/google/perfetto/blob/v57.2/src/trace_processor/importers/common/state_tracker.cc)。
+“空字符串”与“省略事件名”属于两种不同的编码。使用 v57.2 发布 C++ SDK 录制并由 v57.2/v58.2 主机分析器读取时，`TRACE_STATE(..., "", track)` 会生成空字符串状态行，而 `TRACE_STATE(..., nullptr, track)` 才会关闭当前状态且不生成 idle 行。手工构造 packet 时，省略 `name` / `name_iid` 表达清空；显式传入 `name: ""` 在这两个版本分析器中仍被视为有效状态值。该行为可对照固定版本源码与合成/SDK trace 验证，见 [ParseStateEvent](https://github.com/google/perfetto/blob/v57.2/src/trace_processor/importers/proto/track_event_event_importer.h) 与 [StateTracker](https://github.com/google/perfetto/blob/v57.2/src/trace_processor/importers/common/state_tracker.cc)。
 
 
 下面的枚举节选展示了 `Type` 的取值范围（省略了 proto 中的大段注释与其他字段）：
