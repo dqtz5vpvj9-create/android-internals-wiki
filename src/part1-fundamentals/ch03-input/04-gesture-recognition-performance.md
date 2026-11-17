@@ -230,7 +230,7 @@ mHandler.sendMessageAtTime(
 
 其中 `ViewConfiguration.getLongPressTimeout()` 读取 `Settings.Secure.LONG_PRESS_TIMEOUT`。Android 17 源码中的实例方法 `getLongPressTimeoutMillis()` 带有 `@FlaggedApi` 标记，`GestureDetector` 仅在持有带 `Context` 构造的 `ViewConfiguration` 且 `viewconfigurationApis` 标志开启时才会调用它，否则仍回退至静态方法。400 ms 仅是平台默认值，用户或设备的运行时设置可以修改这一长按阈值。
 
-一旦触摸位移越过 TouchSlop、进入滚动状态，或者收到额外的 `ACTION_POINTER_DOWN` 或 `ACTION_CANCEL`，长按候选都会被取消。
+一旦触摸位移越过 TouchSlop、进入滚动状态，或者收到额外的 `ACTION_POINTER_DOWN` 或 `ACTION_CANCEL`，都可能取消长按候选。
 
 同时，平台还会结合输入分类结果调整长按行为：若收到 `MotionEvent.CLASSIFICATION_AMBIGUOUS_GESTURE` 且当前仍处于长按候选中，系统会按配置倍率放大 TouchSlop 并延后长按触发；若收到 `CLASSIFICATION_DEEP_PRESS`，则可立即触发长按。由于这些分类信息来自底层输入链路，应用若再根据压力值自建一套平行判定规则，极易与系统行为发生冲突。
 
