@@ -21,6 +21,8 @@ related_chapters: ["1.1", "2.1", "3.1"]
 
 > 本阅读版基于高建武（Gracker）的 [Android 技术内幕](https://github.com/Gracker/android-internals-wiki) 修改，主要调整叙述与行文。原书及本改编版采用 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) 许可。
 
+> 润色进度：第 1—17 章。后续章节保留原文，随修订逐章更新。
+
 本书当前为中文版本，v1.0 发布后将提供英文版本（*Android Internals & Performance: From Principles to Practice*）。
 
 市面上的 Android 资料通常各有侧重：API 手册解决接口怎么用，源码文章解释某一条调用路径，性能案例记录一次问题怎么处理。这本书把系统机制、性能问题、分析工具和版本演进放进同一套结构，方便读者从现象一路查到代码与数据。
