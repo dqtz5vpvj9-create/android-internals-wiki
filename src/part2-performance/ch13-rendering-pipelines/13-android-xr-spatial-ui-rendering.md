@@ -492,7 +492,7 @@ host 上按时生成帧，只说明第一段顺利；传输和 glasses present �
 
 Android XR 把 2D panel、空间内容、姿态预测、runtime 合成和头显或眼镜显示组织成多条责任不同的路径；把它理解成“在传统 View 管线末端再多挂一个显示设备”，会漏掉大半条链路。我们分析前先确定内容形态、swapchain 或 Surface 的所有者以及最终 present 的责任方，再分别测量资源准备、应用渲染、runtime cadence、tracking 和设备端显示。这些分界摆清楚之后，资产预算、spacewarp、帧率与功耗数据才有可比性。
 
-## 本轮配图核对依据
+## 图示与源码参考
 
 - [Immersive 质量指南](https://developer.android.com/docs/quality-guidelines/android-xr/immersive)、[Augmented 质量指南](https://developer.android.com/docs/quality-guidelines/android-xr/augmented)：适用形态、adaptive 档、当前渲染/启动目标与推荐分辨率。
 - [Compose beta02 sources](https://dl.google.com/dl/android/maven2/androidx/xr/compose/compose/1.0.0-beta02/compose-1.0.0-beta02-sources.jar)、[POM](https://dl.google.com/dl/android/maven2/androidx/xr/compose/compose/1.0.0-beta02/compose-1.0.0-beta02.pom)、[AAR](https://dl.google.com/dl/android/maven2/androidx/xr/compose/compose/1.0.0-beta02/compose-1.0.0-beta02.aar)：记忆状态生命周期、实验 API、实际依赖与构建 metadata。

@@ -722,7 +722,7 @@ Jetpack WebGPU 在应用进程中加载 AndroidX AAR 内的 Dawn；WebView 是�
 
 回到这一章的主线：Jetpack WebGPU 的价值是用统一对象模型组织渲染与计算，同时保留对 adapter、feature、limit 和后端的显式查询；Dawn、驱动、Android Surface 和系统显示链路仍然都在链路上，一层也绕不过去。采用之前，把 API 稳定性、AAR 体积、资源生命周期和设备覆盖纳入选型，再用同设备、同画质、同同步点的 trace 与 GPU counter 验证性能。WebView WebGPU 是另一条由 Chromium 管理的运行时路径，能力与生命周期假设要和 AndroidX WebGPU 分开维护。
 
-## 本轮配图补充依据
+## 图示与源码参考
 
 - [当前 alpha06 source JAR](https://dl.google.com/dl/android/maven2/androidx/webgpu/webgpu/1.0.0-alpha06/webgpu-1.0.0-alpha06-sources.jar)：显式启动 `processEventsLoop()`、单线程 `execute()`、16 ms delay、dispatcher 所有权与 close 的阻塞边界。
 - [Dawn SwapChain.cpp](https://dawn.googlesource.com/dawn/+/9d41fdf36977cca92361c6ae2769129bbaaafd9b/src/dawn/native/SwapChain.cpp)、[Vulkan WSI](https://dawn.googlesource.com/dawn/+/9d41fdf36977cca92361c6ae2769129bbaaafd9b/src/dawn/native/vulkan/SwapChainVk.cpp)、[GLES WSI](https://dawn.googlesource.com/dawn/+/9d41fdf36977cca92361c6ae2769129bbaaafd9b/src/dawn/native/opengl/SwapChainEGL.cpp)：current texture 引用与失效、获取时的同步、可选 blit 和 GLES 呈现中间纹理。
