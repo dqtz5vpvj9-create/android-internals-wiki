@@ -1887,7 +1887,7 @@ Android 上常见的 `CLOCK_BOOTTIME` 包含 suspend，`CLOCK_MONOTONIC` 不累�
 
 #### 3.2 环形覆盖为何会破坏后续解释
 
-Track Event 常通过 string interning（把重复字符串登记一次并分配整数 ID）压缩数据，后续 packet 只引用 ID；`linux.process_stats` 也可能先记录线程与进程的对应关系，后续 ftrace packet 再引用 TID（线程 ID）。若 ring buffer 覆盖了较早的映射，保留下来的事件就会缺少解释后续 ID 所需的 incremental state（增量状态）。
+Track Event 常通过 string interning（把重复字符串登记一次并分配整数 ID）压缩数据，后续 packet 只引用 ID；`linux.process_stats` 也可能先记录线程与进程的对应关系，后续 ftrace packet 再引用 TID（线程 ID）。若 ring buffer 覆盖了较早的映射，保留下来的事件就可能缺少解释后续 ID 所需的 incremental state（增量状态）。
 
 Trace Processor 会检测部分无效增量状态，并跳过依赖缺失 interned data 的 packet。后果也未必只是名称为空：整段 sequence 都可能进不了分析表。
 

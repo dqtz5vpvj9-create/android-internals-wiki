@@ -456,7 +456,7 @@ D 状态与 ANR（Application Not Responding，应用无响应）的关系也经
 
 ## 14.3.8 IRQ / SoftIRQ：调度区间里的隐含执行
 
-Running 区间里还可能藏着一层中断执行。HardIRQ 在中断上下文中运行，会暂停当前 CPU 上的任务；SoftIRQ 则可能在中断返回路径上执行，也可能交给 `ksoftirqd` 内核线程处理。由于 HardIRQ 以及在中断返回路径执行的 SoftIRQ 都不要求发生任务切换，外层线程在 `thread_state` 中依然连续显示为 Running——如果把这整段 Running 全部算作应用函数的耗时，就会高估应用代码自身的执行时间。
+Running 区间里还可能藏着一层中断执行。HardIRQ 在中断上下文中运行，会暂停当前 CPU 上的任务；SoftIRQ 则可能在中断返回路径上执行，也可能交给 `ksoftirqd` 内核线程处理。由于 HardIRQ 以及在中断返回路径执行的 SoftIRQ 都不要求发生任务切换，外层线程在 `thread_state` 中仍可能连续显示为 Running——如果把这整段 Running 全部算作应用函数的耗时，就会高估应用代码自身的执行时间。
 
 下面的查询汇总已采集的 IRQ 与 SoftIRQ Slice：
 
