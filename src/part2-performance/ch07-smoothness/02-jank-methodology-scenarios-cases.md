@@ -737,7 +737,7 @@ AOSP 的 Launcher3 提供了 Workspace、CellLayout、Widget 与 Quickstep（手
 
 AOSP Quickstep 由 Launcher3 实现，其窗口组织与动画同时依赖 WindowManager Shell、ActivityTaskManager、SurfaceControl transactions（图层事务）与 SurfaceFlinger。由于 OEM 可以替换参与者或动画实现，具体的进程名与 slice 名称应以目标设备实测为准。
 
-多任务手势通常同时操作以下几类对象：
+多任务手势可能操作以下对象：
 
 - 当前任务的 live surface（实时任务画面）与 transition leash；
 - 其他任务的 snapshot；
