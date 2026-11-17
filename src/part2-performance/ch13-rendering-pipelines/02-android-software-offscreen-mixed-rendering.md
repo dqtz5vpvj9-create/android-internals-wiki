@@ -706,11 +706,11 @@ flowchart TD
 
 #### 谁生产、写到哪里、谁消费
 
-分析混合页从建立对象清单开始。清单要区分数据流与控制流：`Surface` 通常由图像 Consumer 创建，再交给 Producer 绘制；`SurfaceControl` 控制合成树中的节点，`Transaction` 更新位置、裁剪、层级等显示属性，也能通过 `setBuffer()` 提交 buffer。像素的生产、提交和消费，以及图层状态的更新，要分别核对，再关联到同一内容对象。[来源: [Android 图形系统全景 §3：层级之间的关系](https://juejin.cn/post/7670404221932306474)] [已验证: `android-17.0.0_r1` 的 [`Surface.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/Surface.java) 类注释；[`SurfaceControl.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/SurfaceControl.java) 类注释与 `Transaction#setBuffer()`。]
+分析混合页从建立对象清单开始。清单要区分数据流与控制流：`Surface` 通常由图像 Consumer 创建，再交给 Producer 绘制；`SurfaceControl` 控制合成树中的节点，`Transaction` 更新位置、裁剪、层级等显示属性，也能通过 `setBuffer()` 提交 buffer。像素的生产、提交和消费，以及图层状态的更新，要分别核对，再关联到同一内容对象。[^source-audit-note-1] [^source-audit-note-2]
 
 `Surface` 对关联的 Consumer 只起弱引用作用；仅持有 `Surface` 不能防止 Consumer 被回收。维护 Producer 的同时，也要保持 `SurfaceTexture` 等 Consumer 的有效生命周期。[`Surface.java` 类注释](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/Surface.java#51)明确说明了这一点。
 
-layer tree 中还包含不承载 buffer 的节点：container layer 本身不渲染，effect layer 没有关联 buffer。统计 Producer 和队列前，先核对节点类型与 parent/child，找到实际承载 buffer 的节点。[已验证: `android-17.0.0_r1`，`SurfaceControl.java` 的内部 `Builder#setContainerLayer()` / `setEffectLayer()`（均为 `@hide` 源码入口），以及 [`SurfaceView.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/SurfaceView.java) 的 `createBlastSurfaceControls()`。]
+layer tree 中还包含不承载 buffer 的节点：container layer 本身不渲染，effect layer 没有关联 buffer。统计 Producer 和队列前，先核对节点类型与 parent/child，找到实际承载 buffer 的节点。[^source-audit-note-3]
 
 每条内容路径至少记录一行：
 
@@ -1080,4 +1080,6 @@ common kernel 解释不了 vendor GPU、codec、Camera 或 DPU（Display Process
 
 定位错帧时，我们从异常 display present 开始，列出每个 layer 使用的新旧 buffer 与几何状态，再检查宿主内部输入，直到找到最早偏离业务期望的 Producer 或同步边界。
 
-
+[^source-audit-note-1]: 来源: [Android 图形系统全景 §3：层级之间的关系](<https://juejin.cn/post/7670404221932306474>)
+[^source-audit-note-2]: 已验证: `android-17.0.0_r1` 的 [`Surface.java`](<https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/Surface.java>) 类注释；[`SurfaceControl.java`](<https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/SurfaceControl.java>) 类注释与 `Transaction#setBuffer()`。
+[^source-audit-note-3]: 已验证: `android-17.0.0_r1`，`SurfaceControl.java` 的内部 `Builder#setContainerLayer()` / `setEffectLayer()`（均为 `@hide` 源码入口），以及 [`SurfaceView.java`](<https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/view/SurfaceView.java>) 的 `createBlastSurfaceControls()`。

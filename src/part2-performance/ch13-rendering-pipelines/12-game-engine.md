@@ -511,9 +511,9 @@ API 37 新增的 `Surface.setProducerThrottlingEnabled(boolean)` 默认开启：
 
 ### BufferQueue 计数、分辨率切换与显存预算
 
-`android-17.0.0_r1` 的 `BufferQueueCore` 构造函数把 `mMaxAcquiredBufferCount` 和 `mMaxDequeuedBufferCount` 都初始化为 1，再用 `getMaxBufferCountLocked()` 按 acquired + dequeued + async / non-blocking 额外项计算当前队列上限，结果受 `mMaxBufferCount` 限制；构造函数据此把起始 free slot 放入 `mFreeSlots`。这组默认值描述的是新建 BufferQueue 的锁内约束，平台并没有给过“所有游戏 swapchain 最终固定两张图像”的 API 保证。[来源: DeepResearch/2026-07-17-game-engine-resolution-memory-allocation.md; 已验证: android-17.0.0_r1 `frameworks/native/libs/gui/BufferQueueCore.cpp`:120-149, 238-266]
+`android-17.0.0_r1` 的 `BufferQueueCore` 构造函数把 `mMaxAcquiredBufferCount` 和 `mMaxDequeuedBufferCount` 都初始化为 1，再用 `getMaxBufferCountLocked()` 按 acquired + dequeued + async / non-blocking 额外项计算当前队列上限，结果受 `mMaxBufferCount` 限制；构造函数据此把起始 free slot 放入 `mFreeSlots`。这组默认值描述的是新建 BufferQueue 的锁内约束，平台并没有给过“所有游戏 swapchain 最终固定两张图像”的 API 保证。[^source-audit-note-1]
 
-`Surface::setBufferCount(N)` 在 N>0 时先查询 `NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS`，再把参数转换成 `setMaxDequeuedBufferCount(N - minUndequeued)`；N=0 是把 max-dequeued 恢复为 1 的分支。`BufferQueueProducer::setMaxDequeuedBufferCount()` 会检查当前已 dequeued 的 buffer 数、最小 slot 数和总上限，不满足就返回 `BAD_VALUE`。所以在 resize、折叠/分屏切换或 Surface 重建期间，如果旧 image 仍被 producer / GPU / HWC 使用，直接反复改队列深度，可能只是在制造新的拒绝路径和额外重建工作。[来源: DeepResearch/2026-07-17-game-engine-resolution-memory-allocation.md; 已验证: android-17.0.0_r1 `frameworks/native/libs/gui/Surface.cpp`:2601-2624, `frameworks/native/libs/gui/BufferQueueProducer.cpp`:183-271]
+`Surface::setBufferCount(N)` 在 N>0 时先查询 `NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS`，再把参数转换成 `setMaxDequeuedBufferCount(N - minUndequeued)`；N=0 是把 max-dequeued 恢复为 1 的分支。`BufferQueueProducer::setMaxDequeuedBufferCount()` 会检查当前已 dequeued 的 buffer 数、最小 slot 数和总上限，不满足就返回 `BAD_VALUE`。所以在 resize、折叠/分屏切换或 Surface 重建期间，如果旧 image 仍被 producer / GPU / HWC 使用，直接反复改队列深度，可能只是在制造新的拒绝路径和额外重建工作。[^source-audit-note-2]
 
 
 分辨率调整先区分内部 render scale 与输出 Surface/swapchain 尺寸。只改变离屏渲染区域时，native window 与 swapchain image count 都可以维持原状；Unity 6.0 的公开动态分辨率实现甚至继续保留完整尺寸 render target、只使用其中一部分，降低 render scale 也就未必伴随显存释放。实际呈现尺寸或 image count 需要改变时，再交给引擎处理旧资源依赖，按 WSI/EGL 协议调整或按需重建目标。[来源：Unity 动态分辨率](https://docs.unity3d.com/6000.0/Documentation/Manual/DynamicResolution-introduction.html)、[Android Vulkan WSI](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/vulkan/libvulkan/swapchain.cpp)。
@@ -895,3 +895,6 @@ OEM 策略、画质、thermal、frame-rate vote 与引擎上限都可能限制�
 - 小游戏 TextureView、云游戏视频 carrier、手机 AR 与 OpenXR runtime 各有不同的 producer、时钟域和 present 责任方。
 - Android 17 新增 present timing 与 producer throttling 控制，但显式同步、extension 检查和设备验证仍由引擎负责。
 - BufferQueue 默认 slot 配置、受控扩展和游戏 swapchain capabilities 要分别检查：slot 数只是配置，当前分配数要另查，二缓冲还是三缓冲交给 EGL / Vulkan 协商决定。
+
+[^source-audit-note-1]: 来源: DeepResearch/2026-07-17-game-engine-resolution-memory-allocation.md; 已验证: android-17.0.0_r1 `frameworks/native/libs/gui/BufferQueueCore.cpp`:120-149, 238-266
+[^source-audit-note-2]: 来源: DeepResearch/2026-07-17-game-engine-resolution-memory-allocation.md; 已验证: android-17.0.0_r1 `frameworks/native/libs/gui/Surface.cpp`:2601-2624, `frameworks/native/libs/gui/BufferQueueProducer.cpp`:183-271
