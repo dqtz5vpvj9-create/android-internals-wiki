@@ -979,7 +979,7 @@ Fence（同步栅栏）是异步工作的完成凭证，本身开销极轻，仅
 
 Android 图形链路需要 fence，是因为 CPU、GPU、Camera ISP（Image Signal Processor，图像信号处理器）、codec、SurfaceFlinger、HWC 和 display controller（显示控制器）可以并行工作。Producer 可以先把 buffer 与 fence 交给 consumer，再让 GPU 继续写；consumer 也可以先安排显示，再返回一条稍后才 signal 的 release fence。这样既避开了 CPU 在每个阶段的同步阻塞，也避开了 consumer 读到尚未写完的像素。
 
-fence 的名称由观察位置决定：同一个同步对象从 producer 传到 consumer 之后，角色名称会随之变化。
+fence 的名称由观察位置决定：同一个同步对象从 producer 传到 consumer 之后，角色名称可能随之变化。
 
 ### 1. Fence 的三种状态
 
