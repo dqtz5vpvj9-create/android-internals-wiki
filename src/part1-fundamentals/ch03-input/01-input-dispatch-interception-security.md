@@ -129,7 +129,7 @@ SetTaskProfiles(/*tid=*/0, {"InputPolicy"});
 
 #### 2.1 从硬件总线到 evdev 设备节点
 
-触摸屏通常通过 I2C 或 SPI 总线连接，键盘和鼠标则常通过 USB、Bluetooth 或其他总线连接。驱动把设备事件提交给 Linux input core（输入核心）后，evdev 再通过 `/dev/input/eventX` 设备节点暴露给用户空间。
+触摸屏可能通过 I2C 或 SPI 总线连接，键盘和鼠标可能通过 USB、Bluetooth 或其他总线连接。驱动把设备事件提交给 Linux input core（输入核心）后，evdev 再通过 `/dev/input/eventX` 设备节点暴露给用户空间。
 
 在 `android17-6.18-2026-06_r6` 的 `drivers/input/evdev.c` 中：
 
@@ -280,7 +280,7 @@ InputReader
 
 #### 4.4 分发中的坐标转换
 
-`InputDispatcher` 选定窗口后，还会依据显示器与窗口的变换矩阵为目标转换坐标。在折叠屏、旋转、桌面模式、窗口缩放或镜像场景下，原始显示坐标与应用收到的窗口局部坐标往往并不一致。
+`InputDispatcher` 选定窗口后，还会依据显示器与窗口的变换矩阵为目标转换坐标。在折叠屏、旋转、桌面模式、窗口缩放或镜像场景下，原始显示坐标与应用收到的窗口局部坐标可能不同。
 
 遇到“事件送对窗口但坐标不对”时，应同时检查：
 

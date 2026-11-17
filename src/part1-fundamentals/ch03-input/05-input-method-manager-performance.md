@@ -190,7 +190,7 @@ AOSP `android-17.0.0_r1` 中提供了以下布尔资源，用于控制“当非�
 
 ## 4. 应用侧如何可靠显示和确认 IME
 
-在 Activity 刚创建时，View 焦点与窗口焦点往往尚未同时成立。下面这段 AndroidX 写法会将显示请求交给窗口对应的 Insets 控制器：
+在 Activity 刚创建时，View 焦点与窗口焦点可能尚未同时成立。下面这段 AndroidX 写法会将显示请求交给窗口对应的 Insets 控制器：
 
 ```kotlin
 editText.requestFocus()
