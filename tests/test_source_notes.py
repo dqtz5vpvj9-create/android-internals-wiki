@@ -23,18 +23,19 @@ class SourceNotesTest(unittest.TestCase):
         self.assertIn("正常文字。[^source-audit-note-1]", result)
         self.assertIn("已验证: `path`", result)
 
-    def test_preserves_explicit_links_and_existing_footnotes(self):
-        source = "[来源: link](https://example.org) 和既有注释[^source-audit-note-1]。\n[来源: other]\n"
+    def test_moves_explicit_links_and_preserves_existing_footnotes(self):
+        source = "[来源: link](https://example.org/a#method()) 和既有注释[^source-audit-note-1]。\n[来源: other]\n"
         result = source_notes(source)
-        self.assertIn("[来源: link](https://example.org)", result)
-        self.assertIn("[^source-audit-notex-1]: 来源: other", result)
+        self.assertIn("[^source-audit-notex-1]: [来源: link](https://example.org/a#method())", result)
+        self.assertIn("[^source-audit-notex-2]: 来源: other", result)
+        self.assertEqual(source_notes(result), result)
 
     def test_nested_links_stay_in_the_footnote(self):
         source = "解释。[来源: [图形系统](https://example.org/a)] [已验证: [`Surface.java`](https://example.org/b)。]\n"
         result = source_notes(source)
         self.assertIn("解释。[^source-audit-note-1] [^source-audit-note-2]", result)
-        self.assertIn("[图形系统](<https://example.org/a>)", result)
-        self.assertIn("[`Surface.java`](<https://example.org/b>)", result)
+        self.assertIn("[图形系统](https://example.org/a)", result)
+        self.assertIn("[`Surface.java`](https://example.org/b)", result)
         self.assertEqual(source_notes(result), result)
 
     def test_frontmatter_is_unchanged(self):

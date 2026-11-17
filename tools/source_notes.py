@@ -10,7 +10,7 @@ ANNOTATION = re.compile(r"(?<!\\)\[((?:来源|已验证)\s*[:：][^\]\n]+)\](?!\
 ANNOTATION_START = re.compile(r"(?<!\\)\[(?:来源|已验证)\s*[:：]")
 INLINE_CODE = re.compile(r"(`+)(.*?)(\1)")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-URL = re.compile(r"(?<!<)https?://[^\s；，、）)<>]+")
+URL = re.compile(r"(?<!<)(?<!\]\()https?://[^\s；，、）)<>]+")
 
 
 def source_notes(text: str) -> str:
@@ -51,7 +51,7 @@ def source_notes(text: str) -> str:
                 fence_char, fence_len = "", 0
             out.append(line)
             continue
-        if fence_char or line.startswith(("    ", "\t")):
+        if fence_char or line.startswith(("    ", "\t")) or re.match(r"^\[\^[^]]+\]:", line):
             out.append(line)
             continue
         # Records can contain code spans and Markdown links. Locate the
@@ -76,11 +76,28 @@ def source_notes(text: str) -> str:
                     if depth == 0:
                         break
                 end += 1
-            if depth or end + 1 < len(line) and line[end + 1] == "(":
+            if depth:
                 search_at = match.end()
                 continue
+            if end + 1 < len(line) and line[end + 1] == "(":
+                start = end + 1
+                parentheses = 0
+                while end + 1 < len(line):
+                    end += 1
+                    if line[end] == "(":
+                        parentheses += 1
+                    elif line[end] == ")":
+                        parentheses -= 1
+                        if not parentheses:
+                            break
+                if parentheses:
+                    search_at = start + 1
+                    continue
+                value = line[match.start():end + 1]
+            else:
+                value = line[match.start() + 1:end]
             pieces.append(line[cursor:match.start()])
-            pieces.append(replace(line[match.start() + 1:end]))
+            pieces.append(replace(value))
             cursor = search_at = end + 1
         pieces.append(line[cursor:])
         out.append("".join(pieces))
