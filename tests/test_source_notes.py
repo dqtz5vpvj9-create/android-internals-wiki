@@ -29,6 +29,14 @@ class SourceNotesTest(unittest.TestCase):
         self.assertIn("[来源: link](https://example.org)", result)
         self.assertIn("[^source-audit-notex-1]: 来源: other", result)
 
+    def test_nested_links_stay_in_the_footnote(self):
+        source = "解释。[来源: [图形系统](https://example.org/a)] [已验证: [`Surface.java`](https://example.org/b)。]\n"
+        result = source_notes(source)
+        self.assertIn("解释。[^source-audit-note-1] [^source-audit-note-2]", result)
+        self.assertIn("[图形系统](<https://example.org/a>)", result)
+        self.assertIn("[`Surface.java`](<https://example.org/b>)", result)
+        self.assertEqual(source_notes(result), result)
+
 
 if __name__ == "__main__":
     unittest.main()

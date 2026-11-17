@@ -11,9 +11,10 @@ import re
 from pathlib import Path
 
 ANNOTATION = re.compile(r"(?<!\\)\[((?:来源|已验证)\s*[:：][^\]\n]+)\](?!\()")
+ANNOTATION_START = re.compile(r"(?<!\\)\[(?:来源|已验证)\s*[:：]")
 INLINE_CODE = re.compile(r"(`+)(.*?)(\1)")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-URL = re.compile(r"https?://[^\s；，、）)<>]+")
+URL = re.compile(r"(?<!<)https?://[^\s；，、）)<>]+")
 
 
 def source_notes(text: str) -> str:
@@ -26,8 +27,7 @@ def source_notes(text: str) -> str:
     fence_len = 0
     out: list[str] = []
 
-    def replace(match: re.Match[str]) -> str:
-        value = match.group(1)
+    def replace(value: str) -> str:
         if value not in labels:
             labels[value] = f"{marker}-{len(labels) + 1}"
         return f"[^{labels[value]}]"
@@ -45,16 +45,36 @@ def source_notes(text: str) -> str:
         if fence_char or line.startswith(("    ", "\t")):
             out.append(line)
             continue
-        # Records can contain code spans; only skip a record that starts
-        # inside one, rather than splitting the record at its inner spans.
+        # Records can contain code spans and Markdown links. Locate the
+        # matching outer bracket without disturbing nested link labels.
         code_spans = [(code.start(), code.end()) for code in INLINE_CODE.finditer(line)]
-
-        def replace_outside_code(match: re.Match[str]) -> str:
+        pieces = []
+        cursor = search_at = 0
+        while match := ANNOTATION_START.search(line, search_at):
             if any(start <= match.start() < end for start, end in code_spans):
-                return match.group(0)
-            return replace(match)
-
-        out.append(ANNOTATION.sub(replace_outside_code, line))
+                search_at = match.end()
+                continue
+            depth = 0
+            end = match.start()
+            while end < len(line):
+                if line[end] == "\\":
+                    end += 2
+                    continue
+                if line[end] == "[":
+                    depth += 1
+                elif line[end] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            if depth or end + 1 < len(line) and line[end + 1] == "(":
+                search_at = match.end()
+                continue
+            pieces.append(line[cursor:match.start()])
+            pieces.append(replace(line[match.start() + 1:end]))
+            cursor = search_at = end + 1
+        pieces.append(line[cursor:])
+        out.append("".join(pieces))
 
     if not labels:
         return text
