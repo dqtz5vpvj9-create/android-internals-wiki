@@ -636,7 +636,7 @@ if (Build.VERSION.SDK_INT >= 36) {
 }
 ```
 
-⚠️ 矛盾：[`ProfilingTrigger` 的公开注释](https://developer.android.com/reference/android/os/ProfilingTrigger#TRIGGER_TYPE_ANR) 描述 ANR trigger 发生在系统尝试杀应用之前；但 [Android 17 r1 `AnrHelper`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/am/AnrHelper.java) 在 `r.appNotResponding()` 返回后发送 trigger，而该调用中的 `ProcessErrorStateRecord` 已可能执行 `killLocked()`。因此不要把 trigger 当作“应用尚未被杀”或“原现场仍保留”的保证；结果回调可能要等应用下次启动并注册监听器。
+[`ProfilingTrigger` 的公开注释](https://developer.android.com/reference/android/os/ProfilingTrigger#TRIGGER_TYPE_ANR) 将 ANR trigger 描述为系统尝试杀死应用之前发生；[Android 17 r1 `AnrHelper`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/am/AnrHelper.java) 则在 `r.appNotResponding()` 返回后发送 trigger，而该调用中的 `ProcessErrorStateRecord` 已可能执行 `killLocked()`。分析时需结合进程状态判断原现场是否保留；结果回调也可能等到应用下次启动并注册监听器后才到达。
 
 触发式结果只会投递给通过 `registerForAllProfilingResults()` 注册的全局 listener。生产代码还要检查 `ProfilingResult` 的 error code（错误码）、文件生命周期，并避免重复注册，同时按隐私规范处理产物。Android 17（API 37）新增的 `TRIGGER_TYPE_ANOMALY` 面向系统检测到的通用异常，产物类型取决于 anomaly tag；ANR 采集应继续使用含义明确的 `TRIGGER_TYPE_ANR`。
 

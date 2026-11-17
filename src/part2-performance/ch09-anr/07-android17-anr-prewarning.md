@@ -975,7 +975,7 @@ Perfetto 不会自动生成固定的 `/data/anr` 产物。需要预先配置持�
 
 输入 timeout、WMS 归因和 ANR 主路径在更早版本已经存在；Android 17 的 pre-warning 行为，倒推回 Android 14—16 是套不上的。
 
-> ⚠️ 矛盾：r1 个别源码注释把 callback 复用写成进程级、把保存的 eventTime 写成等待起点，并用“持有焦点时长”概括候选判断。实际执行分别是 ActivityManager 实例字段、输入事件时间赋值，以及 `uptime - mInputFocusRequestTimeMillis`。`AnrInfo.isUserPerceptible()` 的注释提到对话框，但此处构造值来自 `!isSilentAnr`，不能倒推 UI 必已展示。本文按具体字段和赋值解释，保留这些注释与实现的差异。
+Android 17 r1 中，callback 复用使用 ActivityManager 的实例字段，保存的 eventTime 来自输入事件，候选判断使用 `uptime - mInputFocusRequestTimeMillis`；部分源码注释对这些细节的描述不同。`AnrInfo.isUserPerceptible()` 的注释提到对话框，而此处的构造值来自 `!isSilentAnr`，是否展示 UI 还需结合实际路径判断。
 
 ## 结论
 

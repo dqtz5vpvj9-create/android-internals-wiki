@@ -176,7 +176,7 @@ Broadcast 路径对 freezer 有明确处理，可以对照四条规则：
 
 默认 `enable_wait_for_finish_attach_application=true` 时，冷启动应用先完成 Provider 初始化和 `Application.onCreate()`，回报 `finishAttachApplication()`，AMS 才交付待处理广播与服务；关闭该配置时，尚未完成的初始化才可能进入组件 timer。CPU 饥饿补偿还取决于 native timer 是否可用，所以设备上的实测总时长要按 timer 配置解释，基准期限只是基准。
 
-⚠️ 矛盾：[官方 ANR 诊断指南](https://developer.android.com/topic/performance/anrs/diagnose-and-fix-anrs#broadcast-receiver) 将冷启动概括为广播期限的一部分；[Android 17 AMS](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/am/ActivityManagerService.java) 的默认 finish-attach 等待与现代队列起算点更细。判断具体设备时应使用其配置和实际 dispatch 时间。
+[官方 ANR 诊断指南](https://developer.android.com/topic/performance/anrs/diagnose-and-fix-anrs#broadcast-receiver) 将冷启动概括为广播期限的一部分；[Android 17 AMS](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/am/ActivityManagerService.java) 的默认 finish-attach 等待和现代队列起算点则需要按前述过程细分。判断具体设备时，应结合配置和实际 dispatch 时间。
 
 <!-- gracker-diagram: ed09-03-broadcast-readiness-and-timer -->
 ![广播交付前准备与 receiver 计时分开](../../assets/diagrams/ch09/ed09-03-broadcast-readiness-and-timer.png)
@@ -401,7 +401,7 @@ libbinder 的 `ProcessState.cpp` 把 `DEFAULT_MAX_BINDER_THREADS` 设为 15，�
 
 分析 ANR 窗口里的 GC，先把 collector 认清楚。从历史演进看，Android 8 的 ART 默认转向 Concurrent Copying（并发复制），Android 10 起 CC 支持分代收集；Android 17 固定源码同时含 CC 与 Concurrent Mark Compact（CMC，并发标记整理）等分支，`gUseReadBarrier` 与 `gUseUserfaultfd` 对应不同 collector，诊断时应记录目标进程实际的 collector 名称和配置。并发收集仍有暂停；time to suspend（等线程到达可暂停点）已包含在相应 GC pause 统计中，直接读统计即可。
 
-⚠️ 矛盾：[GC 调试文档](https://source.android.com/docs/core/runtime/gc-debug) 仍以 CC/CMS 说明默认计划；[Android 17 Heap 源码](https://android.googlesource.com/platform/art/+/android-17.0.0_r1/runtime/gc/heap.cc) 已有 CMC 与 CC 的配置分支。文档历史默认不能替代当前进程的实际 collector。
+[GC 调试文档](https://source.android.com/docs/core/runtime/gc-debug) 以 CC/CMS 说明历史默认方案；[Android 17 Heap 源码](https://android.googlesource.com/platform/art/+/android-17.0.0_r1/runtime/gc/heap.cc) 包含 CMC 与 CC 的配置分支。诊断时需要确认目标进程实际使用的 collector。
 
 
 一次 ANR 时间窗内还可能出现：

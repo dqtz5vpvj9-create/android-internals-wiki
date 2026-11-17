@@ -693,7 +693,7 @@ mService.appNotResponding(queue.app, tr);
 
 进程冷启动也要分析，但要先确认广播计时实际何时启动。Android 17 的 `scheduleReceiverColdLocked()` 先请求拉起进程，`onApplicationAttachedLocked()` 再交给 warm dispatch，`dispatchReceivers()` 才启动接收计时。默认 `enable_wait_for_finish_attach_application=true` 时，AMS 要等应用执行完 Provider 初始化、`Application.onCreate()` 并回报 `finishAttachApplication()` 后，才进入这次广播交付；fork 和这些初始化步骤是否计入该 receiver 的 10/60 秒窗口，要看计时起点在哪里。关闭该配置时，交付可提前到初始化结束之前，剩余的主线程初始化与排队才会消耗广播期限。
 
-⚠️ 矛盾：[官方诊断指南](https://developer.android.com/topic/performance/anrs/diagnose-and-fix-anrs#broadcast-receiver) 通用表述为“冷启动也计入广播超时”；[Android 17 固定源码](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/am/ActivityManagerService.java) 的默认 finish-attach 等待和现代队列计时点更细。诊断特定设备时，以其源码、配置和实际派发时间为准；照通用表述画一根覆盖全部启动阶段的 timer，会把计时范围画错。启动本身另有进程启动、Provider 发布和 bind-application 保护，可能产生其他失败或应用启动 ANR。
+[官方诊断指南](https://developer.android.com/topic/performance/anrs/diagnose-and-fix-anrs#broadcast-receiver) 将冷启动概括为广播超时的一部分；[Android 17 固定源码](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/services/core/java/com/android/server/am/ActivityManagerService.java) 中，默认 finish-attach 等待和现代队列的计时点更细。诊断具体设备时，需要结合其源码、配置和实际派发时间确定计时范围。进程启动、Provider 发布和 bind-application 另有保护机制，也可能产生其他失败或应用启动 ANR。
 
 <!-- gracker-diagram: ch09-01-29-android17-finish-attach -->
 ![Android 17 默认初始化结束后才交付待处理组件](../../assets/diagrams/ch09/ch09-01-29-android17-finish-attach.png)

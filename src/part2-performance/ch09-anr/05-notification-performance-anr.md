@@ -466,7 +466,7 @@ trace 停在 `NotificationManager.notify*()`、`BinderProxy.transactNative()` �
 
 图：ProgressStyle是内容样式，Live Update是提升展示；固定源码的禁止阈值是MIN而非LOW，提升也不带来确定的性能收益。
 
-> ⚠️ 矛盾：本章引用的旧研究摘要把 ProgressStyle 与自动提升混在一起，并把 LOW importance 写为禁止条件；当前源码检查的是 `importance <= MIN`，且提升还受权限、用户与产品规则约束。原始摘要保留，本章按固定源码和当前指南说明。
+当前源码检查的禁止阈值为 `importance <= MIN`，提升展示还受权限、用户设置和产品规则约束。ProgressStyle 的内容样式与 Live Update 的提升展示分别承担不同职责。
 
 ### MetricStyle 与 Semantic Coloring
 

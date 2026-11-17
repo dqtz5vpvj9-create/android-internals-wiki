@@ -278,7 +278,7 @@ detector 由特权调用方开启，我们依次看它的权限与计时方式�
 
 固定检测的起点在 `beforeRemote()` 投递处；可取消操作随后还会准备远端 cancellation transport，再执行实际操作。注意 `ContentProviderClient` 的检测 runnable 是客户端对象的共享字段，多个并发调用未必各有独立的 timer；同一个 client 的并发使用、重新配置与关闭，要按接口约束和目标源码核对。
 
-> ⚠️ 矛盾：官方诊断页把 Provider 查询的冷启动概括为 ANR 预算的一部分，并将配置者表述为 Provider；本版本 setter 与 timer 位于调用方 client。`acquireContentProviderClient()` 先获取 Provider、再创建 client，因此获取 client 前的 ready wait 不会自动纳入随后 `beforeRemote()` 的固定期限。冷启动仍可能通过发布后尚未结束的初始化或共享依赖影响远程调用，诊断应分段计时。
+官方诊断页将 Provider 查询的冷启动概括为 ANR 预算的一部分；本版本的 setter 与 timer 位于调用方 client。`acquireContentProviderClient()` 先获取 Provider、再创建 client，因此获取 client 前的 ready wait 不会自动计入随后 `beforeRemote()` 的固定期限。冷启动仍可能通过发布后尚未结束的初始化或共享依赖影响远程调用，诊断时应分段计时。
 
 <!-- gracker-diagram: ed09-06-fixed-detector-lifecycle -->
 ![获取 client 之前的等待与 fixed 检测分开计时](../../assets/diagrams/ch09/ed09-06-fixed-detector-lifecycle.png)
