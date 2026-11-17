@@ -663,7 +663,7 @@ adb shell am memory-limiter manual <pid> 30
 adb shell am memory-limiter manual <pid> none
 ```
 
-这些测试命令以启用 MemoryLimiter 的设备和可重启进程为前提；其中只有 `status` 是查询，其余命令会改变限制或忽略设置。固定 r1 的 `manual` 接受整数或 `none`，整数经 Java 按 MiB 换算，同时用于内存与 Swap 限制，Swap 写入另受开关控制；`max` 不被该 shell 解析器接受。`none` 先变为 -1，再乘成 -1048576，JNI 对该值跳过写入，因此它不能可靠恢复既有节点。测试后应重启目标进程，再读取其 cgroup 节点确认；不要沿用帮助文字中的百分比或复位含义。 [已验证: AOSP android-17.0.0_r1 `ActivityManagerShellCommand.runMemoryLimiter()`、`MemoryLimiter.setManualLimit()` 与 JNI `Process::setLimit()`]
+这些测试命令以启用 MemoryLimiter 的设备和可重启进程为前提；其中只有 `status` 是查询，其余命令会改变限制或忽略设置。固定 r1 的 `manual` 接受整数或 `none`，整数经 Java 按 MiB 换算，同时用于内存与 Swap 限制，Swap 写入另受开关控制；`max` 不被该 shell 解析器接受。`none` 先变为 -1，再乘成 -1048576，JNI 对该值跳过写入，因此它不能可靠恢复既有节点。测试后应重启目标进程，再读取其 cgroup 节点确认；不要沿用帮助文字中的百分比或复位含义。 [^source-audit-note-1]
 
 ### 设备厂商调校应怎样表述
 
@@ -1740,3 +1740,5 @@ MemoryLimiter 通过 memcg 对部分设备上的单进程施加局部限制，�
   - `frameworks/base/services/core/java/com/android/server/am/AppProfiler.java`
 - ART `android-17.0.0_r1`：`art/runtime/gc/heap.cc`
 - Android common kernel `android17-6.18-2026-06_r6`：cgroup freezer 与内存回收相关实现
+
+[^source-audit-note-1]: 已验证: AOSP android-17.0.0_r1 `ActivityManagerShellCommand.runMemoryLimiter()`、`MemoryLimiter.setManualLimit()` 与 JNI `Process::setLimit()`

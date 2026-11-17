@@ -359,11 +359,11 @@ high = min(low + min(10, low / 2), 100)
 
 ### 7.1 `lmkd` 消费压力信号并选择进程
 
-Android 10 起，PSI 成为 `lmkd` 的默认压力监控方式。Android 17 的 `init_psi_monitors()` 在新策略下把 LOW 级阈值设为 0，MEDIUM 级使用 `PSI_SOME` 的部分停顿阈值，CRITICAL 级使用 `PSI_FULL` 的完全停顿阈值；AOSP 默认窗口是 1000 ms，非 low-ram 设备的部分停顿默认值是 70 ms，完全停顿默认值是 700 ms，产品属性仍可覆盖。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md]
+Android 10 起，PSI 成为 `lmkd` 的默认压力监控方式。Android 17 的 `init_psi_monitors()` 在新策略下把 LOW 级阈值设为 0，MEDIUM 级使用 `PSI_SOME` 的部分停顿阈值，CRITICAL 级使用 `PSI_FULL` 的完全停顿阈值；AOSP 默认窗口是 1000 ms，非 low-ram 设备的部分停顿默认值是 70 ms，完全停顿默认值是 700 ms，产品属性仍可覆盖。[^source-audit-note-1]
 
-PSI trigger 的语义容易被高估：`lmkd.cpp` 明确把默认 PSI 窗口设为 1000 ms，并说明 monitor 每个窗口最多产生一次事件；事件到达后，`lmkd` 会在同一窗口内继续轮询内存状态。一次决策刚执行 kill 或 swap 低时，轮询周期使用 10 ms；其他轮询使用 100 ms；如果正在等待进程死亡通知，则暂停轮询。排查时要把 `lmkd` 日志、`/proc/pressure/memory` 的 `total/avg10` 和采样时间对齐——窗口里没有新的 PSI trigger，决策也可能一直在继续。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
+PSI trigger 的语义容易被高估：`lmkd.cpp` 明确把默认 PSI 窗口设为 1000 ms，并说明 monitor 每个窗口最多产生一次事件；事件到达后，`lmkd` 会在同一窗口内继续轮询内存状态。一次决策刚执行 kill 或 swap 低时，轮询周期使用 10 ms；其他轮询使用 100 ms；如果正在等待进程死亡通知，则暂停轮询。排查时要把 `lmkd` 日志、`/proc/pressure/memory` 的 `total/avg10` 和采样时间对齐——窗口里没有新的 PSI trigger，决策也可能一直在继续。[^source-audit-note-2]
 
-属性与守护进程自身优先级也会影响复现。`GET_LMK_PROPERTY` 让 `persist.device_config.lmkd_native.<name>` 覆盖 `ro.lmk.<name>`；`update_props()` 读取 PSI 窗口、部分/完全停顿阈值、缓存抖动和交换空间等参数。现代 userspace 路径初始化后，`lmkd` 还会尝试 `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` 并设置 `SCHED_FIFO` 优先级 1。这些设置失败不会中止启动；锁页失败且 `errno` 为 `EINVAL` 时会忽略该错误，其他锁页失败及调度策略设置失败会记录 warning。这些措施是为了降低 `lmkd` 自身在内存高压下受回收或调度影响的概率；某个分配线程正在进行的直接回收或物理页规整，并不在其保护范围内，仍会按内核路径执行。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
+属性与守护进程自身优先级也会影响复现。`GET_LMK_PROPERTY` 让 `persist.device_config.lmkd_native.<name>` 覆盖 `ro.lmk.<name>`；`update_props()` 读取 PSI 窗口、部分/完全停顿阈值、缓存抖动和交换空间等参数。现代 userspace 路径初始化后，`lmkd` 还会尝试 `mlockall(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT)` 并设置 `SCHED_FIFO` 优先级 1。这些设置失败不会中止启动；锁页失败且 `errno` 为 `EINVAL` 时会忽略该错误，其他锁页失败及调度策略设置失败会记录 warning。这些措施是为了降低 `lmkd` 自身在内存高压下受回收或调度影响的概率；某个分配线程正在进行的直接回收或物理页规整，并不在其保护范围内，仍会按内核路径执行。[^source-audit-note-2]
 
 收到事件后，决策代码还会读取或计算：
 
@@ -381,9 +381,9 @@ Android 17 源码可以通过内存事件监听器识别直接回收和 `kswapd`
 
 读 bugreport 时还要注意，`lmkd` 说的“低内存”与 `/proc/meminfo` 里的 `MemAvailable` 是两套算法：`meminfo_parse()` 解析 `MemFree`、文件页/匿名页、`SwapTotal/SwapFree`、`CmaFree` 等字段；`get_lowest_watermark()` 用 `MemFree - CmaFree` 与 `calc_zone_watermarks()` 汇总出的 `max_protection + min/low/high` 水位比较，得出 `WMARK_HIGH/LOW/MIN`。
 
-因此，`MemAvailable` 看起来仍高时，`lmkd` 仍可能因为马上可分配页贴近水位而把“低内存 + swap/thrashing”等条件纳入候选；反过来，水位没破、swap 充足且 refault 不增长时，PSI 唤醒也可能被判为无需 kill。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
+因此，`MemAvailable` 看起来仍高时，`lmkd` 仍可能因为马上可分配页贴近水位而把“低内存 + swap/thrashing”等条件纳入候选；反过来，水位没破、swap 充足且 refault 不增长时，PSI 唤醒也可能被判为无需 kill。[^source-audit-note-2]
 
-文件页抖动的分子是 `workingset_refault_file` 的区间增量，分母是上一窗口记录的 `nr_inactive_file + nr_active_file` 再加 1（避免除零）；ZRAM 场景下，可用 swap 还会经过 `easy_available` 和 `swap_compression_ratio` 约束，并不会直接采用 `SwapFree` 的名义容量。排查 LMK 与直接回收相邻发生的问题时，应保存同一时间窗口内的 `/proc/vmstat`、`/proc/meminfo`、`/proc/zoneinfo` 和 `/proc/pressure/memory`，再用增量解释 thrashing、水位和 PSI 是否共同满足同一次查杀条件。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
+文件页抖动的分子是 `workingset_refault_file` 的区间增量，分母是上一窗口记录的 `nr_inactive_file + nr_active_file` 再加 1（避免除零）；ZRAM 场景下，可用 swap 还会经过 `easy_available` 和 `swap_compression_ratio` 约束，并不会直接采用 `SwapFree` 的名义容量。排查 LMK 与直接回收相邻发生的问题时，应保存同一时间窗口内的 `/proc/vmstat`、`/proc/meminfo`、`/proc/zoneinfo` 和 `/proc/pressure/memory`，再用增量解释 thrashing、水位和 PSI 是否共同满足同一次查杀条件。[^source-audit-note-2]
 
 把这些增量放在一起，可以得到四条判断：
 
@@ -396,16 +396,16 @@ Android 17 源码可以通过内存事件监听器识别直接回收和 `kswapd`
 
 ### 7.2 `libpsi` 与 PSI 触发协议
 
-`libpsi` 封装 PSI trigger 的注册、事件监听与销毁，并提供统计行解析函数 `parse_psi_line()`；何时杀进程、内存压力为什么高，都在它的职责之外。`init_psi_monitor()` 以 `O_WRONLY | O_CLOEXEC` 打开 `/proc/pressure/memory`、`/proc/pressure/io` 或 `/proc/pressure/cpu`，写入 `"some|full threshold_us window_us"` 后返回同一个 fd；`register_psi_monitor()` 把这个 fd 以 `EPOLLPRI` 加入 `lmkd` 的 epoll，`destroy_psi_monitor()` 关闭 fd 并让内核销毁对应 trigger。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/libpsi/psi.cpp; system/memory/lmkd/libpsi/include/psi/psi.h; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md]
+`libpsi` 封装 PSI trigger 的注册、事件监听与销毁，并提供统计行解析函数 `parse_psi_line()`；何时杀进程、内存压力为什么高，都在它的职责之外。`init_psi_monitor()` 以 `O_WRONLY | O_CLOEXEC` 打开 `/proc/pressure/memory`、`/proc/pressure/io` 或 `/proc/pressure/cpu`，写入 `"some|full threshold_us window_us"` 后返回同一个 fd；`register_psi_monitor()` 把这个 fd 以 `EPOLLPRI` 加入 `lmkd` 的 epoll，`destroy_psi_monitor()` 关闭 fd 并让内核销毁对应 trigger。[^source-audit-note-3]
 
-因此，PSI 在 `lmkd` 中有两条通道：trigger fd 只负责“何时唤醒”，统计读取由 `lmkd.cpp` 的 `reread_file()` 缓存另一个只读 fd 后解析 `some/full avg10/avg60/avg300/total`。`psi_parse_mem()` 解析 memory 的 `some` 与 `full` 两行，`psi_parse_cpu()` 只按 `some` 解析 CPU 压力；把 `/proc/pressure/memory` 的读数和 trigger 唤醒混成同一个 fd，会误判采集链路。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; system/memory/lmkd/libpsi/psi.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md]
+因此，PSI 在 `lmkd` 中有两条通道：trigger fd 只负责“何时唤醒”，统计读取由 `lmkd.cpp` 的 `reread_file()` 缓存另一个只读 fd 后解析 `some/full avg10/avg60/avg300/total`。`psi_parse_mem()` 解析 memory 的 `some` 与 `full` 两行，`psi_parse_cpu()` 只按 `some` 解析 CPU 压力；把 `/proc/pressure/memory` 的读数和 trigger 唤醒混成同一个 fd，会误判采集链路。[^source-audit-note-4]
 
 <!-- gracker-diagram: ch04-07-psi-two-fds-and-lmkd -->
 ![PSI 唤醒与统计读取走两条 fd，终止进程还需后续决策](../../assets/diagrams/ch04/ch04-07-psi-two-fds-and-lmkd.png)
 
 图：libpsi 用写 fd 注册 some/full 阈值与窗口，并让 lmkd 监听 EPOLLPRI；lmkd 另缓存只读 fd 读取 avg 与 total。事件后还会轮询，默认 10 或 100 ms，等待进程退出时暂停。最终决策结合水位、swap、refault、回收与候选优先级；compact_fail 既不是 PSI 事件，也不是直接 kill 条件。
 
-排查“PSI 明明升高但 `lmkd` 没动作”时，我们要同时检查三件事：内核是否支持 PSI trigger、写入的 stall 类型与阈值是否满足、事件监听是否等待 `EPOLLPRI` 而非普通可读事件。即使 `avg10` 抬高，也只说明统计窗口内发生过压力停顿；是否触发 `lmkd` 决策，还取决于上述 trigger 条件、窗口限速、轮询补盲和后续决策树。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; system/memory/lmkd/libpsi/psi.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md]
+排查“PSI 明明升高但 `lmkd` 没动作”时，我们要同时检查三件事：内核是否支持 PSI trigger、写入的 stall 类型与阈值是否满足、事件监听是否等待 `EPOLLPRI` 而非普通可读事件。即使 `avg10` 抬高，也只说明统计窗口内发生过压力停顿；是否触发 `lmkd` 决策，还取决于上述 trigger 条件、窗口限速、轮询补盲和后续决策树。[^source-audit-note-4]
 
 ### 7.3 Android 17 的 `mmd` 管理 ZRAM 维护
 
@@ -418,9 +418,9 @@ Android 17 新增内存管理守护进程（memory management daemon，`mmd`）�
 
 这些动作处理的是已经进入交换空间/ZRAM 的页面及其后续存放方式；伙伴系统物理页规整与 `lmkd` 的进程选择，仍归各自原来的模块负责。
 
-这些能力需要产品配置启用。官方文档中，`mmd.zram.enabled`、`mmd.zram.writeback.enabled` 和 `mmd.zram.recompression.enabled` 的默认值均为 `false`。启用 `mmd.zram.enabled` 后，`swapon_all` 中的 ZRAM 配置路径不再执行，原有 `config_zramWriteback` 与 `ro.zram.*` 写回配置也会被忽略。排查时应先确认 ZRAM 由谁配置，再检查写回和重新压缩是否开启。[来源: Android Source Memory management daemon 文档的 ZRAM setup configuration 与 Existing ZRAM setup deprecation]
+这些能力需要产品配置启用。官方文档中，`mmd.zram.enabled`、`mmd.zram.writeback.enabled` 和 `mmd.zram.recompression.enabled` 的默认值均为 `false`。启用 `mmd.zram.enabled` 后，`swapon_all` 中的 ZRAM 配置路径不再执行，原有 `config_zramWriteback` 与 `ro.zram.*` 写回配置也会被忽略。排查时应先确认 ZRAM 由谁配置，再检查写回和重新压缩是否开启。[^source-audit-note-5]
 
-按进程写回还会与 `CachedAppOptimizer` 协作：进程完成 Framework 所称的应用规整后，会投递延迟消息；消息到期后，只有写回功能标志和 DeviceConfig 开关均已启用，进程携带 Activity、通过 swap 用量、GPU 内存与 DMA-BUF 阈值检查，且 `mmd` 服务可用并支持按进程 ZRAM 操作时，`system_server` 才会通过进程文件描述符 pidfd 请求写回。基线源码中，DeviceConfig 的 `zram_writeback_enabled` 默认值为 `false`，所以看到应用规整事件，不能据此认定随后发生了 ZRAM 写回。这里的应用规整仍指 `madvise` 或内存控制组页面回收。[已验证: AOSP android-17.0.0_r1 frameworks/base/services/core/java/com/android/server/am/CachedAppOptimizer.java 的 maybeWritebackZram() 与 ZRAM_WRITEBACK_MSG 处理]
+按进程写回还会与 `CachedAppOptimizer` 协作：进程完成 Framework 所称的应用规整后，会投递延迟消息；消息到期后，只有写回功能标志和 DeviceConfig 开关均已启用，进程携带 Activity、通过 swap 用量、GPU 内存与 DMA-BUF 阈值检查，且 `mmd` 服务可用并支持按进程 ZRAM 操作时，`system_server` 才会通过进程文件描述符 pidfd 请求写回。基线源码中，DeviceConfig 的 `zram_writeback_enabled` 默认值为 `false`，所以看到应用规整事件，不能据此认定随后发生了 ZRAM 写回。这里的应用规整仍指 `madvise` 或内存控制组页面回收。[^source-audit-note-6]
 
 ### 7.4 三层关系
 
@@ -556,7 +556,7 @@ adb shell cat /proc/meminfo
 这几个文件各自覆盖整条链路的一部分：
 
 - PSI `avg10/60/300` 适合看趋势，`total` 的区间增量适合补充短时停顿证据；
-- `/proc/pressure/memory` 的读数是统计视角，`lmkd` 的 PSI 唤醒是 `libpsi` 写入 trigger 条件后等待 `EPOLLPRI` 的事件视角；没有 `lmkd` 日志或 trace 时，不能只凭一次 `avg10` 抬高还原每次唤醒。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/libpsi/psi.cpp; system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md]
+- `/proc/pressure/memory` 的读数是统计视角，`lmkd` 的 PSI 唤醒是 `libpsi` 写入 trigger 条件后等待 `EPOLLPRI` 的事件视角；没有 `lmkd` 日志或 trace 时，不能只凭一次 `avg10` 抬高还原每次唤醒。[^source-audit-note-7]
 - `/proc/swaps` 给出交换设备和使用量；
 - ZRAM `mm_stat` 字段含义应按设备内核文档解释；
 - `SwapTotal/SwapFree`、`CmaTotal/CmaFree` 是否存在取决于配置；
@@ -604,7 +604,7 @@ Android 官方文档的当前说法要求重点处理：
 - `TRIM_MEMORY_UI_HIDDEN`：UI 不再可见，可以释放只服务于界面的 Bitmap、播放缓冲区和动画资源；
 - `TRIM_MEMORY_BACKGROUND`：进程进入后台并可能成为终止候选，应释放可重建的后台资源。
 
-Android 14 起不再投递其他旧版 `onTrimMemory` 级别，相关常量在 Android 15 正式弃用。不要为 Android 17 设计依赖 `TRIM_MEMORY_RUNNING_LOW` 等旧回调的核心策略。[已验证: AOSP android-17.0.0_r1 frameworks/base/core/java/android/content/ComponentCallbacks2.java; 来源: Android Developers ComponentCallbacks2 API reference]
+Android 14 起不再投递其他旧版 `onTrimMemory` 级别，相关常量在 Android 15 正式弃用。不要为 Android 17 设计依赖 `TRIM_MEMORY_RUNNING_LOW` 等旧回调的核心策略。[^source-audit-note-8]
 
 释放缓存可以降低未来压力和 LMK 风险；只是这类回调既非内核直接回收的同步通知，也不能保证在每次压力出现前到达。
 
@@ -739,3 +739,12 @@ Android 17 通用内核的 arm64 GKI 配置（`arch/arm64/configs/gki_defconfig`
   - `技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md`
 - 技术文章：Android-高版本 LMKD 源码解析：基于 PSI 的内存压力监控与查杀全流程
   - `技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md`
+
+[^source-audit-note-1]: 已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md
+[^source-audit-note-2]: 已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md
+[^source-audit-note-3]: 已验证: AOSP android-17.0.0_r1 system/memory/lmkd/libpsi/psi.cpp; system/memory/lmkd/libpsi/include/psi/psi.h; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md
+[^source-audit-note-4]: 已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; system/memory/lmkd/libpsi/psi.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md
+[^source-audit-note-5]: 来源: Android Source Memory management daemon 文档的 ZRAM setup configuration 与 Existing ZRAM setup deprecation
+[^source-audit-note-6]: 已验证: AOSP android-17.0.0_r1 frameworks/base/services/core/java/com/android/server/am/CachedAppOptimizer.java 的 maybeWritebackZram() 与 ZRAM_WRITEBACK_MSG 处理
+[^source-audit-note-7]: 已验证: AOSP android-17.0.0_r1 system/memory/lmkd/libpsi/psi.cpp; system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-AndroidPSI详解libpsi源码解析116行架起lmkd与内核的桥.md
+[^source-audit-note-8]: 已验证: AOSP android-17.0.0_r1 frameworks/base/core/java/android/content/ComponentCallbacks2.java; 来源: Android Developers ComponentCallbacks2 API reference

@@ -74,7 +74,7 @@ Android 的 16 KiB 页适配，我们把它拆成两个问题来看：
 
 推动适配的主要是 Google Play 的要求：目标版本为 Android 15（API 35）或更高的应用，要在 64 位设备上支持 16 KB 页；从 2027 年 2 月 1 日起，不支持 16 KB 页的应用更新将失去发布资格。这项要求看的是 `targetSdkVersion` 与最终分发产物，和测试设备的系统版本是两回事。
 
-Play 的两套门槛针对的对象也不同：16 KB 页大小要求面向含原生代码产物的安装/加载兼容性；Play 在 2026-08 公布的内存与 DEX 优化技术质量门槛中，`Anonymous RSS + Swap` 与 bitmap memory 按 Android vitals 近 28 天数据的 P90 评估；DEX 优化要求则按上传产物检查优化、压缩与混淆覆盖，并非内存采样的 P90。未达标会触发 Console 告警，并可能影响可见度与发布能力。后者回答的是内存质量问题，所以 ELF/ZIP 对齐检查要单独做，16 KiB 页是否引发内存回归也要另行测量。[来源: DeepResearch/2026-08-28-evening-Android-App-memory-thresholds-2027-02/01-dump-play-thresholds.md]
+Play 的两套门槛针对的对象也不同：16 KB 页大小要求面向含原生代码产物的安装/加载兼容性；Play 在 2026-08 公布的内存与 DEX 优化技术质量门槛中，`Anonymous RSS + Swap` 与 bitmap memory 按 Android vitals 近 28 天数据的 P90 评估；DEX 优化要求则按上传产物检查优化、压缩与混淆覆盖，并非内存采样的 P90。未达标会触发 Console 告警，并可能影响可见度与发布能力。后者回答的是内存质量问题，所以 ELF/ZIP 对齐检查要单独做，16 KiB 页是否引发内存回归也要另行测量。[^source-audit-note-1]
 
 > 源码基线：AOSP `android-17.0.0_r1`，Android 17 / API 37；内核 `android17-6.18-2026-06_r6`。
 
@@ -489,7 +489,7 @@ adb shell getprop ro.build.fingerprint
 - PSS/RSS；
 - 设备温度和 CPU 频率限制。
 
-如果同一份报告还要解释 Play Console 的内存告警，先按 Play 口径拆开：`Anonymous RSS + Swap` 统计动态内存，swap 包含 zRAM，且不包含以落盘文件映射为主的 code/assets；bitmap 是单独维度，optimized DEX 又是包体优化维度。它们适合定位 Play 质量风险；本节的 `smaps` 配对、缺页计数和端到端启动耗时，仍然要自己测。[来源: DeepResearch/2026-08-28-evening-Android-App-memory-thresholds-2027-02/01-dump-play-thresholds.md]
+如果同一份报告还要解释 Play Console 的内存告警，先按 Play 口径拆开：`Anonymous RSS + Swap` 统计动态内存，swap 包含 zRAM，且不包含以落盘文件映射为主的 code/assets；bitmap 是单独维度，optimized DEX 又是包体优化维度。它们适合定位 Play 质量风险；本节的 `smaps` 配对、缺页计数和端到端启动耗时，仍然要自己测。[^source-audit-note-1]
 
 另外，`am force-stop` 后启动和清空页缓存后的存储冷启动是两种状态。报告中要写清采用的是哪种进程启动状态、文件缓存状态和重复次数，并优先比较中位数和长尾分位数。
 
@@ -546,7 +546,7 @@ adb shell 'cat /sys/kernel/mm/transparent_hugepage/hugepages-*/enabled 2>/dev/nu
 
 Linux 6.18 文档中的默认规则是：PMD 尺寸 THP 继承顶层 `enabled`，其他粒度默认为 `never`，产品配置可以修改这些值。后台线程 `khugepaged` 当前只扫描并合并 PMD 尺寸 THP；较小的 mTHP 主要在发生缺页时直接分配。
 
-这里按匿名 mTHP 讨论尺寸。在 `android17-6.18-2026-06_r6` 的 `include/linux/huge_mm.h` 中，`THP_ORDERS_ALL_ANON` 排除了 order-0 和 order-1；因此 16 KiB 基础页下，匿名 mTHP 最小候选是 order-2，即 64 KiB。文件或 shmem 路径的 folio 尺寸与策略要另外核对，不能直接套用这个匿名页下限。 [已验证: android17-6.18-2026-06_r6 `THP_ORDERS_ALL_ANON`、`THP_ORDERS_ALL_FILE_DEFAULT`]
+这里按匿名 mTHP 讨论尺寸。在 `android17-6.18-2026-06_r6` 的 `include/linux/huge_mm.h` 中，`THP_ORDERS_ALL_ANON` 排除了 order-0 和 order-1；因此 16 KiB 基础页下，匿名 mTHP 最小候选是 order-2，即 64 KiB。文件或 shmem 路径的 folio 尺寸与策略要另外核对，不能直接套用这个匿名页下限。 [^source-audit-note-2]
 
 ### 9.3 ARM64 contpte
 
@@ -633,3 +633,6 @@ CONT_PTE_SIZE = 128 × 16 KiB = 2 MiB
 - [AOSP `android-17.0.0_r1`：`WriteProtected.h`](https://android.googlesource.com/platform/bionic/+/refs/tags/android-17.0.0_r1/libc/private/WriteProtected.h)
 - [Android Common Kernel `android17-6.18-2026-06_r6`：ARM64 Kconfig](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/arch/arm64/Kconfig)
 - [Android Common Kernel `android17-6.18-2026-06_r6`：Transparent Hugepage 文档](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/Documentation/admin-guide/mm/transhuge.rst)
+
+[^source-audit-note-1]: 来源: DeepResearch/2026-08-28-evening-Android-App-memory-thresholds-2027-02/01-dump-play-thresholds.md
+[^source-audit-note-2]: 已验证: android17-6.18-2026-06_r6 `THP_ORDERS_ALL_ANON`、`THP_ORDERS_ALL_FILE_DEFAULT`

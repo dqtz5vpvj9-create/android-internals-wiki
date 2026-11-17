@@ -405,11 +405,11 @@ return std::min(
 
 ### PSI 事件如何进入 LMKD
 
-PSI 的工作机制比读取 `/proc/pressure/memory` 的 `avg10`/`avg60` 摘要值更细：Android common kernel 6.18 的 `kernel/sched/psi.c` 用每 CPU `psi_group_cpu` 中的 `state_start` 与 `state_mask` 记录任务处于 MEM SOME/FULL 等停顿状态的时间，再把结果聚合到 PSI group；Android 17 的 `libpsi` 会向 `/proc/pressure/memory` 写入 `some/full <threshold_us> <window_us>` 监视器，并让 `lmkd` 通过 `EPOLLPRI` 接收阈值事件。[来源: DeepResearch/2026-07-14-android17-zram-psi-pressure-management.md；已验证: android17-6.18-2026-06_r6 kernel/sched/psi.c；android-17.0.0_r1 system/memory/lmkd/libpsi/psi.cpp]
+PSI 的工作机制比读取 `/proc/pressure/memory` 的 `avg10`/`avg60` 摘要值更细：Android common kernel 6.18 的 `kernel/sched/psi.c` 用每 CPU `psi_group_cpu` 中的 `state_start` 与 `state_mask` 记录任务处于 MEM SOME/FULL 等停顿状态的时间，再把结果聚合到 PSI group；Android 17 的 `libpsi` 会向 `/proc/pressure/memory` 写入 `some/full <threshold_us> <window_us>` 监视器，并让 `lmkd` 通过 `EPOLLPRI` 接收阈值事件。[^source-audit-note-1]
 
-`lmkd.cpp` 的默认 PSI 阈值表包含 low=`some 70ms/1s`、medium=`some 100ms/1s`、critical=`full 70ms/1s`；启用新策略时，low 阈值会被置为 0，medium 与 critical 改用 `ro.lmk.psi_partial_stall_ms` 和 `ro.lmk.psi_complete_stall_ms`。因此排查设备时，我们要同时记录 `/proc/pressure/memory` 的 `some/full` 增量、`ro.lmk.*` 实际属性和设备是否使用新策略；杀进程的时机要从这些现场数据判断，AOSP 默认阈值表只是起点。[来源: DeepResearch/2026-07-14-android17-zram-psi-pressure-management.md；已验证: android-17.0.0_r1 system/memory/lmkd/lmkd.cpp]
+`lmkd.cpp` 的默认 PSI 阈值表包含 low=`some 70ms/1s`、medium=`some 100ms/1s`、critical=`full 70ms/1s`；启用新策略时，low 阈值会被置为 0，medium 与 critical 改用 `ro.lmk.psi_partial_stall_ms` 和 `ro.lmk.psi_complete_stall_ms`。因此排查设备时，我们要同时记录 `/proc/pressure/memory` 的 `some/full` 增量、`ro.lmk.*` 实际属性和设备是否使用新策略；杀进程的时机要从这些现场数据判断，AOSP 默认阈值表只是起点。[^source-audit-note-2]
 
-PSI 事件触发的是一次评估，而非一次杀动作：`__mp_event_psi()` 会把 PSI 唤醒与内存水位、ZRAM-aware free swap、反复换入换出、进程 `oom_score_adj` 等状态合并后再选候选进程。`find_and_kill_process()` 从较大的 `adj` 开始向下遍历；启用 `kill_heaviest_task` 时，`proc_get_heaviest()` 在同一个 `adj` 内比较 `/proc/<pid>/statm` 的 RSS，并在可以读取 `dmabuf_pss` 时加上 DMA-BUF PSS。该比较不包含 swap 用量。即使 `kill_heaviest_task` 为 false，当遍历到当前 `adj <= 200`（`PERCEPTIBLE_APP_ADJ`）时，`android-17.0.0_r1` 也会切换为同分值内选择最重进程；它不会因此跳过从较大 `adj` 向下遍历的顺序。[来源: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp，`proc_get_size()`、`proc_get_heaviest()`、`find_and_kill_process()`]
+PSI 事件触发的是一次评估，而非一次杀动作：`__mp_event_psi()` 会把 PSI 唤醒与内存水位、ZRAM-aware free swap、反复换入换出、进程 `oom_score_adj` 等状态合并后再选候选进程。`find_and_kill_process()` 从较大的 `adj` 开始向下遍历；启用 `kill_heaviest_task` 时，`proc_get_heaviest()` 在同一个 `adj` 内比较 `/proc/<pid>/statm` 的 RSS，并在可以读取 `dmabuf_pss` 时加上 DMA-BUF PSS。该比较不包含 swap 用量。即使 `kill_heaviest_task` 为 false，当遍历到当前 `adj <= 200`（`PERCEPTIBLE_APP_ADJ`）时，`android-17.0.0_r1` 也会切换为同分值内选择最重进程；它不会因此跳过从较大 `adj` 向下遍历的顺序。[^source-audit-note-3]
 
 ## 16 KB 页大小的准确影响
 
@@ -532,7 +532,7 @@ Android 11（API 30）及以上，`ActivityManager.getHistoricalProcessExitReaso
 - `REASON_FREEZER`（API 33+）：冻结期间的 Binder 等异常导致退出；
 - `REASON_SIGNALED` 与 `SIGKILL`：部分设备报告不了低内存终止原因，这时可能只记录这两个值。
 
-Android 11 及以上，应用可以用 `ActivityManager.isLowMemoryKillReportSupported()` 判断设备能否可靠报告低内存终止原因。`ApplicationExitInfo.getPss()` 与 `getRss()` 返回系统最后一次采样的 PSS 与 RSS，单位为 kB；采样时刻可能早于进程退出，数值描述的是最后一次采样，而非退出瞬间或峰值。进程在系统尚未采样时就退出，这两个值会返回 0；至于哪些页面曾存放在 ZRAM 中，从这两个值里看不出来。[来源: `ApplicationExitInfo` API reference，`getPss()`、`getRss()`；均自 API 30 提供]
+Android 11 及以上，应用可以用 `ActivityManager.isLowMemoryKillReportSupported()` 判断设备能否可靠报告低内存终止原因。`ApplicationExitInfo.getPss()` 与 `getRss()` 返回系统最后一次采样的 PSS 与 RSS，单位为 kB；采样时刻可能早于进程退出，数值描述的是最后一次采样，而非退出瞬间或峰值。进程在系统尚未采样时就退出，这两个值会返回 0；至于哪些页面曾存放在 ZRAM 中，从这两个值里看不出来。[^source-audit-note-4]
 
 ## 应用能做什么
 
@@ -593,3 +593,8 @@ Android 17 的 ZRAM 已经从单一的压缩交换设备，扩展为由 MMD、`s
   - `drivers/block/zram/zram_ioctl.c`
   - `drivers/block/zram/zcomp.c`
   - `include/uapi/linux/zram_ioctl.h`
+
+[^source-audit-note-1]: 来源: DeepResearch/2026-07-14-android17-zram-psi-pressure-management.md；已验证: android17-6.18-2026-06_r6 kernel/sched/psi.c；android-17.0.0_r1 system/memory/lmkd/libpsi/psi.cpp
+[^source-audit-note-2]: 来源: DeepResearch/2026-07-14-android17-zram-psi-pressure-management.md；已验证: android-17.0.0_r1 system/memory/lmkd/lmkd.cpp
+[^source-audit-note-3]: 来源: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp，`proc_get_size()`、`proc_get_heaviest()`、`find_and_kill_process()`
+[^source-audit-note-4]: 来源: `ApplicationExitInfo` API reference，`getPss()`、`getRss()`；均自 API 30 提供
