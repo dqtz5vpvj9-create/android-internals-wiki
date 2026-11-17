@@ -190,7 +190,7 @@ flowchart TD
 
 1. `system_server` 异步调用 `mmd.doZramMaintenanceAsync()`。
 2. 启用按进程写回工作队列时，MMD 把维护任务放入低优先级队列；未启用该队列时，服务直接调用维护实现。
-3. MMD 在同一个全局维护任务中先尝试写回，再尝试重新压缩。这里以执行代码为准：`service.rs` 的解释注释仍按未压缩写回描述，但 r6 驱动已有 `compressed_writeback` 分支，可直接读取压缩对象写回；`mmd_setup` 在相应功能启用且接口存在时会尝试打开它，服务也要求所有 ZRAM 设备开启压缩写回后，才对外宣告支持按进程操作。
+3. MMD 在同一个全局维护任务中先尝试写回，再尝试重新压缩。这里以执行代码为准：`service.rs` 的解释注释仍按未压缩写回描述，但当前基线内核（`android17-6.18-2026-06_r6`）驱动已有 `compressed_writeback` 分支，可直接读取压缩对象写回；`mmd_setup` 在相应功能启用且接口存在时会尝试打开它，服务也要求所有 ZRAM 设备开启压缩写回后，才对外宣告支持按进程操作。
 4. 队列取任务时，按进程预取优先；已在执行的整段全局维护不会被该队列中途抢占。按进程写回则可以分段让出工作线程，让待处理预取先执行。
 
 维护按周期调度，而非持续扫描：官方默认的首次调度和后续周期均为一小时；重新压缩与写回还有各自的退避时间、空闲时长、容量门槛和每日写入预算。产品可以调整这些值。
@@ -409,7 +409,7 @@ PSI 的工作机制比读取 `/proc/pressure/memory` 的 `avg10`/`avg60` 摘要�
 
 `lmkd.cpp` 的默认 PSI 阈值表包含 low=`some 70ms/1s`、medium=`some 100ms/1s`、critical=`full 70ms/1s`；启用新策略时，low 阈值会被置为 0，medium 与 critical 改用 `ro.lmk.psi_partial_stall_ms` 和 `ro.lmk.psi_complete_stall_ms`。因此排查设备时，我们要同时记录 `/proc/pressure/memory` 的 `some/full` 增量、`ro.lmk.*` 实际属性和设备是否使用新策略；杀进程的时机要从这些现场数据判断，AOSP 默认阈值表只是起点。[来源: DeepResearch/2026-07-14-android17-zram-psi-pressure-management.md；已验证: android-17.0.0_r1 system/memory/lmkd/lmkd.cpp]
 
-PSI 事件触发的是一次评估，而非一次杀动作：`__mp_event_psi()` 会把 PSI 唤醒与内存水位、ZRAM-aware free swap、反复换入换出、进程 `oom_score_adj` 等状态合并后再选候选进程。`find_and_kill_process()` 从较大的 `adj` 开始向下遍历；启用 `kill_heaviest_task` 时，`proc_get_heaviest()` 在同一个 `adj` 内比较 `/proc/<pid>/statm` 的 RSS，并在可以读取 `dmabuf_pss` 时加上 DMA-BUF PSS。该比较不包含 swap 用量。即使 `kill_heaviest_task` 为 false，当遍历到当前 `adj <= 200`（`PERCEPTIBLE_APP_ADJ`）时，r1 也会切换为同分值内选择最重进程；它不会因此跳过从较大 `adj` 向下遍历的顺序。[来源: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp，`proc_get_size()`、`proc_get_heaviest()`、`find_and_kill_process()`]
+PSI 事件触发的是一次评估，而非一次杀动作：`__mp_event_psi()` 会把 PSI 唤醒与内存水位、ZRAM-aware free swap、反复换入换出、进程 `oom_score_adj` 等状态合并后再选候选进程。`find_and_kill_process()` 从较大的 `adj` 开始向下遍历；启用 `kill_heaviest_task` 时，`proc_get_heaviest()` 在同一个 `adj` 内比较 `/proc/<pid>/statm` 的 RSS，并在可以读取 `dmabuf_pss` 时加上 DMA-BUF PSS。该比较不包含 swap 用量。即使 `kill_heaviest_task` 为 false，当遍历到当前 `adj <= 200`（`PERCEPTIBLE_APP_ADJ`）时，`android-17.0.0_r1` 也会切换为同分值内选择最重进程；它不会因此跳过从较大 `adj` 向下遍历的顺序。[来源: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp，`proc_get_size()`、`proc_get_heaviest()`、`find_and_kill_process()`]
 
 ## 16 KB 页大小的准确影响
 
@@ -457,7 +457,7 @@ Android 17 的按进程写回和预取与 Ariadne 的“提前准备热数据”
 | 压缩粒度 | 以基础页为一个条目，支持多个压缩器优先级 | 按热度使用自适应块大小（chunk size） |
 | 提前恢复 | 进程因 Activity 激活而解冻后，按进程预取已写回的条目 | 预测下一批将访问的数据并主动解压 |
 
-截至 Android 17 基线，没有证据表明 Ariadne 的完整论文设计已经合入 AOSP。它适合用来说明相关研究方向；性能数字方面，Android 系统并没有给出对应的承诺。
+截至 Android 17 基线，AOSP 尚未合入 Ariadne 论文中的完整设计。它适合用来说明相关研究方向；性能数字方面，Android 系统并没有给出对应的承诺。
 
 
 ## 观测：把交换、压力和启动放到同一时间窗

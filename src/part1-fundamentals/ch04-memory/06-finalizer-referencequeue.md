@@ -263,7 +263,7 @@ Cleaner 这个名字覆盖了三套执行模型。混写它们会直接导致线
 
 `sun.misc.Cleaner` 是平台内部实现，不属于应用可依赖的稳定 SDK。它继承 `PhantomReference`，使用一个只用于识别这条处理路径的占位队列。
 
-`ReferenceQueue.enqueuePending()` 识别到这个占位队列后，不把引用放进普通队列，而是在 `ReferenceQueueDaemon` 上直接调用 `clean()`：
+`ReferenceQueue.enqueuePending()` 识别到这个占位队列后，会跳过普通入队流程，直接在 `ReferenceQueueDaemon` 上调用 `clean()`：
 
 ```text
 GC pending list
@@ -476,7 +476,7 @@ adb shell dumpsys meminfo com.example.app
 adb shell ls /proc/12345/fd
 ```
 
-`/proc/<pid>/fd` 在量产设备上可能受权限和 SELinux 限制；无权限时应使用可调试构建、受控测试设备或应用自己的诊断计数。不能把“命令被拒绝”写成“文件描述符没有增长”。
+`/proc/<pid>/fd` 在量产设备上可能受权限和 SELinux 限制；无权限时应使用可调试构建、受控测试设备或应用自己的诊断计数，不能把“命令被拒绝”当作“文件描述符没有增长”。
 
 比对时关注趋势：
 
@@ -601,13 +601,13 @@ NEW -> OPEN -> CLOSING -> CLOSED
 | `java.lang.ref.Cleaner` | 公共类尚不可用 | 公共类尚不可用 | API 33 起公开 |
 | `android.system.SystemCleaner` | 公共类尚不可用 | 公共类尚不可用 | API 33 起公开 |
 
-Android 17 的源码复核结果是：
+对照 `android-17.0.0_r1` 源码来看：
 
 - `Daemons.DAEMONS` 仍由 `HeapTaskDaemon`、`ReferenceQueueDaemon`、`FinalizerDaemon`、`FinalizerWatchdogDaemon` 组成；
 - `ReferenceQueue` 仍为带实例锁的先进先出队列，并在 `enqueuePending()` 中按同队列引用批处理；
 - 普通终结方法与 `SystemCleaner` 仍由 `FinalizerDaemon` 串行执行；
 - 独立的 `Cleaner.create()` 仍由 `CleanerImpl` 创建自己的守护线程；
-- 没有证据支持把消息队列的并发实现变化写成 `ReferenceQueue` 的 Android 17 行为。
+- 消息队列的并发实现变化并未延伸到 Android 17 的 `ReferenceQueue` 上。
 
 版本演进可以说明 API 何时公开，但资源设计原则没有变化：显式关闭是主路径，终结和 Cleaner 都是执行时间不确定的延迟兜底机制。
 

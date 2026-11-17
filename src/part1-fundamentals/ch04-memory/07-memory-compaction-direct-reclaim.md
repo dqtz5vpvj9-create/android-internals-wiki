@@ -253,7 +253,7 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order, ...)
 }
 ```
 
-order 为 0 就直接返回。所以 order-0 缺页可以触发直接回收，却轮不到这个入口来执行直接规整；应用主线程因普通缺页卡住时，通常更值得先检查直接回收；要把责任归到物理页规整，需要先看到 order、GFP 和规整性能轨迹的证据。
+order 为 0 时直接返回。因此 order-0 缺页可以触发直接回收，却轮不到这个入口来执行直接规整；应用主线程因普通缺页卡住时，通常更值得先检查直接回收，若要把原因归到物理页规整，则需要先拿到 order、GFP 和规整性能轨迹的证据。
 
 ### 4.4 直接回收和直接规整都计入 PSI
 
@@ -383,7 +383,7 @@ Android 17 源码可以通过内存事件监听器识别直接回收和 `kswapd`
 
 因此，`MemAvailable` 看起来仍高时，`lmkd` 仍可能因为马上可分配页贴近水位而把“低内存 + swap/thrashing”等条件纳入候选；反过来，水位没破、swap 充足且 refault 不增长时，PSI 唤醒也可能被判为无需 kill。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
 
-文件页抖动的分子是 `workingset_refault_file` 的区间增量，分母是上一窗口记录的 `nr_inactive_file + nr_active_file` 再加 1（避免除零）；ZRAM 场景下，可用 swap 还会经过 `easy_available` 和 `swap_compression_ratio` 约束，而不是直接相信 `SwapFree` 的名义容量。排查 LMK 与直接回收相邻发生的问题时，应保存同一时间窗口内的 `/proc/vmstat`、`/proc/meminfo`、`/proc/zoneinfo` 和 `/proc/pressure/memory`，再用增量解释 thrashing、水位和 PSI 是否共同满足同一次查杀条件。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
+文件页抖动的分子是 `workingset_refault_file` 的区间增量，分母是上一窗口记录的 `nr_inactive_file + nr_active_file` 再加 1（避免除零）；ZRAM 场景下，可用 swap 还会经过 `easy_available` 和 `swap_compression_ratio` 约束，并不会直接采用 `SwapFree` 的名义容量。排查 LMK 与直接回收相邻发生的问题时，应保存同一时间窗口内的 `/proc/vmstat`、`/proc/meminfo`、`/proc/zoneinfo` 和 `/proc/pressure/memory`，再用增量解释 thrashing、水位和 PSI 是否共同满足同一次查杀条件。[已验证: AOSP android-17.0.0_r1 system/memory/lmkd/lmkd.cpp; 来源: 技术文章/source/juejin-android/2026-08-26-76772546-Android高版本LMKD源码解析PSI内存压力监控与查杀全流程.md]
 
 把这些增量放在一起，可以得到四条判断：
 
@@ -630,7 +630,7 @@ Android 14 起不再投递其他旧版 `onTrimMemory` 级别，相关常量在 A
 - 迁移成功率和 `compact_fail` 增量；
 - RSS、ZRAM、缺页、LMK 与用户可感知延迟。
 
-16 KiB 设备上的原生 `mmap()` 和 ELF 对齐兼容属于另一个问题，应结合 4.5 阅读。
+16 KiB 设备上的原生 `mmap()` 和 ELF 对齐兼容属于另一个问题，应结合 4.5 节阅读。
 
 ### 11.1 mTHP 要按实际字节大小分析
 

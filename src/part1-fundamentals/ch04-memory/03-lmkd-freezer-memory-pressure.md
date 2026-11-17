@@ -141,7 +141,7 @@ Android 的内存治理包含回收、压缩、冻结、内存控制组（memory
 
 Android 会尽量保留离开前台的应用进程：用户再次打开应用时，系统可以复用进程、Java 堆、已加载的类和部分页面缓存，省去一次从 Zygote 通过 `fork()` 复制进程开始的启动。代价随之而来——物理内存、压缩交换空间和文件页缓存会逐渐承压。
 
-Linux 内核自带的 OOM Killer 通常要等内存分配已经难以继续时才介入，对 Android 来说这一层来得太晚，也太不了解各个应用的重要性。所以我们在内核之外再加一层更早的策略：系统根据 Activity、Service、ContentProvider、绑定关系和近期交互计算进程优先级，低内存终止守护进程（low memory killer daemon，lmkd）结合这个优先级和内核压力数据，优先终止对用户影响较小的进程。这套策略常简称低内存终止（LMK）机制。
+Linux 内核自带的 OOM Killer 通常要等内存分配已经难以继续时才介入，对 Android 来说这一层来得太晚，也太不了解各个应用的重要性。因此 Android 在内核之外加了一层更早的策略：系统根据 Activity、Service、ContentProvider、绑定关系和近期交互计算进程优先级，低内存终止守护进程（low memory killer daemon，lmkd）结合这个优先级和内核压力数据，优先终止对用户影响较小的进程。这套策略常简称低内存终止（LMK）机制。
 
 LMK 的主路径包含三类输入、两段决策和一条回收链。下图用于区分进程重要性计算、压力判断、候选选择和终止后的内存回收：
 
@@ -333,7 +333,7 @@ low_ram_device || !use_minfree_levels
 
 旧资料里的 `LowMemDetector` 和 “LMKD v2” 都不是 `android-17.0.0_r1` 中的正式类名或版本对象：前者至多泛指低内存检测，后者用来区分用户空间 `lmkd` 与早期的内核模块。分析当前源码时，我们以 `use_new_strategy`、PSI 触发器、内存事件（memevents）和具体函数为准。
 
-`libpsi` 只为 `lmkd` 打开全局 `/proc/pressure/memory`，每个应用各自的 `memory.pressure` 不在遍历范围内。这里有三件彼此独立的事：`ro.config.per_app_memcg`、Reaper 使用 `cgroup.kill`、cgroup v2 支持控制组级 PSI；至于终止目标怎么选，还要回到候选选择逻辑，这些事实里并没有“按控制组 PSI 最高选择”的依据。
+`libpsi` 只为 `lmkd` 打开全局 `/proc/pressure/memory`，每个应用各自的 `memory.pressure` 不在遍历范围内。`ro.config.per_app_memcg`、Reaper 使用 `cgroup.kill` 以及 cgroup v2 支持控制组级 PSI 是三件彼此独立的事，lmkd 并不按“控制组 PSI 最高”来挑选终止目标，具体选谁仍由候选选择逻辑决定。
 
 #### PSI 唤醒之后还要检查什么
 
@@ -606,7 +606,7 @@ Binder 请求先发出，应用这边的清理却是异步进行的：回调在�
 
 ### Android 17 MemoryLimiter：单进程配额
 
-Android 17 增加了 MemoryLimiter，用来限制单个应用进程的异常内存占用。它与 `lmkd` 的系统级压力策略并行工作，并且只在部分设备上启用。本节先给出启用、映射与超限处理的关键结论，源码调用链放到后面“MemoryLimiter 与 memcg 超限”一节展开。
+Android 17 增加了 MemoryLimiter，用来限制单个应用进程的异常内存占用。它与 `lmkd` 的系统级压力策略并行工作，并且只在部分设备上启用。这里先给出启用、映射与超限处理的关键结论，源码调用链放到后面“MemoryLimiter 与 memcg 超限”一节展开。
 
 #### 启用与配置
 
@@ -805,7 +805,7 @@ boolean canFreeze =
                 | PROCESS_CAPABILITY_IMPLICIT_CPU_TIME)) == 0;
 ```
 
-阅读源码时要把这段伪代码映射回 `psc/OomAdjuster.java`，不要把它复制成产品代码。它说明 adj 阈值在 Android 17 中会先转换为隐式 CPU 时间能力，再由 `getFreezePolicy()` 使用；“`getFreezePolicy()` 直接比较 `curAdj`”已经不符合这个版本的实现。
+阅读源码时要把这段伪代码映射回 `psc/OomAdjuster.java`，不要直接照搬为产品代码。它说明 Android 17 中 adj 阈值会先转换为隐式 CPU 时间能力，再交给 `getFreezePolicy()` 使用，不再由 `getFreezePolicy()` 直接比较 `curAdj`。
 
 这一段解释了两件事：单看 `oom_score_adj >= 900` 推不出进程会被冻结，因为进程可能因当前组件、绑定关系或系统策略仍持有 CPU 时间能力；一个进程已经冻结，同样推不出 lmkd 即将终止它——冻结器与 lmkd 共用一部分进程重要性输入，执行动作和触发条件却彼此独立。
 
@@ -831,7 +831,7 @@ Android 14 及以上的公开行为是：进程进入缓存状态约 10 秒后�
 
 图：冻结消息到期后重新校验候选，先 freezeBinder，再 setProcessFrozen，随后记录状态并复查待处理事务。激活时先取消 pending 消息、读取 Binder freeze info；同步事务标记或查询异常可进入终止分支。正常恢复先解冻 Binder，再解冻 cgroup；Activity 激活且此前写回时，还可请求 ZRAM 预取。
 
-图中 `scheduleTrimMemory()` 是一次跨 Binder 的异步请求。正常的防抖窗口通常给应用主线程留出了处理机会，但源码并没有保证主线程严重阻塞时一定能在冻结前完成回调；工程文档里把时序写成“先完整执行内存整理，再冻结”，与源码行为对不上。
+图中 `scheduleTrimMemory()` 是一次跨 Binder 的异步请求。正常的防抖窗口通常给应用主线程留出了处理机会，但如果主线程严重阻塞，源码并不保证回调一定能在冻结前执行完成；因此两者之间并不存在“先完整执行内存整理、再冻结”的严格顺序保证。
 
 #### 冻结动作的准确顺序
 
@@ -845,7 +845,7 @@ thread.scheduleTrimMemory(ComponentCallbacks2.TRIM_MEMORY_BACKGROUND);
 
 1. 再次确认进程仍处于待处理状态，没有覆盖冻结策略，PID 有效，而且尚未冻结。
 2. 调用 `freezeBinder(pid, true, 0)` 冻结 Binder 接口。
-3. 处理尚未完成的事务或 Binder 冻结失败。Android 17 包含重试和退避处理，“遇到任意失败立即终止进程”的概括与这里的实现不符。
+3. 处理尚未完成的事务或 Binder 冻结失败。Android 17 在这里包含重试和退避处理，并非遇到任意失败就立即终止进程。
 4. 调用 `setProcessFrozen(pid, uid, true)` 将进程放入冻结控制组。
 5. 更新进程优化状态，并把 PID 记入 `mFrozenProcesses`。
 6. 再查询 Binder 冻结信息；若 `TXNS_PENDING_WHILE_FROZEN` 置位，表示仍有待处理事务，则进入 Binder 失败处理。这里检查的待处理标志与解冻时检查的 `SYNC_RECEIVED_WHILE_FROZEN` 不是同一位。
@@ -1469,7 +1469,7 @@ Android 17 中还有若干命名与实现不一致之处，例如 Java 的 `swap
 
 `android-17.0.0_r1` 中没有 `AppFlowManager`、`AppFlowState`、`AppFlowMemoryAllocator`、`MemoryLimiterCompat` 或 `lmkd_appflow_compat.xml`。AOSP 的 lmkd 也没有 AppFlow 会话、冷启动内存预分配协议、两阶段提交或状态回滚接口。
 
-本章中的 **AppFlow** 指厂商或产品侧可能存在的冷启动优化模块。此类外部模块接入 Android 17 时必须遵守 AOSP 边界；下文的设计建议只针对产品侧实现，AOSP 里并没有同名类或平台 API。
+本节中的 **AppFlow** 指厂商或产品侧可能存在的冷启动优化模块。此类外部模块接入 Android 17 时必须遵守 AOSP 边界；下文的设计建议只针对产品侧实现，AOSP 里并没有同名类或平台 API。
 
 ### 1. 进程重要性的数据流
 

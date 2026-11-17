@@ -6,8 +6,8 @@ Android 内存问题不只表现为内存不足（Out of Memory，OOM）。垃�
 
 - 平台版本：Android 17 / API 37 / `android-17.0.0_r1`；
 - 内核版本：`android17-6.18-2026-06_r6`；
-- 历史演进可以保留旧版本行为，当前类名、配置和调用关系按固定源码标签（tag）核对；
-- 设备厂商可能修改内存分配器、GPU/显示驱动、zram、低内存终止守护进程（lmkd）参数和冻结策略，设备级结论需要运行时证据。
+- 涉及历史演进时会保留旧版本行为说明，而当前类名、配置与调用关系均按固定源码标签（tag）核对；
+- 设备厂商可能修改内存分配器、GPU/显示驱动、zram、低内存终止守护进程（lmkd）参数和冻结策略，设备级结论需要运行时证据支撑。
 
 ## 1. 内存域
 
@@ -23,7 +23,7 @@ Android 内存问题不只表现为内存不足（Out of Memory，OOM）。垃�
 | 内核内存 | slab、页表、驱动分配 | 内核与驱动 | `slabinfo`、`vmstat`、`meminfo`、厂商跟踪数据 |
 | 压缩交换空间 | zram 中的匿名页 | 内核页面回收、交换机制与 zram | `SwapTotal/SwapFree`、zram `mm_stat`、换入/换出量 |
 
-Java 堆转储（heap dump）看不到原生内存、图形内存、页缓存和内核分配。进程 RSS 也会把共享页面完整计入每个进程。选择指标前，要先说明调查的是对象滞留、进程内存规模（footprint）、系统内存压力，还是跨进程共享缓冲区。
+Java 堆转储（heap dump）看不到原生内存、图形内存、页缓存和内核分配，而进程 RSS 也会把共享页面完整计入每个进程。选择观测指标前，需要先明确本次调查的目标：对象滞留、进程内存规模（footprint）、系统内存压力，还是跨进程共享缓冲区。
 
 <!-- gracker-diagram: ch04-readme-memory-domains -->
 ![先分清内存域，再选择对应证据](../../assets/diagrams/ch04/ch04-readme-memory-domains.png)
@@ -42,14 +42,14 @@ Java 堆转储（heap dump）看不到原生内存、图形内存、页缓存和
 - 缓存应用冻结器（cached app freezer）改变后台进程的可运行状态；
 - lmkd 依据压力停顿信息（Pressure Stall Information，PSI）、`meminfo`、内存区域及其水位线（zone/watermark）、`oom_score_adj` 和设备配置选择待终止进程。
 
-这些动作在不同设备上没有统一的先后顺序。GC 只管理目标进程的 ART 堆；页面回收和内存规整在内核中处理页面；lmkd 是用户空间守护进程，负责选择并终止进程。应用无法直接控制 `kswapd` 或 lmkd，但可以减少不必要的持有、响应当前版本仍会送达的内存裁剪级别（trim level），并通过生命周期保存可恢复状态。
+这些动作在不同设备上没有固定的先后顺序。GC 只管理目标进程的 ART 堆；页面回收和内存规整在内核中处理页面；lmkd 是用户空间守护进程，负责选择并终止进程。应用无法直接控制 `kswapd` 或 lmkd，但可以减少不必要的内存持有、响应当前版本仍会送达的内存裁剪级别（trim level），并通过生命周期保存可恢复状态。
 
 <!-- gracker-diagram: ch04-readme-pressure-concurrent-paths -->
 ![压力下多条路径可以并行，没有全设备统一的处理阶梯](../../assets/diagrams/ch04/ch04-readme-pressure-concurrent-paths.png)
 
 图：ART GC 处理对象与托管堆；内核页面回收增加可用页，物理规整改变空闲页连续性；冻结器改变缓存进程可运行状态，lmkd 根据压力与优先级决定是否终止。匿名回收可将内容写入 ZRAM，MMD 再按配置维护冷条目。这些路径可以交错运行，归因必须对齐线程、操作窗口与指标增量。
 
-`/proc/meminfo` 的 `SwapTotal` 是配置容量，`SwapFree` 是未使用容量，`SwapCached` 是交换缓存中仍驻留 RAM、并保留交换条目的页面，可能处于换出或换入后的保留阶段。三者不能相加当作“zram 使用量”。分析 zram 还要结合 `/sys/block/zram*/mm_stat`、交换 I/O 和压缩率。
+`/proc/meminfo` 的 `SwapTotal` 是配置容量，`SwapFree` 是未使用容量，`SwapCached` 是交换缓存中仍驻留 RAM、并保留交换条目的页面，可能处于换出或换入后的保留阶段。这三项不能相加当作“zram 使用量”。分析 zram 的实际占用，还要结合 `/sys/block/zram*/mm_stat`、交换 I/O 和压缩率。
 
 ## 3. PSS、RSS、USS 与 swap
 
@@ -62,7 +62,7 @@ RSS（Resident Set Size，驻留集大小）统计驻留页面；PSS（Proportio
 | USS/Private | 只归入该进程的私有页面 | 终止进程后较可能直接释放多少用户空间页面 | 不覆盖共享对象的系统总成本 |
 | SwapPss | 交换空间中共享页的比例分摊 | 进程对换出量的贡献 | 受内核、`smaps` 与设备实现影响 |
 
-缓存行、内存页和 ART 卡表分属不同层级。即使数值或现象接近，也不能互相替代。缓存行（cache line）是 CPU 缓存传输和一致性维护的单位；内存页（page）是虚拟内存映射与记账的单位；ART 卡表（card table）帮助 GC 记录跨区域引用，形成后续扫描使用的记忆集（remembered set）。
+此外，分析底层开销时还需注意，缓存行、内存页和 ART 卡表分属不同层级，即使数值或现象接近，也不能互相替代：缓存行（cache line）是 CPU 缓存传输和一致性维护的单位；内存页（page）是虚拟内存映射与记账的单位；ART 卡表（card table）帮助 GC 记录跨区域引用，形成后续扫描使用的记忆集（remembered set）。
 
 ## 4. 内容索引
 
@@ -91,7 +91,7 @@ RSS（Resident Set Size，驻留集大小）统计驻留页面；PSS（Proportio
 | 16 KB 兼容或 MTE 故障 | 4.5 / 4.9 | ELF 对齐、内存映射、标签模式、故障地址与调用栈 |
 | 多进程推理峰值或预取反噬 | 4.10 → 4.3 | 进程/用户 ID（PID/UID）、PSS、文件描述符（fd）、阶段峰值、memcg、lmkd 决策 |
 
-采集内存问题时，应记录构建版本、进程状态、前后台状态、总内存、swap/zram、PSI、刷新率、温度和复现场景。单张 `dumpsys meminfo` 快照只能说明采样时刻；趋势和因果关系要靠时间序列、分配调用点与系统跟踪。
+采集内存问题现场时，应记录构建版本、进程状态、前后台状态、总内存、swap/zram、PSI、刷新率、温度和复现场景。单张 `dumpsys meminfo` 快照只能反映采样时刻的状态；要判断趋势和因果关系，还得靠时间序列、分配调用点与系统跟踪。
 
 ## 6. 固定源码入口
 
@@ -105,4 +105,4 @@ RSS（Resident Set Size，驻留集大小）统计驻留页面；PSS（Proportio
 - [kernel `zram_drv.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/block/zram/zram_drv.c)：zram 块设备与统计；
 - [kernel `psi.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/kernel/sched/psi.c)：压力停顿时间记账。
 
-以上源码固定的是公共机制。内存性能结论还要结合目标设备的内核配置、系统属性（sysprop）、lmkd 配置、zram 参数、控制组（cgroup）层级、GPU/内存分配器实现与运行时采样。
+以上源码固定的是公共机制。具体到目标设备的内存性能结论，还要结合内核配置、系统属性（sysprop）、lmkd 配置、zram 参数、控制组（cgroup）层级、GPU/内存分配器实现与运行时采样一并判断。

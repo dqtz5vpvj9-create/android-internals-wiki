@@ -222,10 +222,7 @@ Android 应用遇到的“内存问题”至少有四类，每一类的触发条
 
 为什么要先分类？PSS 按共享页比例分摊，只看这一个数字很难判断属于哪一类。所以我们沿着“系统是否有压力、进程用了什么、哪一类对象或映射在增长、进程怎样退出”逐层缩小范围。
 
-排查过程涉及以下层次：
-
-
-图中的箭头表示管理或记账关系：procfs 是挂载在 `/proc` 的虚拟文件系统，暴露进程和内核状态；cgroup v2 按进程组统计和限制资源。ART 堆、原生堆和图形内存最终都依赖内核提供的页面、映射或设备缓冲区，同一物理页还可能被多个进程和设备共享。
+排查过程涉及应用、运行时与内核多个层次，它们之间的管理与记账关系如下图所示。procfs 是挂载在 `/proc` 的虚拟文件系统，用于暴露进程和内核状态；cgroup v2 按进程组统计和限制资源。ART 堆、原生堆和图形内存最终都依赖内核提供的页面、映射或设备缓冲区，同一物理页还可能被多个进程和设备共享。
 
 <!-- gracker-diagram: ch04-01-process-domains-kernel-pages -->
 ![应用内存域最终对应页、映射或设备缓冲区](../../assets/diagrams/ch04/ch04-01-process-domains-kernel-pages.png)
@@ -331,11 +328,11 @@ adb shell 'pid=$(pidof com.example.app); grep -E "^(VmSize|VmRSS|RssAnon|RssFile
 
 `VmSwap` 只统计私有匿名数据的换出量，不含 shmem 的换出页。所以它较低甚至为零时，共享内存的 Swap 占用仍可能存在；我们继续核对 shmem 映射和对应 cgroup 的统计，把这部分单独查清。 [已验证: android17-6.18-2026-06_r6 `Documentation/filesystems/proc.rst` 的 `VmSwap` 定义]
 
-Android 的 SELinux 强制访问控制、procfs 挂载选项和 ptrace 权限会限制跨进程读取。开发机上可以根据构建类型和应用属性使用 `run-as`、应用自身采集或具备权限的系统工具；量产设备上，我们先默认 `adb shell` 读不到任意 PID（UID） 的 `smaps`，再逐台确认。
+Android 的 SELinux 强制访问控制、procfs 挂载选项和 ptrace 权限会限制跨进程读取。开发机上可以根据构建类型和应用属性使用 `run-as`、应用自身采集或具备权限的系统工具；量产设备上，建议先按 `adb shell` 读不到任意 PID（UID）的 `smaps` 来设计排查路径，再视具体机型逐台确认。
 
 #### `/proc/<pid>/smaps` 与 `smaps_rollup`：逐映射核算
 
-status 文件读起来便宜，但要逐映射核算，就得靠 `smaps`：为每个虚拟内存区域（Virtual Memory Area，VMA）提供 `Size`、`Rss`、`Pss`、私有/共享的干净页与脏页、Swap 等字段。`smaps_rollup` 在内核支持时给出进程汇总，输出更短，但仍需要内核遍历相关映射和页面。
+`status` 文件读取成本低，但要逐映射核算，就得靠 `smaps`：它为每个虚拟内存区域（Virtual Memory Area，VMA）提供 `Size`、`Rss`、`Pss`、私有/共享的干净页与脏页、Swap 等字段。`smaps_rollup` 在内核支持时给出进程汇总，输出更短，但仍需要内核遍历相关映射和页面。
 
 下面的命令用于查看进程汇总：
 
@@ -369,11 +366,11 @@ adb shell getconf PAGE_SIZE
 
 #### APK mmap：从 VMA 定位到 ZIP 条目与 DEX 结构
 
-`smaps` 能指出哪段 APK 映射的 RSS 或 PSS 增长，但同一段映射可能覆盖多个 ZIP 条目。要继续定位 `classes.dex`、资源或原生库，可以把页的驻留状态、VMA 文件偏移和 APK 内部布局对应起来。得到的是驻留页覆盖的文件内容分布，触发驻留的函数调用仍需另找证据。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §3.2、§5.4、§6.4]
+`smaps` 能指出哪段 APK 映射的 RSS 或 PSS 增长，但同一段映射可能覆盖多个 ZIP 条目。要继续定位 `classes.dex`、资源或原生库，可以把页的驻留状态、VMA 文件偏移和 APK 内部布局对应起来。这一步得到的是驻留页覆盖的文件内容分布，触发驻留的函数调用仍需另找证据。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §3.2、§5.4、§6.4]
 
-对文件线性映射，设 VMA 起点为 `vma_start`，映射头中的文件偏移为 `vma_offset`，页起始虚拟地址为 `page_addr`，设备基础页大小为 `PAGE_SIZE`。该页对应的 APK 文件区间为 `[file_start, file_start + PAGE_SIZE)`，其中 `file_start = vma_offset + (page_addr - vma_start)`。`PAGE_SIZE` 应取前面 `getconf PAGE_SIZE` 的结果，别照搬材料示例中的 4096。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §3.1] [已验证: 本章“4 KiB 与 16 KiB 页大小”；android17-6.18-2026-06_r6 `fs/proc/task_mmu.c` `pagemap_read()` 的 `PAGE_SHIFT` 索引]
+对文件线性映射，设 VMA 起点为 `vma_start`，映射头中的文件偏移为 `vma_offset`，页起始虚拟地址为 `page_addr`，设备基础页大小为 `PAGE_SIZE`。该页对应的 APK 文件区间为 `[file_start, file_start + PAGE_SIZE)`，其中 `file_start = vma_offset + (page_addr - vma_start)`。`PAGE_SIZE` 应取前面 `getconf PAGE_SIZE` 的结果，不要直接照搬常见的 4096 示例值。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §3.1] [已验证: 本章“4 KiB 与 16 KiB 页大小”；android17-6.18-2026-06_r6 `fs/proc/task_mmu.c` `pagemap_read()` 的 `PAGE_SHIFT` 索引]
 
-`/proc/<pid>/pagemap` 为每个虚拟基础页保存一个 8 字节记录，文件读取位置是 `(page_addr / PAGE_SIZE) × 8`。bit 63 是 `present`，bit 62 是 `swapped`，bit 0–54 才是驻留页的 PFN。只统计驻留页时，PFN 可以先放一边：r6 源码单独用 `CAP_SYS_ADMIN` 控制 PFN 可见性，`present` 位的设置另走一路，不受这个开关影响。读取文件仍受进程访问检查与 Android SELinux 策略限制；PFN 读到 0 时，驻留与否以该位为准；读取失败或数据不完整的轮次应整轮丢弃，按零增长处理会掩盖真实变化。 [已验证: android17-6.18-2026-06_r6 `Documentation/admin-guide/mm/pagemap.rst`；`fs/proc/task_mmu.c` `pagemap_open()`、`pagemap_read()`、`pte_to_pagemap_entry()`]
+`/proc/<pid>/pagemap` 为每个虚拟基础页保存一个 8 字节记录，文件读取位置是 `(page_addr / PAGE_SIZE) × 8`。bit 63 是 `present`，bit 62 是 `swapped`，bit 0–54 才是驻留页的 PFN。只统计驻留页时，PFN 可以先放一边：当前基线内核（`android17-6.18-2026-06_r6`）单独用 `CAP_SYS_ADMIN` 控制 PFN 可见性，`present` 位的设置另走一路，不受这个开关影响。读取文件仍受进程访问检查与 Android SELinux 策略限制；PFN 读到 0 时，驻留与否以 `present` 位为准；读取失败或数据不完整的轮次应整轮丢弃，按零增长处理会掩盖真实变化。 [已验证: android17-6.18-2026-06_r6 `Documentation/admin-guide/mm/pagemap.rst`；`fs/proc/task_mmu.c` `pagemap_open()`、`pagemap_read()`、`pte_to_pagemap_entry()`]
 
 ZIP 条目的数据起点是 `data_start = header_offset + 30 + name_len + extra_len`，其中两个长度要从本地文件头读取；`header_offset` 本身不是 DEX 起点。按页文件区间与条目数据区间求交集，才能把跨条目的页分开统计。直接把交集解释为 DEX 内部字节，还要求该条目采用 `ZIP_STORED`，且映射内容与所采集 APK 一致；Deflate 压缩、运行时解密或另一个文件中的 DEX，需要单独处理。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §2.1、§5.2、§5.4]
 
@@ -384,7 +381,7 @@ ZIP 条目的数据起点是 `data_start = header_offset + 30 + name_len + extra
 
 页内的字节占比只能说明驻留页里包含什么。一页同时覆盖方法字节码和字符串时，字符串占比高只说明它在这页里，缺页是否由它触发，还要靠别的证据；`present` 同样只表示驻留，访问频率要另找信号。soft-dirty 只记录写入及映射更新，只读 APK 的访问它跟踪不全。要追触发路径，我们把驻留分布与 perf/simpleperf 调用栈采样、ART 分析或业务时间线放到一起看。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §5.4、§6.2、§6.4] [已验证: android17-6.18-2026-06_r6 `Documentation/admin-guide/mm/soft-dirty.rst`]
 
-单进程的 `present` 集合只覆盖驻留页，共享页的 PSS 仍要靠 `smaps` 实测。材料把 VMA 的 PSS 增量按已归因字节占比分摊，这依赖页间共享比例相近等假设；共享者变化、离开驻留页和未归因内容都会影响结果。报告应并列保留 `smaps` 实测的 RSS/PSS 差值、进入与离开页数、条目分布和未归因字节，把比例分摊值标为估算；没有归因字节时如实写未归因，避免输出伪精确的零 PSS。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §5.5、§6.2] [已验证: 本章“为什么 PSS 会在代码不变时波动”]
+单进程的 `present` 集合只覆盖驻留页，共享页的 PSS 仍要靠 `smaps` 实测。如果把 VMA 的 PSS 增量按已归因字节占比分摊，结果会依赖“页间共享比例相近”等假设；共享者变化、离开驻留页和未归因内容都会影响精度。报告应并列保留 `smaps` 实测的 RSS/PSS 差值、进入与离开页数、条目分布和未归因字节，把比例分摊值标为估算；没有归因字节时如实写未归因，避免输出伪精确的零 PSS。 [来源: 技术文章/source/juejin-android/2026-10-14-76956227-APK_mmap_内存增长定位：page.md §5.5、§6.2] [已验证: 本章“为什么 PSS 会在代码不变时波动”]
 
 <!-- gracker-diagram: ch04-01-apk-page-file-attribution -->
 ![从驻留页到 APK 条目：先算文件区间，再解析 DEX](../../assets/diagrams/ch04/ch04-01-apk-page-file-attribution.png)
@@ -454,7 +451,7 @@ App Summary 的 `TOTAL PSS` 与 `/proc/<pid>/smaps_rollup` 的驻留 `Pss` 口�
 
 #### Ashmem、memfd 与 DMA-BUF 的职责要分开
 
-ashmem 是 Android 早期的匿名共享内存机制，memfd 则通过文件描述符创建匿名内存对象；较新版本逐步使用 memfd 承担通用共享内存场景。DMA-BUF 面向设备之间以及设备与进程之间的缓冲区共享，常见于图形、相机和媒体。三者职责各不相同，版本变化的正确读法是“场景迁移”，而不是“DMA-BUF 取代 ashmem”。
+ashmem 是 Android 早期的匿名共享内存机制，memfd 则通过文件描述符创建匿名内存对象；较新版本逐步使用 memfd 承担通用共享内存场景。DMA-BUF 面向设备之间以及设备与进程之间的缓冲区共享，常见于图形、相机和媒体。三者职责各不相同，随着版本演进，通用共享内存逐渐向 memfd 迁移，DMA-BUF 与 ashmem 之间并不存在替代关系。
 
 ### 堆转储与采样边界
 
@@ -507,7 +504,6 @@ adb shell cat /proc/pressure/memory
 | `memory.pressure` | 该 cgroup 的内存 PSI |
 
 `memory.stat` 的 `file` 已经包含 `shmem`，把 `anon + file + shmem` 相加会把 shmem 算两遍；内核内存等其他占用也另有去处，这一求和只能当分类参考，用量以 `memory.current` 节点原值为准。共享页按 cgroup 所有权记账，各进程之间不做 PSS 那种比例分摊。父级节点的读数已汇总其子组用量，直接读即可；只想定位当前层级的事件，则读 `memory.events.local`。 [已验证: android17-6.18-2026-06_r6 `Documentation/admin-guide/cgroup-v2.rst` 的 `Memory Interface Files` 与 `Memory Ownership`]
-
 
 Android 通过 `libprocessgroup` 与 task profile 管理进程所在的 cgroup。设备可以采用不同控制器和层级配置；定位时读取该构建的 `cgroups.json`、`task_profiles.json` 以及运行设备的 cgroup 文件系统，比凭版本号推断路径可靠。
 
@@ -675,7 +671,7 @@ Perfetto 的相关数据源职责如下：
 - `android.heapprofd`：采样原生堆分配调用栈；
 - `linux.ftrace`：通过 Linux 内核跟踪机制 ftrace 记录调度、回收、OOM、LMK 等所选内核与 Android 事件。
 
-`linux.process_stats` 默认只带 status 一类的 RSS 计数；配上 `scan_smaps_rollup: true` 之后，它就可以采样 `smaps_rollup`，而分析 Android 系统守护进程通常需要 root（超级用户） 权限，并受 ptrace 与 procfs 权限限制。观察 PSS 趋势时，先确认跟踪配置和设备权限，再判断每条“进程内存”轨道统计的到底是什么。
+`linux.process_stats` 默认只带 status 一类的 RSS 计数；配上 `scan_smaps_rollup: true` 之后，它就可以采样 `smaps_rollup`，而分析 Android 系统守护进程通常需要 root（超级用户）权限，并受 ptrace 与 procfs 权限限制。观察 PSS 趋势时，先确认跟踪配置和设备权限，再判断每条“进程内存”轨道统计的到底是什么。
 
 下面给出一个低频观察系统与进程内存趋势的最小配置。它适合先定位增长窗口，随后再按分类启用堆分析器。
 
@@ -725,7 +721,7 @@ data_sources {
 
 #### APM OOM 黑匣子只能作为退出复盘线索
 
-第三方 APM 的 OOM 黑匣子报告不要和 Android 平台退出原因混同。所选材料中的 Tencent OOMDetector 是 iOS 工具：运行时用 `<uuid>.oom` 记录前后台状态、已知崩溃、主动退出、卡死、系统版本和应用版本等字段，另用 `<uuid>.mmap` 按调用栈 `digest` 汇总超过阈值的 `malloc` 分配；下次启动时，再通过 UUID、`app.images` 与聚合堆栈合并成报告。 [来源: 技术文章/source/juejin-android/2026-09-06-76815905-APM-OOMDetector-腾讯Mars-OOM-黑匣子实现原理与落盘结构.md]
+第三方 APM 的 OOM 黑匣子报告不要和 Android 平台退出原因混同。以常见的 Tencent OOMDetector 为例，它原本是 iOS 工具：运行时用 `<uuid>.oom` 记录前后台状态、已知崩溃、主动退出、卡死、系统版本和应用版本等字段，另用 `<uuid>.mmap` 按调用栈 `digest` 汇总超过阈值的 `malloc` 分配；下次启动时，再通过 UUID、`app.images` 与聚合堆栈合并成报告。 [来源: 技术文章/source/juejin-android/2026-09-06-76815905-APM-OOMDetector-腾讯Mars-OOM-黑匣子实现原理与落盘结构.md]
 
 这类报告回答的是“上次退出前记录到了什么状态、哪些分配路径仍有大额聚合占用”；它离“Android 系统杀进程的直接证明”还差一步，“仍未释放的聚合分配”也还要再验证才能写成内存泄漏结论。 [来源: 技术文章/source/juejin-android/2026-09-06-76815905-APM-OOMDetector-腾讯Mars-OOM-黑匣子实现原理与落盘结构.md]
 
@@ -768,7 +764,7 @@ RSS 会在每个进程重复计算共享驻留页。比较多个进程的归因�
 
 APK、DEX/OAT/VDEX、`.so`、字体和资源会形成文件映射，代码执行与重定位还会产生私有页。精简依赖、使用 R8 做代码压缩与优化，以及按需加载，都可能同时影响安装体积、启动 I/O 与运行时内存。
 
-低内存终端上的 U 盘升级列表是一个具体例子：所选 Android 11 / RK / 2GB 设备案例中，升级页只保存 APK 路径、大小和修改时间，不在列表阶段解析 APK 内容或读取图标；作者把 `PackageManager.getPackageArchiveInfo()` 解析大 APK 的代价算作可以避免的瞬时成本。 [来源: 技术文章/source/juejin-android/2026-09-15-76852071-Android 系统级设备应用踩坑实录：sharedUserId 签名.md]
+在低内存终端的 U 盘升级列表场景中，曾有一个 Android 11 / RK / 2GB 设备的实际案例：升级页只保存 APK 路径、大小和修改时间，不在列表阶段解析 APK 内容或读取图标，以此避开 `PackageManager.getPackageArchiveInfo()` 解析大 APK 带来的瞬时成本。 [来源: 技术文章/source/juejin-android/2026-09-15-76852071-Android 系统级设备应用踩坑实录：sharedUserId 签名.md]
 
 这个案例也只说明该设备上的瞬时成本，外推成所有设备的固定节省量就过头了。排查类似列表页时，我们把 APK/资源读取、图标解码和列表对象分配分别放回 Java Heap、Native Heap、Code/File mmap 与 Graphics 等分类观察，再用 `dumpsys meminfo`、`smaps` 或 Perfetto 对齐列表刷新前后的变化。 [来源: 技术文章/source/juejin-android/2026-09-15-76852071-Android 系统级设备应用踩坑实录：sharedUserId 签名.md] [已验证: 本章 `dumpsys meminfo`、`smaps` 与 Perfetto 取证口径]
 
@@ -834,10 +830,7 @@ Android 内存分析要先区分三件事：
 
 进入页分配后，空闲页不足、zone 不满足水位或需要高阶连续页，可能使请求进入分配慢路径，其中包括页面回收、页面迁移和内存规整。访问已换出的页则走缺页与换入路径。这些工作有些交给后台内核线程，有些直接占用发起请求的应用线程；发生在关键帧或启动关键路径上时，就可能增加用户可感知的延迟。
 
-物理页从分配到回收的主路径如下：
-
-
-分配走哪条分支由上下文决定：GFP 分配标志、表示连续页数量级的 order、可用 zone、memcg，以及是否允许阻塞和 I/O。所以只凭 `MemFree`，我们推断不出一次分配会走到哪里。
+物理页从分配到回收的主路径如下图所示。分配具体走哪条分支由上下文决定：GFP 分配标志、表示连续页数量级的 order、可用 zone、memcg，以及是否允许阻塞和 I/O。所以只凭 `MemFree`，我们推断不出一次分配会走到哪里。
 
 <!-- gracker-diagram: ch04-01-allocation-fast-and-slow -->
 ![一次 malloc 不必进内核，页分配慢路径也没有固定顺序](../../assets/diagrams/ch04/ch04-01-allocation-fast-and-slow.png)
@@ -927,7 +920,7 @@ adb shell 'pid=$(pidof com.example.app); cat /proc/$pid/stat'
 
 伙伴系统按页分配内存，SLUB 在这些页面上组织对象缓存，再复用相同布局的对象。`task_struct`、`dentry` 等内核对象使用各自的专用 slab 缓存，通用小块请求走 `kmalloc` 缓存；两类入口要分开看，对象大小也不保证小于一个基础页。folio 表示内核作为整体管理的一个或多个页面；slab 可以占用一个或多个页面。 [已验证: android17-6.18-2026-06_r6 `kernel/fork.c` `alloc_task_struct_node()`、`fs/dcache.c` `__d_alloc()`；`mm/slub.c` `kmalloc_slab()`]
 
-Linux 6.18 的内核配置文件 `mm/Kconfig` 将 `CONFIG_SLUB` 定义为默认启用；旧的 SLAB、SLOB 是历史背景，Android 17 里并列运行三种实现的说法不成立。arm64 GKI 还启用了空闲链表随机化与安全加固，并默认关闭 slab 缓存合并。
+Linux 6.18 的内核配置文件 `mm/Kconfig` 将 `CONFIG_SLUB` 定义为默认启用；SLAB 和 SLOB 属于历史背景，Android 17 中并不存在三种分配器并列运行的情况。arm64 GKI 还启用了空闲链表随机化与安全加固，并默认关闭 slab 缓存合并。
 
 `kmalloc()` 对常见小分配使用 kmalloc slab 缓存；较大请求可能直接需要高阶页。返回区域在内核虚拟地址上连续，通常也满足其接口承诺的物理连续性。`vmalloc()` 则把离散物理页映射成连续的内核虚拟区，适合不要求物理连续的大区域，代价包括页表管理和 TLB 压力。
 
@@ -1019,7 +1012,7 @@ adb shell cat /sys/kernel/mm/lru_gen/enabled
 
 `lru_gen_full` 提供额外调试统计；`CONFIG_LRU_GEN_STATS=y` 控制是否保留已驱逐代际的历史统计，不是这个节点存在的前提。r6 的 `init_lru_gen()` 在 MGLRU 编译路径中同时注册这两个 debugfs 文件。debugfs 通常不向量产应用开放。 [已验证: android17-6.18-2026-06_r6 `Documentation/admin-guide/mm/multigen_lru.rst` `Experimental features`；`mm/vmscan.c` `init_lru_gen()`]
 
-普通 LRU 与 MGLRU 都在 LRU 列表容器 `lruvec` 的 `lru_lock` 下完成部分列表操作，并把开销较高的 `shrink_folio_list()` 放到锁外；r6 的 `shrink_inactive_list()` 和 `evict_folios()` 都能看到这种结构。所以“普通 LRU 全程持锁、MGLRU 把持锁复杂度从 O(n) 做到 O(1)”这组对比不成立，评价 MGLRU 还是看代际老化、页表扫描、页面再次访问反馈和具体设备指标。
+普通 LRU 与 MGLRU 都在 LRU 列表容器 `lruvec` 的 `lru_lock` 下完成部分列表操作，并把开销较高的 `shrink_folio_list()` 放到锁外；`android17-6.18-2026-06_r6` 的 `shrink_inactive_list()` 和 `evict_folios()` 都能看到这种结构。因此 MGLRU 并非把持锁复杂度降到了 O(1)，评价 MGLRU 还是要看代际老化、页表扫描、页面再次访问反馈和具体设备指标。
 
 <!-- gracker-diagram: ch04-01-mglru-aging-eviction-feedback -->
 ![MGLRU 用访问代际挑候选，再用 refault 反馈调整选择](../../assets/diagrams/ch04/ch04-01-mglru-aging-eviction-feedback.png)
@@ -1072,10 +1065,7 @@ r6 的 `try_to_compact_pages()` 是直接规整入口；`kcompactd_do_work()` �
 
 图形、相机这类跨进程、跨设备的缓冲区，走的是另一套共享机制。DMA-BUF 是跨设备、跨驱动和跨进程共享缓冲区的框架：一个驱动导出 `struct dma_buf`，其他驱动作为 importer 通过 attachment 拿到适合自己访问的 scatter-gather 映射；用户空间通常只持有一个不暴露内部实现的 fd。
 
-DMA-BUF Heaps 提供从指定内存堆分配 dma-buf 的用户空间接口（UAPI）。下图展示分配、导出与设备导入之间的关系：
-
-
-传递 fd 时，各方共享的是同一个 dma-buf 对象，整块像素数据不用复制。至于各进程是否建立了 CPU `mmap`、设备怎样映射、哪一方还持着引用，要分别核对。
+DMA-BUF Heaps 提供从指定内存堆分配 dma-buf 的用户空间接口（UAPI），分配、导出与设备导入之间的关系如下图所示。传递 fd 时，各方共享的是同一个 dma-buf 对象，整块像素数据不用复制。至于各进程是否建立了 CPU `mmap`、设备怎样映射、哪一方还持着引用，要分别核对。
 
 <!-- gracker-diagram: ch04-01-dmabuf-export-import-reference -->
 ![DMA-BUF：共享同一个对象，设备映射和 CPU 映射各有条件](../../assets/diagrams/ch04/ch04-01-dmabuf-export-import-reference.png)
@@ -1107,7 +1097,7 @@ Linux 6.18 在启用 `CONFIG_DMABUF_SYSFS_STATS` 时提供：
 
 `/proc/<pid>/fdinfo/<fd>` 可以把进程 fd 与 dma-buf 的 inode、大小等导出信息关联；debugfs 的 `/sys/kernel/debug/dma_buf/bufinfo` 适合调试构建。生产系统更适合用 sysfs 和 procfs，权限仍由设备策略决定。
 
-Perfetto `linux.process_stats` 的 `record_process_dmabuf_rss` 可读取 `/proc/<pid>/dmabuf_rss`，配置协议（proto）明确注明该节点只存在于部分 Android 内核。它统计的是进程通过 fd 或 VMA 引用的 dma-buf 总大小，属于“引用规模”：既解读不成该进程独占的物理内存，也别和常规 RSS 直接画等号。
+Perfetto `linux.process_stats` 的 `record_process_dmabuf_rss` 可读取 `/proc/<pid>/dmabuf_rss`，配置协议（proto）明确注明该节点只存在于部分 Android 内核。它统计的是进程通过 fd 或 VMA 引用的 dma-buf 总大小，属于“引用规模”，既不能解读为该进程独占的物理内存，也不宜直接等同于常规 RSS。
 
 ### 16 KiB 基础页对上述机制的影响
 
@@ -1126,7 +1116,7 @@ adb shell getconf PAGE_SIZE
 - 小映射、尾页和部分 slab 布局可能产生更多内部碎片；
 - 单次回收或迁移的基本粒度增大。
 
-Android 官方初始测试报告了应用启动、功耗、相机启动和系统启动等平均收益，也明确说明 16 KiB 设备平均会使用略多内存、设备和应用结果会变化。某个应用自己的预期收益，还是要在目标构建上量缺页、页表、RSS、启动 I/O 和帧时间，平均值代劳不了。
+Android 官方初始测试报告了应用启动、功耗、相机启动和系统启动等平均收益，也明确说明 16 KiB 设备平均会使用略多内存、设备和应用结果会变化。评估单个应用自身的收益，还是要在目标构建上实测缺页、页表、RSS、启动 I/O 和帧时间，平均值替代不了实测。
 
 使用原生代码的应用还要保证 ELF LOAD 段和打包对齐，避免把 4096 写死。只使用 Java/Kotlin 的应用通常已经兼容，但仍需在 16 KiB 环境执行功能与性能测试。完整迁移要求见 4.5 节。
 

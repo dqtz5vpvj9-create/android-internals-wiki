@@ -236,7 +236,7 @@ Android 8.0 引入的 `Bitmap.Config.HARDWARE` 把像素交给图形缓冲区管
 - 需要像素编辑、软件渲染或某些截图链路时，应请求软件 Bitmap；
 - 内存可能显示在图形内存、`memtrack`、DMA-BUF 或设备特定分类中。
 
-源码里，`Bitmap` 仍实现 `Parcelable`，对硬件 Bitmap 也有对应的 Parcel 处理，反序列化时像素格式还可能变化——所以“硬件 Bitmap 过不了 Binder”的说法站不住。跨进程传大图要掂量的成本仍在：同步、缓冲区所有权、接收端的格式变化；很多场景更适合传 URI、文件描述符或共享缓冲区协议。
+源码里，`Bitmap` 仍实现 `Parcelable`，对硬件 Bitmap 也有对应的 Parcel 处理，反序列化时像素格式还可能变化，因此硬件 Bitmap 并非无法跨 Binder 传递。跨进程传大图真正需要权衡的仍是同步、缓冲区所有权与接收端格式变化等成本；很多场景更适合传 URI、文件描述符或共享缓冲区协议。
 
 ### `inBitmap` 复用
 
@@ -582,7 +582,7 @@ Compose 改变了 UI 对象的组织方式，但生命周期和所有权原则�
 
 ### 堆等级的含义
 
-`ActivityManager.getMemoryClass()` 返回普通应用的近似受管理堆等级，`getLargeMemoryClass()` 对应声明 `largeHeap` 后的等级。这两个值只描述受管理堆：它们不是进程总 PSS 上限，原生、图形和共享内存也没有全部计入。
+`ActivityManager.getMemoryClass()` 返回普通应用的近似受管理堆等级，`getLargeMemoryClass()` 对应声明 `largeHeap` 后的等级。这两个值只描述受管理堆：它们既不是进程总 PSS 上限，也没有把原生、图形和共享内存全部计入。
 
 下面的计算只能估算 Java 堆当前已用量与可增长余量：
 
@@ -741,7 +741,7 @@ Android 14+ 只保留 `UI_HIDDEN` 和 `BACKGROUND` 两个公开投递级别，�
 
 ### `largeHeap` 的适用条件
 
-`largeHeap` 只改变设备为应用提供的受管理堆等级，具体大小由设备决定。它不修复泄漏，不扩大文件描述符上限，也不消除原生、图形内存或 Android 17 MemoryLimiter 带来的进程压力。只有业务确有大 Java 堆需求，并经过多档设备验证时才应使用。
+`largeHeap` 只改变设备为应用提供的受管理堆等级，具体大小由设备决定；它既无法修复泄漏或扩大文件描述符上限，也不能消除原生内存、图形内存或 Android 17 MemoryLimiter 带来的进程压力。只有业务确有大 Java 堆需求，并经过多档设备验证时才应使用。
 
 ### 设备档位与内存抖动
 

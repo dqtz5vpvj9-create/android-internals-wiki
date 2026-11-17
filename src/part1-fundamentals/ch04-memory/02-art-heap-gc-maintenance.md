@@ -141,7 +141,7 @@ related_chapters:
 
 > 源码基线：AOSP `android-17.0.0_r1`（API 37）；内核 `android17-6.18-2026-06_r6`。旧版本只用于解释演进；设备厂商可以调整 GC 类型、堆参数和运行时开关，具体设备仍以它自己的跟踪数据、日志与属性为准。
 
-ART Heap 的性能由对象分配、存活集、GC 算法和后台维护共同决定。分代 GC 缩小常规回收范围，HeapTask 和 trim 调整维护时机，但都受前后台状态、Freezer 与内存压力约束。这一章我们就沿着这条主线展开。
+ART Heap 的性能由对象分配、存活集、GC 算法和后台维护共同决定。分代 GC 缩小常规回收范围，HeapTask 和 trim 调整维护时机，但都受前后台状态、Freezer 与内存压力约束。这一节我们就沿着这条主线展开。
 
 ## 对象分配、Heap 与 GC 基线
 
@@ -149,10 +149,7 @@ ART Heap 的性能由对象分配、存活集、GC 算法和后台维护共同�
 
 ### ART 堆空间关系
 
-ART 的 `Heap` 管理多个用途不同的堆空间。下图只画归属关系，各空间在设备上的虚拟地址顺序是另一回事。
-
-
-这五类空间的差别集中在三点：放什么对象、GC 回收哪些、GC 移动哪些。
+ART 的 `Heap` 管理多个用途不同的堆空间。下面这张归属关系图不代表各空间在设备上的实际虚拟地址顺序，这五类空间的差别集中在三点：放什么对象、GC 回收哪些、GC 移动哪些。
 
 <!-- gracker-diagram: ch04-02-heap-space-map -->
 ![ART Heap 管理多种空间，主移动空间随收集器选择](../../assets/diagrams/ch04/ch04-02-heap-space-map.png)
@@ -187,7 +184,7 @@ ART 的 `Heap` 管理多个用途不同的堆空间。下图只画归属关系�
 - 剩余尾部成为新的非移动空间；
 - 应用的普通可移动对象继续使用独立的主移动空间。
 
-这之外还包括规整、空间切分、类表（class table）与字符串驻留表（intern table）的快照，以及 mod-union table 的建立，整套步骤远多于“把分配空间复制到非移动空间尾部”一句话。
+除此之外，这一步还包括规整、空间切分、类表（class table）与字符串驻留表（intern table）的快照，以及 mod-union table 的建立，并非简单地把分配空间复制到非移动空间尾部。
 
 应用进程不会回收或移动 Zygote 空间中的对象。未修改的页面可以继续与 Zygote 共享；应用一旦写入，就会触发写时复制，给这个进程增加私有脏页（Private Dirty）。Zygote 对象若在 `fork()` 后指向应用的新对象，ART 仍要通过 mod-union table 和卡表把这类引用记录下来。
 
@@ -276,7 +273,7 @@ tlab_pos += aligned_object_size
 - `Heap::kPartialTlabSize = 16 KiB`；
 - `RegionSpace::kRegionSize = 256 KiB`。
 
-它们属于三个不同层次：region 可以承载 TLAB，默认 TLAB 大小和 region 大小是两个概念。TLAB 用完后，`RegionSpace::AllocNewTlab()` 会持有 `region_lock_`，先尝试复用足够大的部分 TLAB，再寻找或建立合适的 region——这一步的分支比“获取堆全局锁并 `mmap` 新 region”一句话要多。
+它们属于三个不同层次：region 可以承载 TLAB，默认 TLAB 大小和 region 大小是两个概念。TLAB 用完后，`RegionSpace::AllocNewTlab()` 会持有 `region_lock_`，先尝试复用足够大的部分 TLAB，再寻找或建立合适的 region，比简单地“拿全局锁并 `mmap` 新 region”多出不少分支。
 
 CMC 的 `BumpPointerSpace` 也支持 TLAB，所以 TLAB 概念跨收集器通用；具体分配器要结合收集器与 `Heap::GetCurrentAllocator()` 判断。
 
@@ -312,10 +309,7 @@ Mark-Sweep/CMS 系列收集器仍可使用 RosAlloc。RosAlloc 按尺寸档位�
 
 #### 分配慢路径
 
-普通分配返回空指针后，`Heap::AllocateInternalWithGc()` 接管，主要路径如下：
-
-
-几个细节会直接影响跟踪数据的解读：
+普通分配返回空指针后，`Heap::AllocateInternalWithGc()` 接管，主要路径如下图所示。有几个细节会直接影响跟踪数据的解读：
 
 - 若其他线程已经在做 GC，分配线程会进入 `WaitForGcToComplete()`；等待本身可能形成明显卡顿。
 - ART 先尝试 `next_gc_type_`。这个类型由上一次 GC 后的存活量、吞吐估计和堆目标计算决定，不固定为年轻代或全堆回收。
@@ -323,7 +317,7 @@ Mark-Sweep/CMS 系列收集器仍可使用 RosAlloc。RosAlloc 按尺寸档位�
 - 对 RosAlloc/DlMalloc 路径，满足配置和时间间隔时还可能尝试同构空间规整（homogeneous space compaction），即把对象迁移到布局相同的空间以减少碎片。
 - OOM 日志若显示总空闲字节大于请求大小，ART 会补充最大连续块等碎片信息。
 
-“分配失败 → 后台 GC → 全堆 GC → OOM”只是粗略图示；源码里还有等待、并发竞争、分配器变化、回收收益和碎片规整等分支，真正的路径比它曲折。
+分配失败后的慢路径并非简单的“后台 GC → 全堆 GC → OOM”线性流程，源码中还交织着等待、并发竞争、分配器变化、回收收益和碎片规整等分支，实际路径要曲折得多。
 
 <!-- gracker-diagram: ch04-02-allocation-failure-gc-retry -->
 ![分配失败：先等已有 GC，再按收益和分配结果决定下一步](../../assets/diagrams/ch04/ch04-02-allocation-failure-gc-retry.png)
@@ -410,7 +404,7 @@ UFFD 是用户空间缺页处理接口 `userfaultfd` 的简称。`ShouldUseUserf
 
 CMC 的规整过程会预留一段权限为 `PROT_NONE` 的来源空间（from-space）虚拟地址，并分配逐页状态表、首对象表和少量规整缓冲区。准备阶段使用 `mremap(..., MREMAP_DONTUNMAP, ...)` 等机制建立旧视图与目标视图，随后由 GC 线程或触发缺页的应用执行线程（mutator）按页处理、更新引用并映射页面。
 
-它的真实开销在这两种说法之间：CMC 需要额外虚拟地址和 GC 元数据，这是“原地规整、零额外内存”盖住的部分；但旧页可以通过重新映射形成来源空间视图，规整完成后再用 `madvise` 释放，离“保留完整的第二份物理堆”也很远。我们分析收益时，应同时看 RSS、按共享页比例分摊的 PSS、虚拟映射、GC CPU 时间和应用慢路径。
+CMC 的真实内存开销介于“原地规整、零额外内存”与“保留完整的第二份物理堆”之间：一方面，它确实需要额外的虚拟地址范围和 GC 元数据；另一方面，旧页可以通过重新映射形成来源空间视图，规整完成后再用 `madvise` 释放，远不需要长期占着第二份物理堆。我们分析收益时，应同时看 RSS、按共享页比例分摊的 PSS、虚拟映射、GC CPU 时间和应用慢路径。
 
 <!-- gracker-diagram: ch04-02-cmc-page-coordination -->
 ![CMC 用来源视图与按页处理协调并发规整](../../assets/diagrams/ch04/ch04-02-cmc-page-coordination.png)
@@ -469,7 +463,7 @@ GC 标记阶段会处理软引用（Soft）、弱引用（Weak）、终结引用
 
 Finalizer 的执行是异步的：对象变成不可达后，还要经过发现、入队和守护线程执行，资源释放时间没有及时性保证。finalization 机制已被弃用；文件、游标、图形对象和原生句柄应使用显式 `close()`、Kotlin `use`、Java try-with-resources，或清晰的生命周期协议。
 
-`ReferenceQueue`（引用队列） 适合接收引用状态变化的通知，但它需要消费方持续读取队列。队列无人消费、清理动作阻塞或原生资源未登记，都可能让“Java 对象已不可达”和“系统资源已释放”之间隔着较长间隔。
+`ReferenceQueue`（引用队列）适合接收引用状态变化的通知，但它需要消费方持续读取队列。队列无人消费、清理动作阻塞或原生资源未登记，都可能让“Java 对象已不可达”和“系统资源已释放”之间隔着较长间隔。
 
 FinalizerDaemon、ReferenceQueue 与超时诊断在 [4.6 ART FinalizerDaemon、Cleaner 与 ReferenceQueue](06-finalizer-referencequeue.md) 中展开。
 
@@ -482,7 +476,7 @@ Java 堆 GC 不回收 JIT 生成的机器码。JIT 代码缓存有独立的代�
 - 默认最大容量是 64 MiB，可由运行时参数修改；
 - 容量不足且尚未到上限时，缓存会增长后重试；
 - JIT GC 会标记线程栈上仍在执行的编译代码，并移除未标记、已经失效但尚待回收的代码（zombie code）；
-- 到达最大容量且仍无法满足代码/数据分配时，本次缓存分配失败；“满了就按最近最少使用顺序淘汰旧方法”的概括与这里的机制对不上。
+- 到达最大容量且仍无法满足代码/数据分配时，本次缓存分配直接失败，并不会按最近最少使用顺序自动淘汰旧方法。
 
 profile-guided 编译会把运行期热点信息用于后续编译决策。Baseline Profile 让关键路径更早获得 AOT 或 JIT 优化，减少冷启动早期的解释执行与即时编译（JIT）工作。它的主要收益在执行和启动上，算不上直接的 Java 堆优化手段。
 
@@ -782,7 +776,7 @@ inline void WriteBarrier::ForFieldWrite(
 }
 ```
 
-`MarkCard()` 接收的是 `dst`，也就是持有字段的对象。它标记持有者所在的卡表项（card），而不是 `new_value` 指向的对象。数组写入和批量字段写入也有对应屏障。
+`MarkCard()` 接收的是 `dst`，也就是持有字段的对象。它标记的是持有者所在的卡表项（card），并非 `new_value` 指向的对象。数组写入和批量字段写入也有对应屏障。
 
 #### 4.4 卡表缩小老年代扫描范围
 
@@ -1119,7 +1113,7 @@ GC 算法决定一次回收做什么，HeapTask 决定维护工作何时执行�
 
 有两件事值得先说清楚：它是 ART 运行时的内部设施，应用侧没有受支持的 API 能启动、停止或改写队列；`target_footprint_` 是 ART 用来决定堆增长和 GC 时机的目标值，进程的硬内存上限和 `lmkd` 评分都另有来源。
 
-由于缺少逐版本源码标签证据，仅凭“新增子类”这一说法，我们还反推不出这些类型的历史起点。生产源码中可以找到 **10 个** `HeapTask` 派生类，其中 6 个定义在 `heap.cc`。
+在 Android 17（`android-17.0.0_r1`）的生产源码中，可以找到 **10 个** `HeapTask` 派生类，其中 6 个定义在 `heap.cc`（各类型最初引入的历史版本需按对应源码标签逐一核对）。
 
 ### 从 Java 守护线程进入原生调度器
 
@@ -1455,7 +1449,7 @@ JIT 在进程派生后的阶段，若满足配置条件，会安排一个 10 秒
 - `UI_HIDDEN` 由 `system_server` 的 `AppProfiler` 发送；`BACKGROUND` 由 `CachedAppOptimizer` 在安排缓存进程冻结前发送。
 - 低内存终止守护进程 lmkd、MemoryLimiter 与内核页面回收都不直接调用应用的 `onTrimMemory()`。
 - `IApplicationThread` 是 oneway Binder 接口，发送方不等待应用处理完成；应用回调最终在主线程执行。
-- “公平内存”不是 AOSP 功能名。工程目标应是：单个应用主动缩减可重建资源，同时不把启动、卡顿和后台重建成本转移给用户。
+- “公平内存”并非 AOSP 的功能名称。对应的工程目标应是：单个应用主动缩减可重建资源，同时不把启动、卡顿和后台重建成本转移给用户。
 
 ### 1. Android 14～17 的回调级别边界
 

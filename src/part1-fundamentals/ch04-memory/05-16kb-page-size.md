@@ -546,7 +546,7 @@ adb shell 'cat /sys/kernel/mm/transparent_hugepage/hugepages-*/enabled 2>/dev/nu
 
 Linux 6.18 文档中的默认规则是：PMD 尺寸 THP 继承顶层 `enabled`，其他粒度默认为 `never`，产品配置可以修改这些值。后台线程 `khugepaged` 当前只扫描并合并 PMD 尺寸 THP；较小的 mTHP 主要在发生缺页时直接分配。
 
-这里按匿名 mTHP 讨论尺寸。r6 的 `include/linux/huge_mm.h` 中，`THP_ORDERS_ALL_ANON` 排除了 order-0 和 order-1；因此 16 KiB 基础页下，匿名 mTHP 最小候选是 order-2，即 64 KiB。文件或 shmem 路径的 folio 尺寸与策略要另外核对，不能直接套用这个匿名页下限。 [已验证: android17-6.18-2026-06_r6 `THP_ORDERS_ALL_ANON`、`THP_ORDERS_ALL_FILE_DEFAULT`]
+这里按匿名 mTHP 讨论尺寸。在 `android17-6.18-2026-06_r6` 的 `include/linux/huge_mm.h` 中，`THP_ORDERS_ALL_ANON` 排除了 order-0 和 order-1；因此 16 KiB 基础页下，匿名 mTHP 最小候选是 order-2，即 64 KiB。文件或 shmem 路径的 folio 尺寸与策略要另外核对，不能直接套用这个匿名页下限。 [已验证: android17-6.18-2026-06_r6 `THP_ORDERS_ALL_ANON`、`THP_ORDERS_ALL_FILE_DEFAULT`]
 
 ### 9.3 ARM64 contpte
 
@@ -566,7 +566,7 @@ CONT_PTE_SIZE = 128 × 16 KiB = 2 MiB
 - 整个 2 MiB 范围落在同一个 folio 内；
 - 映射属于可处理的用户空间普通内存。
 
-“启用 `CONFIG_ARM64_CONTPTE` 后每 2 MiB 都只占一个 TLB 表项”这句话说过头了。我们拆开看：mTHP 提供较大的 folio，contpte 处理的是符合条件的 2 MiB PTE 组；较小的 mTHP 即使减少了缺页，也不会自动满足 2 MiB 连续页表项条件。CPU 还可能有硬件页聚合能力，那属于另一个实现层级。
+启用 `CONFIG_ARM64_CONTPTE` 后也并非每 2 MiB 都只占一个 TLB 表项。把两层机制拆开看：mTHP 提供较大的 folio，contpte 处理的是符合条件的 2 MiB PTE 组；较小的 mTHP 即使减少了缺页，也不会自动满足 2 MiB 连续页表项条件。CPU 还可能有硬件页聚合能力，那属于另一个实现层级。
 
 ### 9.4 四种机制的边界
 
