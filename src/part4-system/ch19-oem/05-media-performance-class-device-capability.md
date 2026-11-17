@@ -240,7 +240,7 @@ MPC 数字更高，不表示每个单项阈值都严格高于低等级。有些�
 
 `*` Android 17 文档对 MPC 20 内存给出了两个数值：CDD 2.2.7.3 写至少 5.12 GiB，补充表写 5 GiB。表中按补充表抄录并保留此注记。涉及设备合规判定时，应等待官方勘误或以对应 CTS/认证要求为准，不能自行忽略差值。
 
-> ⚠️ I/O 单位口径：补充表把速率列写作 `mbps`，本表保留官方常用的 `MB/s` 标签与阈值数值；固定 Android 17 CTS 的 `SequentialRWTest` 实际按 `bytes / 1024 / 1024` 计算速率并记为 `MBPS`，按该公式理解对应 MiB/s。与十进制 MB/s 或 Mbit/s 的外部结果比较时，必须先统一单位，不能只按标签直接拼表。[来源：CTS SequentialRWTest](https://android.googlesource.com/platform/cts/+/refs/tags/android-17.0.0_r1/tests/filesystem/src/android/filesystem/cts/SequentialRWTest.java)
+> ⚠️ I/O 单位口径：补充表把速率列写作 `mbps`，本表保留官方常用的 `MB/s` 标签与阈值数值；固定 Android 17 CTS 的 `SequentialRWTest` 实际按 `bytes / 1024 / 1024` 计算速率并记为 `MBPS`，按该公式理解对应 MiB/s。与十进制 MB/s 或 Mbit/s 的外部结果比较时，必须先统一单位，不能只按标签直接拼表。[^source-audit-note-1]
 
 表中的 `30/31` 和 `34/35` 只是把相近等级合并展示，阈值并非完全相同。例如 MPC 31 要求后置主相机支持 RAW，MPC 30 没有这项要求；MPC 35 增加 `JPEG_R`、原生相机默认输出 Ultra HDR，以及特定 HLG10 预览防抖组合。
 
@@ -412,3 +412,5 @@ Android 17 的证据链包括：
 - [运行 Media Performance Class 测试](https://source.android.com/docs/compatibility/cts/media-cts)
 - [Google Maps 使用 Performance Class 的案例](https://android-developers.googleblog.com/2025/01/performance-class-helps-google-maps-deliver-premium-experiences.html)
 - [早期 Performance Class 应用案例](https://android-developers.googleblog.com/2022/03/using-performance-class-to-optimize.html)
+
+[^source-audit-note-1]: [来源：CTS SequentialRWTest](https://android.googlesource.com/platform/cts/+/refs/tags/android-17.0.0_r1/tests/filesystem/src/android/filesystem/cts/SequentialRWTest.java)

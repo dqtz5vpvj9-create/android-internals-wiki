@@ -380,7 +380,7 @@ try {
 
 `frameCount` 和 `renderOneFrame()` 代表业务自己的周期循环。`createHintSession()` 接收 Linux TID 数组和正数目标时长；设备不支持 Hint Session，或线程不属于当前进程时，可以返回 `null`。使用时要守住几条约定：参与线程长期存活且属于当前进程，每个周期都报告工作时长，目标预算变化时再调用 `updateTargetWorkDuration()`。目标时长应取该线程组在整条处理管线中的工作预算。示例两端都用 `System.nanoTime()` 测量单调时钟时差，兼容本文覆盖的 API 34；`SystemClock.uptimeNanos()` 与其同属不包含深度休眠的 uptime 时间基准，但该公开方法从 API 35 才提供。
 
-> ⚠️ API 边界校勘：Hint Session 从 API 31 提供，不代表示例中的所有计时方法也都能在 API 31～34 使用。[来源：SystemClock API](https://developer.android.com/reference/android/os/SystemClock#uptimeNanos())
+> ⚠️ API 边界校勘：Hint Session 从 API 31 提供，不代表示例中的所有计时方法也都能在 API 31～34 使用。[^source-audit-note-1]
 
 ADPF（Android Dynamic Performance Framework，Android 动态性能框架）提供反馈信号，频率、核心或功耗结果仍由厂商实现结合温控和整机预算决定。所以应用侧该做的优化一件不少：减少无效工作、控制并发和缩短持锁区间。
 
@@ -395,7 +395,7 @@ ADPF（Android Dynamic Performance Framework，Android 动态性能框架）提�
 
 接口可能返回 `NaN`（Not a Number，表示当前没有有效数值），例如设备不支持或调用过快。首次调用后的几秒内，如果温度样本还不足以预测，系统会返回当前 headroom，暂不使用 `forecastSeconds` 指定的预测时间。AOSP 文档建议调用频率不超过约每秒一次；更频繁地读取慢变化传感器没有收益。我们把 headroom 与 `getCurrentThermalStatus()` 放在一起用，可以决定何时降低画质、减小批量任务或延后预取。
 
-`getThermalHeadroomThresholds()` 从 API 35 开始提供，用于读取设备为各温控状态定义的 headroom 阈值；返回的映射只包含厂商已定义的阈值。API 36 起，阈值可能在两次调用之间变化，应用可通过 `addThermalHeadroomListener()` 接收变化通知，不能把首次查询结果当作永久配置。该功能未启用时会抛出 `UnsupportedOperationException`，温控服务尚未就绪时会抛出 `IllegalStateException`。不同设备的传感器和阈值模型可能不同，跨机比较原始 headroom 数字时要保留这项限制。[来源：PowerManager API](https://developer.android.com/reference/android/os/PowerManager#getThermalHeadroomThresholds())
+`getThermalHeadroomThresholds()` 从 API 35 开始提供，用于读取设备为各温控状态定义的 headroom 阈值；返回的映射只包含厂商已定义的阈值。API 36 起，阈值可能在两次调用之间变化，应用可通过 `addThermalHeadroomListener()` 接收变化通知，不能把首次查询结果当作永久配置。该功能未启用时会抛出 `UnsupportedOperationException`，温控服务尚未就绪时会抛出 `IllegalStateException`。不同设备的传感器和阈值模型可能不同，跨机比较原始 headroom 数字时要保留这项限制。[^source-audit-note-2]
 
 #### CPU/GPU headroom 的含义
 
@@ -408,7 +408,7 @@ API 36 起，`SystemHealthManager` 提供可选的 `getCpuHeadroom()` 与 `getGp
 
 CPU 参数可指定属于本进程的 TID，这些线程还必须具有相同的 CPU affinity（允许线程运行的 CPU 集合）。接口契约里没有固定的 100 ms 轮询间隔，具体数值以查询结果为准。
 
-CPU/GPU headroom 主要反映近期历史负载，查询后可用容量仍可能变化，不能当作下一周期的性能保证。负载稀疏或不稳定时，读数可能不足以指导调整；避免每次轮询都激进地增减工作量，以免产生振荡。[来源：SystemHealthManager 源码说明（android-17.0.0_r1）](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/os/health/SystemHealthManager.java)
+CPU/GPU headroom 主要反映近期历史负载，查询后可用容量仍可能变化，不能当作下一周期的性能保证。负载稀疏或不稳定时，读数可能不足以指导调整；避免每次轮询都激进地增减工作量，以免产生振荡。[^source-audit-note-3]
 
 #### 应用与调度策略的分工
 
@@ -654,7 +654,7 @@ BatteryTrigger 在系统报告的电池百分比下降时记录状态驻留。Ti
 
 这两个阈值决定服务何时重新请求 HAL，硬件传感器本身的采样周期要另行确认。服务还会在前后两次累计值之间加入按调用 UID 保持一段时间的随机扰动，两类权限路径都会经过该处理。公开结果以 µW·s 报告自开机以来的累计能量，包含电池供电与外接电源期间的能量，重启后不会延续；该 API 不返回 `EnergyConsumerAttribution[]`。
 
-这里的 granularity 指结果新鲜度等级。在本节基线中，`PowerMonitorReadings.getGranularity()` 及两项 `GRANULARITY_*` 常量都是隐藏的 `@SystemApi`，普通应用 SDK 不暴露这些接口；系统组件可直接读取。普通应用可用公开的 `getTimestampMillis()` 检查读数时间。排查时还要确认设备功能开关、对象列表、累计值是否增长及调用方权限；20 秒或 250 毫秒的缓存规则与 HAL 计数器本身的采样说明是两回事。[来源：PowerMonitorReadings（android-17.0.0_r1）](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/os/PowerMonitorReadings.java)
+这里的 granularity 指结果新鲜度等级。在本节基线中，`PowerMonitorReadings.getGranularity()` 及两项 `GRANULARITY_*` 常量都是隐藏的 `@SystemApi`，普通应用 SDK 不暴露这些接口；系统组件可直接读取。普通应用可用公开的 `getTimestampMillis()` 检查读数时间。排查时还要确认设备功能开关、对象列表、累计值是否增长及调用方权限；20 秒或 250 毫秒的缓存规则与 HAL 计数器本身的采样说明是两回事。[^source-audit-note-4]
 
 ### 能力分级与部署
 
@@ -811,3 +811,8 @@ Power HAL 与 schedutil 把场景、利用率和约束转成设备侧控制，Po
 
 - [`SystemHealthManager` API](https://developer.android.com/reference/android/os/health/SystemHealthManager)
 - [AOSP：Power stats HAL](https://source.android.com/docs/core/power/power-stats-hal)
+
+[^source-audit-note-1]: [来源：SystemClock API](https://developer.android.com/reference/android/os/SystemClock#uptimeNanos())
+[^source-audit-note-2]: [来源：PowerManager API](https://developer.android.com/reference/android/os/PowerManager#getThermalHeadroomThresholds())
+[^source-audit-note-3]: [来源：SystemHealthManager 源码说明（android-17.0.0_r1）](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/os/health/SystemHealthManager.java)
+[^source-audit-note-4]: [来源：PowerMonitorReadings（android-17.0.0_r1）](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/os/PowerMonitorReadings.java)

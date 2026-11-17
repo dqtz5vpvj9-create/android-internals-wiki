@@ -261,7 +261,7 @@ ORDER BY observed_cpu_changes DESC;
 
 示例窗口为 `[trace_start() + 1 秒, trace_start() + 11 秒)`，按运行片段的开始时间筛选；跨越窗口起点但开始于窗口外的片段不在此计数内。使用时要替换成目标交互区间。
 
-> ⚠️ 时间基准校勘：`sched.ts` 不是默认从零开始的相对时间；直接写 1～11 秒的常量不能表示 trace 起点后的窗口。[来源：Perfetto trace bounds 源码](https://android.googlesource.com/platform/external/perfetto/+/7424539825a0ae7a6529c26a696a64896bab32c5/src/trace_processor/perfetto_sql/stdlib/prelude/trace_bounds.sql)查询排除 idle 线程，避免把多 CPU 的空闲片段当成同一业务线程的迁移。这个计数只描述相邻运行片段的 CPU 编号变化，和 `sched_migrate_task` 事件数量是两回事，也不能直接拿来衡量迁移代价；要判断代价，还要结合运行片段时长、唤醒延迟、PMU（Performance Monitoring Unit，性能监控单元）记录的缓存未命中与业务阶段。
+> ⚠️ 时间基准校勘：`sched.ts` 不是默认从零开始的相对时间；直接写 1～11 秒的常量不能表示 trace 起点后的窗口。[^source-audit-note-1]查询排除 idle 线程，避免把多 CPU 的空闲片段当成同一业务线程的迁移。这个计数只描述相邻运行片段的 CPU 编号变化，和 `sched_migrate_task` 事件数量是两回事，也不能直接拿来衡量迁移代价；要判断代价，还要结合运行片段时长、唤醒延迟、PMU（Performance Monitoring Unit，性能监控单元）记录的缓存未命中与业务阶段。
 
 ## GPU：架构名称与驱动能力
 
@@ -499,3 +499,5 @@ CPU 与 GPU 同时变慢只是线索。可靠判断需要 DRAM 或内存互连�
 - [Snapdragon Profiler](https://developer.qualcomm.com/software/snapdragon-profiler)
 - [NNAPI 迁移指南](https://developer.android.com/ndk/guides/neuralnetworks/migration-guide)
 - [Android Neural Networks HAL](https://source.android.com/docs/core/interaction/neural-networks)
+
+[^source-audit-note-1]: [来源：Perfetto trace bounds 源码](https://android.googlesource.com/platform/external/perfetto/+/7424539825a0ae7a6529c26a696a64896bab32c5/src/trace_processor/perfetto_sql/stdlib/prelude/trace_bounds.sql)
