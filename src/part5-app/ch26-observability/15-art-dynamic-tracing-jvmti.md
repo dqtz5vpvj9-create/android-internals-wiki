@@ -400,9 +400,9 @@ XTrace 配置命中该注册方法并记录调用栈。论文展示的调用路�
 
 #### 自动化复现链路的证据分工
 
-自然语言真机自动化可以帮助复现问题，但它提供的只是操作与观察记录；方法事件仍要从 ART 或 JVMTI 这条线上取。ARTEMIS 材料列出的诊断面包括 `analyze_logs`、录屏、`video_analyzer`、step screenshot、`inspect_trace`，并提到工作流文案中有 `profile performance` 与 metric tables；同一材料明确说明 README 未声明具体 Perfetto 集成，所以拿到这类报告时，要把它与 Perfetto trace、ART method tracing 分开归档。[来源: DeepResearch/2026-09-08-morning-google-ARTEMIS-真机自然语言自动化-研究材料/04-dump-perf-engineer-cross.md]
+自然语言真机自动化可以帮助复现问题，但它提供的只是操作与观察记录；方法事件仍要从 ART 或 JVMTI 这条线上取。ARTEMIS 材料列出的诊断面包括 `analyze_logs`、录屏、`video_analyzer`、step screenshot、`inspect_trace`，并提到工作流文案中有 `profile performance` 与 metric tables；同一材料明确说明 README 未声明具体 Perfetto 集成，所以拿到这类报告时，要把它与 Perfetto trace、ART method tracing 分开归档。[^source-audit-note-1]
 
-用自动化控制器驱动 jank、启动或 soak 实验时，实验记录应把外部刺激也写入证据：输入注入路径，人手点击还是自动化点击，连续点击间隔，弹窗 Safety Net/自愈是否改变冷启动或首帧路径，`ARTEMIS_KEEP_DEVICE_AWAKE` 是否保持唤醒，以及 `DeviceExecutionLock` 是否让单设备同一时刻只有一个任务运行。[来源: DeepResearch/2026-09-08-morning-google-ARTEMIS-真机自然语言自动化-研究材料/04-dump-perf-engineer-cross.md] 这些字段回答的是“这次复现如何施加负载”；ART/JVMTI、Perfetto 和编译期插桩回答的是“目标进程和系统当时发生了什么”。材料还提醒，自动化决策时延会叠在 UI 动画与网络上；因此两类证据要用时间戳或步骤编号对齐；对齐之后，外部控制时延归外部账，应用方法耗时与 ART 事件开销各记各的。[来源: DeepResearch/2026-09-08-morning-google-ARTEMIS-真机自然语言自动化-研究材料/04-dump-perf-engineer-cross.md]
+用自动化控制器驱动 jank、启动或 soak 实验时，实验记录应把外部刺激也写入证据：输入注入路径，人手点击还是自动化点击，连续点击间隔，弹窗 Safety Net/自愈是否改变冷启动或首帧路径，`ARTEMIS_KEEP_DEVICE_AWAKE` 是否保持唤醒，以及 `DeviceExecutionLock` 是否让单设备同一时刻只有一个任务运行。[^source-audit-note-1] 这些字段回答的是“这次复现如何施加负载”；ART/JVMTI、Perfetto 和编译期插桩回答的是“目标进程和系统当时发生了什么”。材料还提醒，自动化决策时延会叠在 UI 动画与网络上；因此两类证据要用时间戳或步骤编号对齐；对齐之后，外部控制时延归外部账，应用方法耗时与 ART 事件开销各记各的。[^source-audit-note-1]
 
 
 
@@ -782,3 +782,5 @@ JVMTI/ART TI 提供标准的运行时实验入口，可以验证方法事件、G
 10. [26.12 编译期字节码插桩与监控自动化](12-bytecode-instrumentation-monitoring-automation.md)。
 11. DeepResearch：`2026-09-08-morning-google-ARTEMIS-真机自然语言自动化-研究材料/04-dump-perf-engineer-cross.md`。
 12. [固定XTrace arXiv v1全文](https://arxiv.org/html/2512.21555v1)；[ICSE2026 SEIP官方议程](https://conf.researchr.org/details/icse-2026/icse-2026-software-engineering-in-practice/74/XTrace-A-Non-Invasive-Dynamic-Tracing-Framework-for-Android-Applications-in-Producti)（2026-04-15报告）。
+
+[^source-audit-note-1]: 来源: DeepResearch/2026-09-08-morning-google-ARTEMIS-真机自然语言自动化-研究材料/04-dump-perf-engineer-cross.md

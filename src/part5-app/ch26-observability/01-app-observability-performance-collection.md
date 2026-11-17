@@ -481,7 +481,7 @@ StatsPullAtomCallback.onPullAtom(int atomTag, List<StatsEvent> data) → statsd 
 
 以 `AppStartOccurred`（`app_start_occurred`）为例，字段包含 `transition_delay_millis`、`starting_window_delay_millis`、`bind_application_delay_millis`、`windows_drawn_delay_millis` 等，没有 `latencyMillis` 字段。
 
-`StatsCompanionService` 运行在system_server，通过`IStatsd`辅助statsd设置/接收拉取和订阅告警、交换UID/包信息并处理连接与死亡重连。配置注册、报告读取和pull provider注册由`StatsManagerService`等桥接给statsd，不能把它们概括成StatsCompanionService的主要职责。事件写入经`StatsLog`的JNI/生成日志代码与`libstatssocket`进入本地socket；守护进程侧由`StatsSocketListener`或所选io_uring监听器读取并送入`LogEventQueue`，这不是system_server里一个读取`statsdw`的JNI桥。[已验证: StatsCompanionService.java、StatsManagerService.java、StatsD main.cpp @ android-17.0.0_r1]
+`StatsCompanionService` 运行在system_server，通过`IStatsd`辅助statsd设置/接收拉取和订阅告警、交换UID/包信息并处理连接与死亡重连。配置注册、报告读取和pull provider注册由`StatsManagerService`等桥接给statsd，不能把它们概括成StatsCompanionService的主要职责。事件写入经`StatsLog`的JNI/生成日志代码与`libstatssocket`进入本地socket；守护进程侧由`StatsSocketListener`或所选io_uring监听器读取并送入`LogEventQueue`，这不是system_server里一个读取`statsdw`的JNI桥。[^source-audit-note-1]
 
 #### 1.3 系统指标采集边界与 App 侧替代方案
 
@@ -973,7 +973,7 @@ StatsD 的 config 订阅机制按 `StatsdConfig` 定义的周期聚合原子事�
 
 Android 14–17 都可以用 `Debug.MemoryInfo` 采集同 UID 进程的低频内存快照，这条路径跨版本一致，没必要为 Android 17 单写一条内容相同的版本分支。采样记录至少包含系统日期时间（wall clock）、不受系统校时影响的单调时间 `elapsedRealtime`、进程启动序列、前后台状态和最近一次内存压力等级（trim level）。长时间没有样本，说明的只是进程没执行采样，原因可能是冻结、调度延迟、进程退出或任务被取消。
 
-`ComponentCallbacks2.onTrimMemory()`应按版本和level解释。API34起，RUNNING_*、MODERATE、COMPLETE等若干旧内存压力等级不再通知，并在API35弃用；不能在Android14–17把最近一次旧trim level当作持续、实时压力信号。UI_HIDDEN等回调描述生命周期/可释放资源机会，也不证明每次回收或compaction发生。按实际收到的适用level和业务状态释放可重建缓存；运行策略依赖明确生命周期与可用公开信号，不靠高频PSS轮询推断系统事件。[已验证: https://developer.android.com/reference/android/content/ComponentCallbacks2]
+`ComponentCallbacks2.onTrimMemory()`应按版本和level解释。API34起，RUNNING_*、MODERATE、COMPLETE等若干旧内存压力等级不再通知，并在API35弃用；不能在Android14–17把最近一次旧trim level当作持续、实时压力信号。UI_HIDDEN等回调描述生命周期/可释放资源机会，也不证明每次回收或compaction发生。按实际收到的适用level和业务状态释放可重建缓存；运行策略依赖明确生命周期与可用公开信号，不靠高频PSS轮询推断系统事件。[^source-audit-note-2]
 
 #### 11.2 Android 17 新字段与退出补偿
 
@@ -1036,3 +1036,6 @@ Android 14–17 的性能监控由多组权限和用途不同的 API 组成，�
 - [OpenTelemetry logs](https://opentelemetry.io/docs/specs/otel/logs/)：使用 trace/span 关联信息连接日志与追踪。
 - [AOSP `SystemClock.java` @ Android 17](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/core/java/android/os/SystemClock.java)：平台时钟实现边界。
 - [AOSP `ProfilingManager.java` @ Android 17](https://android.googlesource.com/platform/packages/modules/Profiling/+/refs/tags/android-17.0.0_r1/framework/java/android/os/ProfilingManager.java)：线上性能剖析请求、触发器与限流边界。
+
+[^source-audit-note-1]: 已验证: StatsCompanionService.java、StatsManagerService.java、StatsD main.cpp @ android-17.0.0_r1
+[^source-audit-note-2]: 已验证: <https://developer.android.com/reference/android/content/ComponentCallbacks2>
