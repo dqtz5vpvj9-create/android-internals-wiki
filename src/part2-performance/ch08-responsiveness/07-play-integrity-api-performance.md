@@ -51,7 +51,7 @@ last_idle_audit_at: '2026-08-25T22:35:51+08:00'
 
 图：API 给出判定信号；服务端仍须验证请求并作业务决定，授权这一步始终留在服务端手里。
 
-这套校验也会拉长交互路径：客户端先向 Google Play 申请加密 token（完整性令牌），本文采用的常规路径是业务服务端再把 token 交给 Google 解密和验证；Classic 还有在安全服务端自行管理密钥并解密验证的选项，Standard 不支持该选项。其中 Standard 请求的 token provider 可以在受保护动作发生前先准备好，把这一段移出交互路径；其余阶段只能各自记录耗时。如果全程只记一个“Play Integrity 总耗时”，慢请求发生时，我们分不清问题出在客户端、接入网络、Google 解密接口还是业务服务端。
+这套校验也会拉长交互路径：客户端先向 Google Play 申请加密 token（完整性令牌），常规路径是由业务服务端再把 token 交给 Google 解密和验证；Classic 还有在安全服务端自行管理密钥并解密验证的选项，Standard 不支持该选项。其中 Standard 请求的 token provider 可以在受保护动作发生前先准备好，把这一段移出交互路径；其余阶段只能各自记录耗时。如果全程只记一个“Play Integrity 总耗时”，慢请求发生时，我们分不清问题出在客户端、接入网络、Google 解密接口还是业务服务端。
 
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`；Play Integrity Android 库 `1.6.0`。库、Play Store / Play services 和服务端独立演进，行为按各自版本核对。
@@ -125,7 +125,7 @@ Android 13+ 的可选 `MEETS_BASIC_INTEGRITY` / `MEETS_STRONG_INTEGRITY` 还要�
 
 ## 2. Standard 与 Classic 是两套调用方式
 
-本次按 Android 库 `1.6.0` 核对类型；该系列从 1.5.0 起的 `minSdk` 为 23，本文讨论的 API 31–37 均在其范围内。官方 Standard 页面仍写 API 21+，实际接入时以所用库的发布说明为准，再确定最低平台值。[发布说明](https://developer.android.com/google/play/integrity/reference/com/google/android/play/core/release-notes)
+本节基于 Play Integrity Android 库 `1.6.0` 核对类型；该系列自 `1.5.0` 起的 `minSdk` 为 23，覆盖这里讨论的 API 31–37 范围。官方 Standard 页面仍写 API 21+，实际接入时以所用库的发布说明为准，再确定最低平台版本。[发布说明](https://developer.android.com/google/play/integrity/reference/com/google/android/play/core/release-notes)
 
 
 两条路线怎么选，先看官方的当前建议：大多数应用使用 Standard 请求——先准备好一个可复用的 token provider，再为每个业务动作申请新 token。Classic 走的是另一条路，没有预先准备这一步，每次请求都现场重新计算判定，成本因此更高，适合少量、高价值、且强调本次计算新鲜度的动作。
@@ -149,7 +149,7 @@ Android 13+ 的可选 `MEETS_BASIC_INTEGRITY` / `MEETS_STRONG_INTEGRITY` 还要�
 <!-- gracker-diagram: ch08-07-13-standard-sequence -->
 ![Standard 从预热到业务决定的完整路径](../../assets/diagrams/ch08/ch08-07-13-standard-sequence.png)
 
-图：预热可移出交互等待；token、请求验证和业务决定仍属于各自阶段。原 Mermaid 源码保留。
+图：预热可移出交互等待；token、请求验证和业务决定仍属于各自阶段。
 
 <details>
 <summary>查看 Mermaid 源码</summary>
@@ -252,7 +252,7 @@ class IntegrityTokenSource(
 
 ### 3.2 `requestHash` 与当前动作的绑定
 
-`requestHash` 是业务请求内容的摘要，服务端靠它确认 token 对应当前处理的那次动作。公开 builder 将它列为推荐的可选字段；本文保护业务动作的流程要求提供并验证它——“API 允许省略”只说明接口层面宽容，内容绑定仍要由接入方自己完成。[API 契约](https://developer.android.com/google/play/integrity/reference/com/google/android/play/core/integrity/StandardIntegrityManager.StandardIntegrityTokenRequest.Builder)我们建议按下面的流程构造：
+`requestHash` 是业务请求内容的摘要，服务端靠它确认 token 对应当前处理的那次动作。公开 builder 将它列为推荐的可选字段，但在保护业务动作的流程中必须提供并验证它——“API 允许省略”只说明接口层面宽容，内容绑定仍要由接入方自己完成。[API 契约](https://developer.android.com/google/play/integrity/reference/com/google/android/play/core/integrity/StandardIntegrityManager.StandardIntegrityTokenRequest.Builder) 建议按下面的流程构造：
 
 1. 定义稳定的请求规范化格式，使相同业务数据总能产生相同字节序列；明确字段顺序、空值、字符编码、金额单位和版本号。
 2. 纳入所有会改变安全决定的字段，例如账号 ID、服务端下发的 action ID、订单 ID、金额、币种和动作类型。
@@ -551,7 +551,7 @@ fun requestWithTrace(
 
 图：单事件正常Task的成功/失败/取消或request/监听注册同步抛错都经过同一endOnce守卫；同步抛错先闭合再原样重抛，AtomicBoolean防止回调与异常竞态重复end。两个同名在途事件用不同cookie，A/B可以交叠并按自己的终态结束，不按嵌套栈配对；轨道仅示意，无实测刻度。cookie结束后才可复用且不用敏感token生成。闭合只表示结束应用观测，不证明底层取消、闭源精确完成或风险策略通过。
 
-async slice 可以跨线程，覆盖从 `provider.request()` 调用前到完成监听器执行的单调时间区间，包含同步发起、运行与等待。默认 Task listener 在主线程排队；本例使用仅做闭合工作的 inline executor，减少这段排队，但它仍是“应用观察到完成”的时刻，不是闭源组件内部完成的精确时间。成功、失败和取消的 Task 都会触发 complete listener；同步抛错路径也会闭合并原样抛出，监听注册失败时的闭合不证明底层请求已停。它能回答的也就到这里：Google Play 内部用了哪个线程、Binder 或网络往返发生了几次，都超出它的测量范围。
+async slice 可以跨线程，覆盖从 `provider.request()` 调用前到完成监听器执行的单调时间区间，包含同步发起、运行与等待。默认 Task listener 在主线程排队；本例使用仅做闭合工作的 inline executor 减少这段排队，但它仍是“应用观察到完成”的时刻，并不等于闭源组件内部完成的精确时间。成功、失败和取消的 Task 都会触发 complete listener；同步抛错路径也会闭合并原样抛出，监听注册失败时的闭合不证明底层请求已停。应用侧能观测到的范围就到这里：Google Play 内部用了哪个线程、Binder 或网络往返发生了几次，都超出它的测量范围。
 
 <!-- gracker-diagram: ch08-07-42-completion-observation -->
 ![主线程排队会延后默认完成观察点](../../assets/diagrams/ch08/ch08-07-42-completion-observation.png)

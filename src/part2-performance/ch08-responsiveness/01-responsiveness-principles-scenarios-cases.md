@@ -137,7 +137,7 @@ consolidated_from:
 
 # 响应速度原理、场景与案例
 
-一次点击从手指落下走到画面变化，中间要穿过输入系统、应用主线程、渲染和显示合成。延迟可能出在任何一段，所以响应速度的排查要先把起点、终点和各段负责的线程定清楚，再判断延迟来自主线程工作、异步依赖、IPC、I/O 还是调度。这篇文章按这个顺序展开：先定端点，再拆路径，最后用真实案例收尾。
+一次点击从手指落下走到画面变化，中间要穿过输入系统、应用主线程、渲染和显示合成。延迟可能出在任何一段，因此响应速度的排查要先定清起点、终点和各段负责的线程，再判断延迟究竟来自主线程工作、异步依赖、IPC、I/O 还是调度。本节按这个顺序展开：先定端点，再拆路径与典型场景，最后用真实生产案例收尾。
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -152,8 +152,7 @@ consolidated_from:
 - 按压反馈：从 `ACTION_DOWN` 的事件时间开始，到包含按钮按下状态的帧实际呈现为止。
 - 点击结果：从 `ACTION_UP` 的事件时间开始，到包含操作结果的帧实际呈现为止。Android 的普通 `View` 通常在抬手后才确认点击；这里选择 `ACTION_UP` 是本指标的约定。键盘、无障碍和其他业务入口应分别定义起点，各自的业务耗时按各自的交互约定起算。
 
-
-拖动和滚动要换一种测法：逐个考察输入样本与对应画面更新之间的 event-to-photon（事件采样到画面发光） 延迟，并观察整段手势中的延迟分布是否稳定。只记录“手指开始移动到列表开始滚动”这一个数，手势中段偶发的延迟波动就看不见了。
+拖动和滚动要换一种测法：逐个考察输入样本与对应画面更新之间的 event-to-photon（事件采样到画面发光）延迟，并观察整段手势中的延迟分布是否稳定。只记录“手指开始移动到列表开始滚动”这一个数，手势中段偶发的延迟波动就看不见了。
 
 启动场景有两个现成的端点。TTID（Time to Initial Display）量的是从启动请求到首帧显示，TTFD（Time to Full Display）量的是从启动请求到应用报告内容已经完整呈现。一个回答“画面出来没有”，一个回答“内容完整可用没有”，我们按要回答的问题选端点。
 
@@ -167,12 +166,11 @@ consolidated_from:
 | 应用启动 | 系统接收启动请求 | TTID 或 TTFD | TTID 只到首帧，与“内容可交互”含义不同 |
 | 长任务 | 用户确认操作 | 进度反馈帧与业务完成点 | 只量业务耗时会漏掉反馈延迟 |
 
-`MotionEvent.getEventTimeNanos()` 在 API 34 才成为公开 API；Android 12–13 可使用毫秒精度的 `getEventTime()`，历史样本也要保留对应时间。两者使用不含深度睡眠时间的 uptime 时钟，要和含 suspend 的 boottime 时间戳对上，得先做时钟快照换算。纳秒单位也只代表单位粒度，保证不了测量准确度。这些时间接近输入样本的时间基准，离手指接触屏幕玻璃的物理时刻还差一段。帧的 present 信号也只说明到了呈现这一步，面板像素是否已经完成发光，它回答不了。所以我们测实验室级 touch-to-photon（触摸到画面发光） 延迟，要靠高速相机、光电传感器或厂商显示链路 trace；普通应用采集的 Perfetto 更适合定位软件路径中的耗时阶段。
-
+`MotionEvent.getEventTimeNanos()` 在 API 34 才成为公开 API；Android 12–13 可使用毫秒精度的 `getEventTime()`，历史样本也要保留对应时间。两者均使用不含深度睡眠时间的 uptime 时钟，若要和包含 suspend 的 boottime 时间戳对齐，得先做时钟快照换算。纳秒单位只代表时间粒度，本身不保证测量准确度。这类软件时间戳记录的是输入样本在系统中的基准时刻，与手指接触屏幕玻璃的物理瞬间之间仍有硬件采集延迟；同样，帧的 present 信号只说明提交到达了呈现阶段，并不等同于面板像素已经完成发光。因此，测量实验室级 touch-to-photon（触摸到画面发光）延迟需要靠高速相机、光电传感器或厂商显示链路 trace；日常排查中采集的 Perfetto trace，则更适合定位软件路径中的耗时阶段。
 
 ### RAIL 在 Android 中怎样使用
 
-[RAIL](https://web.dev/articles/rail) 是较早的 Web 性能模型；该文档现在建议用 Core Web Vitals 评估现代 Web 体验。RAIL 名称来自 Response、Animation、Idle、Load 四类工作预算。我们可以借它讨论用户对等待的感受，数值则产生于浏览器环境；落到 Android，判断依据仍然是帧期限、Android Vitals 和产品实测基线。
+[RAIL](https://web.dev/articles/rail) 是较早的 Web 性能模型；该文档现在建议用 Core Web Vitals 评估现代 Web 体验。RAIL 名称来自 Response、Animation、Idle、Load 四类工作预算。我们可以借它讨论用户对等待的感受，但其数值产生于浏览器环境；落到 Android，判断依据仍然是帧期限、Android Vitals 和产品实测基线。
 
 | RAIL 项 | Web 文档口径 | Android 中可借鉴的做法 | 不应照搬的部分 |
 | --- | --- | --- | --- |
@@ -181,7 +179,7 @@ consolidated_from:
 | Idle | 空闲任务分块，每块不超过约 50 ms | 将可延后的工作切片，并在片间返回事件循环，让交互获得执行机会 | 50 ms 的主线程任务仍可能跨过多个高刷新率帧期限 |
 | Load | 慢 3G、中低端手机的首次可交互约 5 s，后续约 2 s | 区分首屏反馈与完整可用状态 | Web 网络条件下的 load 目标不等于 Android 启动告警 |
 
-Android 动画和滚动应以系统为当前帧分配的 deadline（截止时间） 为准。60 Hz 屏幕的刷新周期约为 16.67 ms，120 Hz 约为 8.33 ms；留给应用 CPU 的时间通常更少，因为 RenderThread、GPU、SurfaceFlinger 和显示提交还要继续工作。从 Android 12（API 31）开始，Perfetto FrameTimeline 在受支持的窗口路径上给出 expected timeline（预期时序） 和 actual timeline（实际时序），也就是系统预期的时序与实际执行的时序；我们直接比较这两条时序，比套用固定的 16 ms 可靠。
+Android 动画和滚动应以系统为当前帧分配的 deadline（截止时间）为准。60 Hz 屏幕的刷新周期约为 16.67 ms，120 Hz 约为 8.33 ms；留给应用 CPU 的时间通常更少，因为 RenderThread、GPU、SurfaceFlinger 和显示提交还要继续工作。从 Android 12（API 31）开始，Perfetto FrameTimeline 会在受支持的窗口路径上同时给出 expected timeline（预期时序）和 actual timeline（实际时序）；直接对比这两条轨道，比套用固定的 16 ms 更可靠。
 
 使用前还要确认目标 Surface 的覆盖范围。[FrameTimeline 官方文档](https://perfetto.dev/docs/data-sources/frametimeline) 注明暂不支持 SurfaceView。视频或游戏通过独立 Surface 输出内容时，宿主窗口的帧结束不能证明该内容已经呈现，应另查对应图层的 buffer、fence 和显示呈现记录。
 
@@ -244,7 +242,7 @@ flowchart LR
 
 我们从内核侧看起。触摸驱动通过 Linux input 子系统产生事件，Android 的 `EventHub` 从输入设备节点读取原始数据；`InputReader` 完成设备映射、坐标变换和手势状态整理等工作，再把格式统一后的事件交给 `InputDispatcher`。
 
-`InputManager` 分别启动 `InputReader` 和 `InputDispatcher` 的 native 线程，二者都由 `system_server` 中的 `InputManagerService` 托管。这里描述常规 Android 设备中由 `system_server` 托管的路径；分析具体产品时仍要核对进程和线程，目录名 `inputflinger` 本身推不出进程名或线程名。
+`InputManager` 分别启动 `InputReader` 和 `InputDispatcher` 的 native 线程，二者都由 `system_server` 中的 `InputManagerService` 托管。这是常规 Android 设备上的部署方式，排查具体产品时仍要核对实际进程和线程归属，不要仅凭源码目录名 `inputflinger` 推测存在同名独立进程。
 
 `InputDispatcher` 根据当前窗口、触摸目标、焦点和系统策略选择接收端。`publishMotionEvent()` 通过 `InputPublisher` 将事件写入目标 `InputChannel`。`InputTransport.cpp` 中的 `InputChannel::sendMessage()` 和 `receiveMessage()` 展示了这条逐事件传输通道，其底层使用 Unix domain socket（本机进程间套接字）。Binder 负责窗口与通道的建立、配置和控制调用，不传输每一条 `MotionEvent`。
 
@@ -303,7 +301,7 @@ View 体系的 traversal 按窗口和脏状态按需执行 measure、layout、dr
 
 ### 用一组时间点定位延迟
 
-实际排查应记录里程碑和真实区间，而不是预设所有时间点都按 `t0 → t7` 串行发生：
+实际排查时应按关键里程碑拆解真实时间区间，不要预设所有时间点都按 `t0 → t7` 严格串行发生：
 
 | 里程碑 | 含义 | 主要证据 |
 | --- | --- | --- |
@@ -334,7 +332,7 @@ View 体系的 traversal 按窗口和脏状态按需执行 measure、layout、dr
 
 ### Perfetto：直接查询 input 到 present
 
-本文以 AOSP `android-17.0.0_r1` 的 `android.input` SQL 为准。`android_input_events` 依赖 `sendMessage` / `receiveMessage`、输入处理等 atrace 切片及帧数据；只启用 input proto 与 FrameTimeline 数据源，未必满足这些条件。缺少完整传输四阶段时，事件可能整行缺失；帧关联失败则相关列可能为 `NULL`。看到空表，我们先回到数据源和切片条件排查；“没有输入”与“零延迟”都是数据齐全后才说得出的结论。
+本节以 AOSP `android-17.0.0_r1` 的 `android.input` SQL 为准。`android_input_events` 依赖 `sendMessage` / `receiveMessage`、输入处理等 atrace 切片及帧数据；只启用 input proto 与 FrameTimeline 数据源时，未必满足这些条件。缺少完整传输四阶段时，事件可能整行缺失；帧关联失败时，相关列可能为 `NULL`。看到空表，先回到数据源和切片条件排查；只有在采集条件齐全时，才能下“没有输入”或“零延迟”的结论。
 
 下面的 SQL 按 dispatch 到系统收到 ACK 的往返时间选出指定进程中最慢的 50 行，并保留通道、序号、输入 ID、候选帧和推测标志，供后续复核：
 
@@ -371,14 +369,14 @@ LIMIT 50;
 
 图：往返时间解释输入协议处理，read 到候选呈现解释软件链路候选。列名相似，做差之前先确认两段区间各自的含义。示例列出原始候选附件；附件歧义可放大行数，统计往返需另按消息身份去重。
 
-r1 还存在实现限制：最终帧连接只按 `event_seq`，未同时约束 channel；选择非丢弃显示帧的子查询缺少进程过滤与显式排序。多窗口、多个通道、丢帧或并发输入时，我们要回查完整身份与实际采用的 buffer；产品验收另定标准，这条查询作为排查线索更合适。此处说明固定版本的实现，其他 processor 版本应重新核对。
+`android-17.0.0_r1` 的实现还存在两处约束：最终帧连接只按 `event_seq` 匹配而未同时约束 channel，选择非丢弃显示帧的子查询也缺少进程过滤与显式排序。因此，在多窗口、多通道、丢帧或并发输入场景下，这条查询适合用来找排查线索，进一步确认仍要核对完整消息身份与实际采用的 buffer；产品验收另定标准，切换其他 trace processor 版本时也应重新核对表定义。
 
 <!-- gracker-diagram: ch08-01-sql-frame-candidate-gates -->
 ![输入到帧关联的候选与缺失](../../assets/diagrams/ch08/ch08-01-sql-frame-candidate-gates.png)
 
 图：r1 的两种候选路径都不证明业务反馈内容。多通道连接和显示帧选择还有实现限制，离验收真值还差一层校验。
 
-示例已在官方输入测试 trace 上用 Perfetto v58.2 内置库和 r1 SQL 分别执行：均可返回输入行，覆盖候选帧、推测关联与帧为 NULL 的情况。这只验证查询与数据边界，目标应用自己的响应性能还要另测。
+上述 SQL 已在官方输入测试 trace 上分别用 Perfetto v58.2 内置库和 r1 SQL 执行验证，均可返回输入行并覆盖候选帧、推测关联及帧为 NULL 的情况；要评估目标应用的真实响应性能，仍需采集应用自身的业务 trace。
 
 Perfetto UI 中可按以下顺序核对：
 
@@ -435,7 +433,7 @@ Android 17 的 debuggable 应用可用 `adb shell am compat enable ENFORCE_THREA
 
 如果完整 Reason 含有 `does not have a focused window`，调查方向就落到了焦点窗口。r1 的 `findFocusedWindowTargetLocked()` 在需要分发依赖焦点的事件、对应 display 已有 focused application 却没有 focused window 时开始等待；超时后，`processNoFocusedWindowAnrLocked()` 还会复查应用焦点是否改变、窗口是否已经出现，再报告 ANR。这与事件已经发到窗口、等待应用 ACK 超时是两条路径。按键等事件需要焦点目标，普通触摸主要按命中测试选窗口，不能把无焦点窗口解释成“所有触摸都堵在主线程点击回调”。[已验证: AOSP `android-17.0.0_r1`，`frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp` 的 `findFocusedWindowTargetLocked()`、`processNoFocusedWindowAnrLocked()`、两种 `onAnrLocked()`；Android Developers《Diagnose and fix ANRs》的 No focused window 小节]
 
-《主线程明明是空闲的，为什么仍然 ANR？》给出了三组日志片段。材料没有附完整原始 trace 或可核对的系统版本，适合用来比较证据能支持到哪一步，不能把这些历史现场当作 Android 17 的复现实验。[来源: 技术文章/source/juejin-android/2026-11-13-76741036-主线程明明是空闲的，为什么仍然 ANR？.md]
+公开文章《主线程明明是空闲的，为什么仍然 ANR？》记录了三组典型日志片段。由于原始材料未附完整 trace 与可核对的系统版本，这三组片段适合用来比较“不同日志能支撑到哪一步判断”，而不应直接视作 Android 17 上的复现实验：[来源: 技术文章/source/juejin-android/2026-11-13-76741036-主线程明明是空闲的，为什么仍然 ANR？.md]
 
 | 日志片段 | 能支持的判断 | 还需要什么 |
 | --- | --- | --- |
@@ -565,10 +563,7 @@ ACK 表示这次输入事件已处理完成；另行 post 的点击业务和反�
 | 实时搜索 | 归一化后的查询发生变化 | Loading / 空结果状态呈现 | 当前查询的结果呈现 |
 | Deep Link / Widget | 外部宿主发起 Intent 或 PendingIntent | 目标页第一帧 | 链接内容可交互 |
 
-起点同样需要明确。`ACTION_DOWN`、`ACTION_UP`、`onClick()` 和导航调用分别发生在不同时间点；搜索文字变化、debounce 等待结束和请求发出也属于不同阶段。Perfetto 适合关联 Input、主线程、Binder、FrameTimeline 和自定义 trace，Macrobenchmark 适合重复执行固定交互。
-
-
-任何固定毫秒数的收益，都必须附带设备、刷新率和业务入口条件；平台与内核基线见篇首。
+起点同样需要明确。`ACTION_DOWN`、`ACTION_UP`、`onClick()` 和导航调用分别发生在不同时间点；搜索文字变化、debounce 等待结束和请求发出也属于不同阶段。Perfetto 适合关联 Input、主线程、Binder、FrameTimeline 和自定义 trace，Macrobenchmark 适合重复执行固定交互。任何固定毫秒数的收益都必须附带设备型号、屏幕刷新率和业务入口条件；下文涉及的平台与内核实现仍以篇首基线为准。
 
 ### 页面跳转：Activity 与 Fragment 要分开看
 
@@ -994,7 +989,7 @@ Android 17 会为 targetSdk 37 的应用默认启用 lock-free（无锁） `Mess
 
 [官方迁移指南](https://developer.android.com/about/versions/17/changes/messagequeue) 还要求更新依赖旧队列实现的测试工具：Espresso 使用 3.7.0 或更新版本，Robolectric 使用 4.17 或更新版本，并将 `@LooperMode(LEGACY)` 迁到 `@LooperMode(PAUSED)`。在 Android 17 的 debuggable 应用上，可用 `adb shell am compat enable USE_NEW_MESSAGEQUEUE com.example.app` 提前启用新实现，再用同名 `disable` 命令做旧实现对照。这组开关用于定位兼容性问题，不替代依赖迁移和当前平台上的性能复测。
 
-[Android 16 QPR2 Beta 发布说明](https://developer.android.com/about/versions/16/qpr2/release-notes) 列出了 generational Concurrent Mark-Compact GC；该资料对应预发布版本，仍包含稳定性与兼容性提醒。具体设备使用的 collector 需核对 ART/Mainline 版本与开关，不能仅凭系统大版本判定。分析点击或切换附近的 GC slice 时，应检查对象分配速率、堆状态和 collector 事件，再测量停顿及 CPU 时间分布；平台版本本身不能证明固定收益。[来源: Android 16 QPR2 Beta 发布说明，More efficient garbage collection；本文既有的设备版本与测量边界]
+[Android 16 QPR2 Beta 发布说明](https://developer.android.com/about/versions/16/qpr2/release-notes) 列出了 generational Concurrent Mark-Compact GC；该资料对应预发布版本，仍包含稳定性与兼容性提醒。具体设备使用的 collector 需核对 ART/Mainline 版本与开关，不能仅凭系统大版本判定。分析点击或切换附近的 GC slice 时，应结合对象分配速率、堆状态和 collector 事件，实测停顿时长与 CPU 时间分布，不要仅凭系统版本号预设固定收益。[来源: Android 16 QPR2 Beta 发布说明，More efficient garbage collection；本文既有的设备版本与测量边界]
 
 线程长时间处于 runnable（可运行但未获得 CPU）、频繁被抢占、CPU frequency 不足、input driver 延迟或 I/O wait 等现象，是继续进入 `android17-6.18-2026-06_r6` 分析调度和驱动的线索。Activity、View、InputDispatcher、MessageQueue 和配置变更的判断，仍以篇首的平台源码基线为准。
 
@@ -1033,18 +1028,18 @@ Android 17 会为 targetSdk 37 的应用默认启用 lock-free（无锁） `Mess
 
 案例分析应保留原始时间线、关键依赖和对照结果，避免只记录修改动作。
 
-下面我们用四个案例检验前文分析响应时间、启动流程和交互路径的方法。资料只采用 Android 官方内容或相关团队发布的一手复盘；二手转述、来源追溯不到的公司数据，以及根据零散信息拼出的毫秒数，都不进入结论。
+下面通过四个来自 Android 官方或研发团队一手复盘的生产案例，对照前文的诊断路径检验优化方法（二手转述、来源不可追溯的数据及拼凑出的毫秒数不纳入引用）。
 
-公开资料经常只披露相对变化。遇到这种情况，表格会把优化前的数值归一化为 1.00，再按照报告中的比例换算优化后数值。例如，“耗时降低 20%”记为 1.00 → 0.80。归一化值没有秒或毫秒单位，也不表示原报告中存在未公开的绝对值。
+由于公开复盘大多只披露相对改善幅度而未给出绝对毫秒数，后文表格将优化前基线归一化为 1.00，再按原文比例换算优化后数值（例如“耗时降低 20%”记为 1.00 → 0.80）。归一化值没有秒或毫秒单位，也不代表原报告存在未公开的绝对数值。
 
-阅读案例前要分清几类口径：
+阅读这些案例的数据时，需注意以下统计口径：
 
 - 启动耗时、页面 Time to Interactive（TTI，可交互时间）和点击后的可见反馈使用不同的起止点；TTID 止于首帧显示，TTFD 止于应用声明主要内容已经就绪。
 - P50、P90、P95 表示第 50、90、95 百分位，横向比较前先确认各自的统计条件。
 - 实验室 Macrobenchmark、线上 Android Vitals 和产品转化率回答的问题不同。
 - 一项发布同时带有 R8、Baseline Profiles 或 UI 重写时，只能报告组合结果，除非原团队做过单变量实验。
 
-这些生产案例形成于不同年份，保留历史数据是为了分析优化方法；把结论迁移到当前平台时，仍以篇首的统一基线为准。
+这些案例形成于不同年份的系统与工具链环境，重点在于复用其中的诊断链路与归因方法；把具体优化迁移到当前平台时，仍需按篇首的统一基线重新采集和验证。
 
 ### 案例一：Reddit 用分页面 CUJ 改善冷启动与页面切换
 
@@ -1201,7 +1196,7 @@ R8 会删除、重命名、移动或合并程序元素。测试只覆盖应用�
 | App 启动 | 未披露绝对值 | 不作精确耗时比换算 | 原文：30% faster app startup |
 | user-perceived ANR | 1.00 | 0.75 | 减少 25% |
 
-第一行保留原文的 faster 表述；“速度提高 30%”与“耗时降低 30%”在数学上不同，原文不足以判定 0.70 或 1/1.30 的精确耗时比。第二行是 Google Play 定义的 user-perceived ANR（用户感知到的 ANR），适用范围就到这一类 ANR 为止。原文只说明新版本发布后观察到这两项变化，没有公开 ANR 类型分布，也没有给出各项 R8 优化分别贡献了多少。现有数据只能支持配置变更与生产指标同向变化这一层结论。
+第一行保留原文的 faster 表述；“速度提高 30%”与“耗时降低 30%”在数学上不同，仅凭原文不足以判定 0.70 或 1/1.30 的精确耗时比。第二行是 Google Play 定义的 user-perceived ANR（用户感知到的 ANR），仅统计这一类 ANR。原文只说明新版本发布后观察到这两项变化，没有公开 ANR 类型分布，也没有拆出各项 R8 优化各自的贡献；现有数据只能证明配置变更与生产指标呈现同向变化。
 
 
 #### 投入产出比
@@ -1216,7 +1211,7 @@ R8 会删除、重命名、移动或合并程序元素。测试只覆盖应用�
 
 Duolingo 围绕三条产品路径开展性能实验：打开应用、开始一次学习和结束一次学习。团队发布的 [Android 性能复盘](https://blog.duolingo.com/android-app-performance/) 说明，课程结束时需要提交本次学习数据，并获取广告、奖励等后续页面信息。旧流程在所有这些工作完成前一直显示全屏加载指示器。
 
-旧流程的主要可见等待是全屏加载；一手文字没有分别测量按钮按下态何时显示，“按压反馈已立即呈现”这类细节也就无从补造。这个案例测量的是从点击到出现有意义完成反馈的感知等待。公开资料没有披露输入事件到首帧的绝对毫秒数，也没有证明后端请求本身变快。
+旧流程的主要等待来自全屏加载；原复盘并未单独测量按钮按下态何时显示，因此这里讨论的是从点击到出现有意义完成反馈的感知等待（公开资料未披露输入事件到首帧的绝对毫秒数，也未表明后端请求本身变快）。
 
 #### 分析过程
 
@@ -1361,7 +1356,7 @@ minify 开关、默认规则文件、full mode 属性和 keep rules 会共同影
 - Android 14（API 34）加入公开的 `MotionPredictor`，r1 实现的预测范围限于单 pointer 的触控笔事件；同版本开始，广播 ANR 会对 CPU-starved 进程采用可调整的超时区间。
 - Android 15 QPR1 在满足 HAL 条件的设备上支持 ARR。
 - Android 16 增加 `Display.hasArrSupport()`、`getSuggestedFrameRate(int)` 等 ARR 查询接口。
-- Android 17（API 37）是本文核对的平台上限。API 37 没有统一的 Android INP / UIL Vitals 指标，厂商私有的输入预测或显示 trace 也不算 AOSP 通用接口。
+- Android 17（API 37）是本节核对的平台上限。API 37 没有统一的 Android INP / UIL Vitals 指标，厂商私有的输入预测或显示 trace 也不算 AOSP 通用接口。
 
 ## 小结
 

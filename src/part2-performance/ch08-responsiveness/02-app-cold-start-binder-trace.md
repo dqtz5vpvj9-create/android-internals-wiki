@@ -126,7 +126,7 @@ consolidated_from:
 
 # App 冷启动链路与 Binder Trace 分析
 
-我们从一次冷启动的 trace 切入：总时长只有先拆开，才知道往哪里查。前半篇把启动拆成进程创建、绑定应用、组件启动和首帧，后半篇用 Binder 事务，把跨进程等待接回具体的服务端线程。
+我们从一次冷启动的 trace 切入：总时长只有先拆开，才知道往哪里查。前半部分把启动拆成进程创建、绑定应用、组件启动和首帧，后半部分借助 Binder 事务，把跨进程等待接回具体的服务端线程。
 
 ## 从启动请求到首帧
 
@@ -138,7 +138,7 @@ consolidated_from:
 2. 测量目标是首帧可见的 TTID，还是主内容可交互的 TTFD？
 3. 时间消耗发生在系统调度、进程创建、应用初始化、Activity/UI 创建，还是首帧渲染与合成？
 
-> 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）；内核 `android17-6.18-2026-06_r6`；Binder 部分另核对 `frameworks/native` 与 `external/perfetto`，设备也可能使用其他内核分支。文中 SDK 初始化、Zygote preload（预加载） 等优化手段的收益，都要在目标设备和实际启动样本上测量。
+> 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）；内核 `android17-6.18-2026-06_r6`；Binder 部分另核对 `frameworks/native` 与 `external/perfetto`，设备也可能使用其他内核分支。文中 SDK 初始化、Zygote preload（预加载）等优化手段的收益，都要在目标设备和实际启动样本上测量。
 
 ### 冷启动、温启动与热启动
 
@@ -203,7 +203,7 @@ sequenceDiagram
 
 </details>
 
-图中的“app windows drawn”是窗口绘制上报触发 Framework 计时的回调点，到这里为止的都还是软件侧的绘制回报，GPU 完成、HWC present 和面板发光各有各的时刻；它和实际 present 谁先谁后，受提交、IPC 和调度影响，要按同一 buffer 的 trace 核对，事先假定它必定早于面板点亮会出错。
+图中的“app windows drawn”是窗口绘制上报触发 Framework 计时的回调点，到这一步为止仍只是软件侧的绘制回报，GPU 完成、HWC present 和面板发光各有各的时刻；它和实际 present 谁先谁后受提交、IPC 和调度影响，需要按同一 buffer 的 trace 核对，不能预先假定它必定早于面板点亮。
 
 #### 启动请求、任务解析与 starting window
 
@@ -446,7 +446,7 @@ fun coldStartup() = benchmarkRule.measureRepeated(
 }
 ```
 
-`StartupMode.COLD` 会在迭代间终止进程；本文核对的 AndroidX 实现还在 COLD setup 中尝试清 shader cache 与 kernel page cache，具体权限/平台条件和失败行为需核对所用库版本。WARM 和 HOT 按各自定义保留状态，所以手工 `am start -S` 不自动等价于这套完整协议。比较 Baseline Profile 前后结果时，需要固定 `CompilationMode`，否则编译状态差异可能被误认为代码优化收益。
+`StartupMode.COLD` 会在迭代间终止进程；AndroidX 在该模式下还会在 setup 阶段尝试清理 shader cache 与 kernel page cache，具体权限/平台条件和失败行为需核对所用库版本。WARM 和 HOT 按各自定义保留状态，因此手工 `am start -S` 并不自动等价于这套完整协议。比较 Baseline Profile 前后结果时，需要固定 `CompilationMode`，否则编译状态差异可能被误认为代码优化收益。
 
 <!-- gracker-diagram: ch08-02-15-cold-cache-protocol -->
 ![手工强停与 Macrobenchmark COLD 的差别](../../assets/diagrams/ch08/ch08-02-15-cold-cache-protocol.png)
@@ -485,9 +485,9 @@ WHERE s.package = 'com.example.app'
 ORDER BY s.ts;
 ```
 
-如果应用没有报告 TTFD，或 trace 未覆盖对应帧，`ttfd_ms` 可以为空。r1 `time_to_display.sql` 的端点取 RenderThread `DrawFrame` 切片结束：TTID 取选中的首帧，TTFD 取包含或晚于 fully-drawn 信号的候选帧。这与 Framework 窗口 drawn / Logcat 的计时端点、SF present 和面板发光均不同，是三个各有定义的数，记录时要分开写。
+如果应用没有报告 TTFD，或 trace 未覆盖对应帧，`ttfd_ms` 可以为空。r1 `time_to_display.sql` 的端点取 RenderThread `DrawFrame` 切片结束：TTID 取选中的首帧，TTFD 取包含或晚于 fully-drawn 信号的候选帧。这与 Framework 窗口 drawn / Logcat 的计时端点、SF present 和面板发光均不同，是三个各有定义的指标，记录时要分开写。
 
-r1 的查询还要复核：以进程/时间推导关联，若多次启动、同包多个进程或缺少首帧，可能选到不属于该样本的后续帧；部分选帧使用 GROUP BY 搭配非聚合列，再在分组后 ORDER BY，组里选中的是否为最早帧，从这里看不出来，要另行核对。应核对 upid、frame id、目标窗口和样本边界，缺失时保留不确定性。
+使用 r1 这条查询时还需复核边界：它基于进程与时间窗口推导关联，遇到连续多次启动、同包多进程或缺少首帧时，可能误选后续帧；此外，部分选帧子查询在 GROUP BY 中使用了非聚合列并在分组后才 ORDER BY，无法直接保证组内选出的就是最早帧。分析时应核对 upid、frame id、目标窗口和样本边界，信息缺失时不要强行关联。
 
 <!-- gracker-diagram: ed08-02-display-observation-endpoints -->
 ![启动显示指标的三类观测端点](../../assets/diagrams/ch08/ed08-02-display-observation-endpoints.png)
@@ -656,9 +656,9 @@ Google 的初始测试显示，在系统存在内存压力时，样本中的应�
 
 ## 用 Binder Trace 还原跨进程等待
 
-前文把启动拆成了一段段能直接测的时间，但跨进程等待还悬着：一笔 Binder 调用迟迟不返回时，要去对面的服务进程找原因。后半部分用 Binder Trace 回答 system_server、PackageManager、WindowManager 或其他服务为什么延迟返回。
+前文把启动拆成了一段段能直接测的时间，但跨进程等待还悬着：一笔 Binder 调用迟迟不返回时，要去对面的服务进程找原因。后半部分借助 Binder Trace 回答 `system_server`、PackageManager、WindowManager 或其他服务为什么延迟返回。
 
-冷启动路径上的 Binder 瓶颈可以用 Perfetto 的 `android.binder` 标准库定位：一笔事务在客户端等待、服务端处理和返回调度上各花了多久，Binder 线程池是否饱和，目标进程冻结错误则需补查原始返回命令及进程状态；失败原因和线程池拥塞的认定，标准配对表独自给不出完整结论。Binder 机制原理见 §1.9 和 §1.10，冷启动阶段划分见前文「从启动请求到首帧」。
+冷启动路径上的 Binder 瓶颈可以用 Perfetto 的 `android.binder` 标准库定位，从而看清一笔事务在客户端等待、服务端处理和返回调度上各花了多久；不过，标准配对表本身不能独立判定线程池拥塞，遇到目标进程冻结拒绝时也仍需补查原始返回命令及进程状态。Binder 机制原理见 §1.9 和 §1.10，冷启动阶段划分见前文「从启动请求到首帧」。
 
 ### 一、先把冷启动窗口和 Binder 范围分开
 
@@ -806,7 +806,7 @@ adb shell am start -W -S \
 采集结束后再执行 `adb pull /data/local/tmp/cold-start-binder.pftrace .`。
 
 
-手工 `am start -S` 的“进程冷启动”只保证目标进程已终止并重建；文件页缓存、shader cache 和 ART 编译产物仍可能保留。本文核对的 Macrobenchmark COLD setup 已依次尝试清 shader cache、终止进程和 `dropKernelPageCache()`，描述这套协议时按实际动作写全，压缩成“只有终止进程”会误导复测。缓存清理是否成功取决于库版本、API、设备权限等条件，应记录实际结果；复测还需固定 CompilationMode、温度、动画和迭代次数。
+手工 `am start -S` 的“进程冷启动”只保证目标进程已终止并重建，文件页缓存、shader cache 和 ART 编译产物仍可能保留。相比之下，Macrobenchmark 的 COLD setup 会依次尝试清理 shader cache、终止进程并调用 `dropKernelPageCache()`，不能简单等同于“只终止进程”。缓存清理能否成功取决于库版本、API、设备权限等条件，复测时应记录实际结果，并固定 CompilationMode、温度、动画和迭代次数。
 
 #### 2.4 atrace 只用于快速查看
 
@@ -919,7 +919,7 @@ WHERE s.package = 'com.example.app'
 ORDER BY s.ts, p.upid;
 ```
 
-`startup_slice_ms` 是标准库所识别启动 slice 的时长，要当另一个工具的 TTID 使用，先核对两者的定义。先用包名、类型、时间和关联 `upid` 确认样本。r1 的进程匹配依赖包元数据与 `bindApplication` / Activity 等标记，缺包元数据时还有进程名前缀回退，故关联结果也要人工复核，身份以人工确认为准。若无结果，检查 `am`/`wm`、进程/包名数据和分析器版本；不要改用整条 trace 求和来代替目标窗口。
+`startup_slice_ms` 是标准库所识别启动 slice 的时长，要当成其他工具口径下的 TTID 使用，需先核对两者定义。分析前先用包名、类型、时间和关联 `upid` 确认样本。r1 的进程匹配依赖包元数据与 `bindApplication` / Activity 等标记，缺包元数据时还会回退到进程名前缀匹配，因此关联结果仍需人工核对。若查询无结果，检查 `am`/`wm`、进程/包名数据和分析器版本，不要改用整条 trace 求和来代替目标窗口。
 
 
 #### 4.2 冷启动窗口内的 Top-N 同步事务
@@ -1131,9 +1131,9 @@ ORDER BY event_count DESC;
 
 #### 5.4 Binder 线程池拥塞
 
-`SystemServer` 把 Binder thread-pool max thread count（线程池最大线程数） 配置为 31，libbinder 普通进程的默认值是 15。31 / 15 是 libbinder 配给驱动扩池的 max 参数，不是整个进程 Binder 参与线程的绝对总数；`startThreadPool()` 首线程和主动 `joinThreadPool()` 等还影响计数。实际工作者、嵌套回入和空闲状态应从 trace 与所用实现核对。
+`SystemServer` 把 Binder thread-pool max thread count（线程池最大线程数）配置为 31，libbinder 普通进程的默认值是 15。31 和 15 是 libbinder 传给驱动的动态扩池上限参数，并不代表整个进程参与 Binder 的线程总数——`startThreadPool()` 启动的首线程与主动调用 `joinThreadPool()` 加入的线程也会影响实际数量，实际工作线程、嵌套回入和空闲状态应结合 trace 与具体实现核对。
 
-Binder 线程池拥塞指的是可处理新事务的 worker（工作线程） 不够用，新事务只能排队等派发。判断它要凑齐多项观测：
+Binder 线程池拥塞指的是可处理新事务的 worker（工作线程）不够用，新事务只能排队等派发。判断它需要多项观测互证：
 
 - 同一服务进程收到的多笔事务同时出现较长请求派发间隔；
 - 多个客户端在相近窗口受影响；
@@ -1296,7 +1296,7 @@ Macrobenchmark 是 AndroidX 提供的应用级基准测试工具，A/B 表示只
 - Android 17 的 Perfetto `android.binder` 表提供 sync/async、client/server、AIDL 名称、OOM score、package metadata（包版本等元数据）与 monotonic-duration（扣除系统 suspend 区间）相关字段。这些字段描述事务自身的属性；线程 Running / Runnable 的时长和 CPU time，要按前文四段分解的方式另算。
 
 
-因目标冻结而失败的事务，这些能力也补不进 `android_binder_txns`，替代查法见 6.4。分析工具版本升级后，应先阅读所用 tag（源码版本标签） 的表定义，再写 SQL；网页上最新版 stdlib 的列，在按 r1 源码构建或其他版本的 Trace Processor 中未必存在；设备 Android 版本不唯一决定离线分析器版本。
+因目标冻结而失败的事务，这些能力也补不进 `android_binder_txns`，替代查法见 6.4。分析工具版本升级后，写 SQL 前应先核对所用 tag（源码版本标签）对应的表定义：网页文档里最新版 stdlib 的列，在基于 r1 源码或其他版本构建的 Trace Processor 中未必存在，离线分析器版本也不与设备的 Android 版本绑定。
 
 #### 🔸 多进程应用冷启动 Binder 放大效应
 
@@ -1345,7 +1345,7 @@ Macrobenchmark 是 AndroidX 提供的应用级基准测试工具，A/B 表示只
 - Android 9（API 28）及更高版本可从 Google Play 获得 Cloud Profile，前提是渠道和样本满足条件。
 - Android 12（API 31）统一 SplashScreen，并提供 FrameTimeline 诊断首帧。
 - Android 15（API 35）加入 `ApplicationStartInfo`，AOSP 同期开始支持 16 KB page-size 设备。
-- Android 17（API 37）是本文核对的平台上限。源码路径和时序以 `android-17.0.0_r1` 为准，厂商私有的启动加速器不属于 AOSP 保证。
+- Android 17（API 37）是本节核对的平台上限。源码路径和时序以 `android-17.0.0_r1` 为准，厂商私有的启动加速器不属于 AOSP 保证。
 
 
 ## 诊断与验证清单
@@ -1359,7 +1359,7 @@ Macrobenchmark 是 AndroidX 提供的应用级基准测试工具，A/B 表示只
 - 是否区分独立本地 I/O 与发生在 Binder 事务内部的 I/O，而非把全部 I/O 从事务 wall time 中扣掉？
 - 是否只对自有 AIDL 讨论同步/oneway 改造？
 - 是否用 Macrobenchmark 多轮验证，并固定编译、温度和数据条件？
-- 正文平台源码是否锚定 `android-17.0.0_r1`，kernel 是否锚定 `android17-6.18-2026-06_r6`？
+- 排查具体设备时，是否已核对设备与本节基线（AOSP `android-17.0.0_r1` 与内核 `android17-6.18-2026-06_r6`）之间的版本差异？
 
 
 ## 常见误区
@@ -1391,7 +1391,7 @@ Baseline / Startup Profile 主要帮助覆盖路径的运行前编译、代码�
 
 ## 结论
 
-本文普通新进程 Activity 路径从启动请求开始，经 Zygote fork、ActivityThread 绑定、Provider 与 Application 初始化，再执行 Activity/UI 与首帧工作；系统绘制回报、GPU 和显示合成的时间可能交叠，应按各工具的端点和真实依赖解释。温启动与热启动复用的状态不同，测量前必须明确采用哪一种定义。
+本节梳理的普通新进程 Activity 启动路径从启动请求开始，经 Zygote fork、ActivityThread 绑定、Provider 与 Application 初始化，再执行 Activity/UI 与首帧工作；系统绘制回报、GPU 和显示合成的时间可能交叠，应按各工具的端点和真实依赖解释。温启动与热启动复用的状态不同，测量前必须明确采用哪一种定义。
 
 TTID 回答“首帧何时出现”，TTFD 回答“主内容何时可用”。我们手里的工具各管一段：`am start -W` 和 Logcat 适合快速检查，Macrobenchmark 用于可重复对比，`ApplicationStartInfo` 提供结构化时间点，Perfetto 用于逐阶段归因。把这些测量的统计口径统一之后，启动优化结果才能被复测和解释。
 

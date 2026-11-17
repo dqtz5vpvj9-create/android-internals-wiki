@@ -363,7 +363,7 @@ AGP 版本和模块结构会改变中间目录。Android Studio 的 Merged Manif
 
 ### 多进程应用的逐进程成本
 
-组件的 `android:process`（或 application 的默认进程）决定所属进程；普通新应用进程创建自己的 `Application`，安装系统分配给该进程的 Provider，而不是安装所有“可见”的 Provider。冷启动要逐进程核算：共享代码、Profile 或缓存优化也可能同时惠及多个进程，但主进程指标改善，还证明不了子进程同样改善。初始化器应检查当前进程和入口需求，避免所有进程都加载主进程专属组件。
+组件的 `android:process`（或 application 的默认进程）决定所属进程；普通新应用进程创建自己的 `Application`，并只安装系统分配给该进程的 Provider，不会安装 APK 中所有“可见”的 Provider。冷启动要逐进程核算：共享代码、Profile 或缓存优化也可能同时惠及多个进程，但主进程指标改善，并不足以说明子进程同样改善。初始化器应检查当前进程和入口需求，避免所有进程都加载主进程专属组件。
 
 <!-- gracker-diagram: ch08-03-21-process-costs -->
 ![多进程初始化按实际归属分别审计](../../assets/diagrams/ch08/ch08-03-21-process-costs.png)
@@ -506,7 +506,7 @@ inflater.inflate(R.layout.view_filter_panel, filterContainer) {
 
 图：在默认 UI 回调中核对 Activity、请求代次与专用容器，附加一次；丢弃结果不停止后台工作。
 
-普通的 `LayoutInflater.Factory / Factory2` 设置方式和包含 Fragment 的布局不受支持；当前库提供的 `AsyncLayoutFactory` 构造入口需要单独验证适配。后台 inflate 抛出 `RuntimeException` 时会经 Handler 在 UI 线程重试；重试仍可能失败。若显式传 callback executor，回调最终在该 executor 执行，附加 View 前还须切回 UI 线程。所核对实现使用一个共享 inflate worker 和容量 10 的阻塞队列，提交调用用 `put()`，队列满时可能阻塞提交的 UI 线程；预创建的数量因此要有上限。
+普通的 `LayoutInflater.Factory / Factory2` 设置方式和包含 Fragment 的布局不受支持；当前库提供的 `AsyncLayoutFactory` 构造入口需要单独验证适配。后台 inflate 抛出 `RuntimeException` 时会经 Handler 在 UI 线程重试；重试仍可能失败。若显式传 callback executor，回调最终在该 executor 执行，附加 View 前还须切回 UI 线程。该版本实现只使用一个共享 inflate worker 和容量为 10 的阻塞队列，提交调用使用 `put()`，队列满时可能阻塞提交方的 UI 线程；因此预创建数量必须设置上限。
 
 <!-- gracker-diagram: ch08-03-30-async-backpressure -->
 ![共享 inflate worker 与提交反压](../../assets/diagrams/ch08/ch08-03-30-async-backpressure.png)
@@ -618,7 +618,7 @@ FROM android_startups
 ORDER BY ts;
 ```
 
-表字段依赖所用离线 Trace Processor，而不是只看设备 Android 版本。本文验证的处理器不接受 `DESCRIBE android_startups`；可在 INCLUDE 后运行 `SELECT name, type FROM pragma_table_info('android_startups');` 核对模式，并结合该版本源码。拿到启动区间后，我们接着检查应用主线程、worker、Binder、`sched`、频率、缺页、I/O、GC、`inflate` 和 FrameTimeline——总区间只说明慢，该改哪一段要从这些轨道里找。
+表字段取决于所用离线 Trace Processor 的版本，不能仅按设备的 Android 版本推断。若处理器不接受 `DESCRIBE android_startups`，可在 INCLUDE 后运行 `SELECT name, type FROM pragma_table_info('android_startups');` 核对模式，并结合对应版本源码确认。拿到启动区间后，我们接着检查应用主线程、worker、Binder、`sched`、频率、缺页、I/O、GC、`inflate` 和 FrameTimeline——总区间只说明整体慢，具体瓶颈要从这些轨道里找。
 
 
 应用自己的任务用 `androidx.tracing.trace` 或平台 trace API 标记稳定名称，用户 ID、URL 这类高基数字段（取值组合极多）不要写进 slice 名。在线上采样时，还要控制性能开销并保护隐私。

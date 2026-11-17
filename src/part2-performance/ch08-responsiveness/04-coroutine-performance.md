@@ -37,8 +37,6 @@ related_chapters:
 
 > 源码基线：kotlinx.coroutines 1.11.0 公开 API；平台 AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。协程库随应用独立升级，Dispatcher 的内部实现跟着协程库版本走，Android API 级别说明不了它。
 
-> ⚠️ 校勘（2026-10-23）：旧文把出队画在取得 CPU 之前，将 limitedParallelism 的片段串行近似为整个任务串行，并把回调恢复 / yield 固定计为调度；这里按 1.11.0 源码与 API 修正。另更新 Tracing 2.0 稳定状态、热流无订阅者行为及 SQL 的线程身份 / 窗口边界。
-
 ## 从挂起到恢复的七个阶段
 
 以下七项是分析阶段，不是每次都会发生的固定七步。挂起调用也可能立即返回；只有实际挂起时，才会把后续执行交回恢复路径：
@@ -424,7 +422,7 @@ private suspend inline fun <T> traceAsync(
 
 这里的 `Trace` 可以使用 `androidx.tracing.Trace`。async section 表示业务操作从开始到结束的墙钟区间，其中的等待时间不会混进任何线程的 CPU 时间；不会挂起的短函数再用同步 section。这样 Perfetto 才能同时显示整条操作经过了多久，以及各线程实际执行了多久。
 
-AndroidX Tracing 2.0.0 已于 2026-08-12 稳定发布；截至本次核对，官方最新稳定版为 2.0.5（2026-10-21）。新进程内 API 支持协程上下文传播，写入进程管理的 Perfetto 数据；应用配置 tracing-wire 时还要核对自动初始化、文件位置、flush / close 与容量策略。它不自动等同于 Studio 系统 trace 中已有同名事件，需要导出并按支持流程合并。既有同步 / 异步系统 trace API 仍可用于低频标记。[来源：版本发布与进程内追踪说明][coro-tracing]。
+AndroidX Tracing 2.0.0 已于 2026-08-12 稳定发布；截至 2026-10-23 核对时，官方最新稳定版为 2.0.5（2026-10-21）。新进程内 API 支持协程上下文传播，写入进程管理的 Perfetto 数据；应用配置 tracing-wire 时还要核对自动初始化、文件位置、flush / close 与容量策略。它不自动等同于 Studio 系统 trace 中已有同名事件，需要导出并按支持流程合并。既有同步 / 异步系统 trace API 仍可用于低频标记。[来源：版本发布与进程内追踪说明][coro-tracing]。
 
 
 ### 用 sched 表量化 worker 运行片段
@@ -609,7 +607,7 @@ ADPF（Android Dynamic Performance Framework）session 绑定一组长期存在�
 
 - Kotlin 1.3 稳定了语言层协程支持，kotlinx.coroutines 继续独立演进。
 - AndroidX Lifecycle 后续提供了 `viewModelScope`、`lifecycleScope` 和 `repeatOnLifecycle`，将常见 Android owner 接入 Job 生命周期。
-- kotlinx.coroutines 的 Default / IO 调度器、Flow 融合和调试支持仍在持续变化；本文以 1.11.0 公开 API 为准，不假设内部线程数量和队列实现长期不变。
+- kotlinx.coroutines 的 Default / IO 调度器、Flow 融合和调试支持仍在持续变化；本节以 1.11.0 公开 API 为准，不假设内部线程数量和队列实现长期不变。
 - Android 12 / API 31 引入 `PerformanceHintManager`，Android 14 / API 34 公开 `Session.setThreads()`。它们是线程级性能提示接口，不属于协程调度器。
 - Android 17 对 target API 37+ 默认启用新无全局队列锁 MessageQueue；兼容开关可影响实现选择，Main Dispatcher 仍执行在 Android 主线程。
 

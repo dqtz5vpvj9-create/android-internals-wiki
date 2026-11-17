@@ -59,11 +59,9 @@ last_deep_review_at: '2026-08-19T16:43:11+08:00'
 
 “推送慢”至少可能指五件事：业务服务端发出请求晚、FCM 传输晚、设备收到回调晚、应用发布通知晚，或 SystemUI 显示晚。FCM（Firebase Cloud Messaging）是消息传输服务，SystemUI 则负责通知抽屉、锁屏通知等系统界面。我们排查时面对的，就是这样一条横跨云端、Google Play services、应用进程、`system_server` 和 SystemUI 的链路，而公开 API 里没有一个能用同一时钟记录全部阶段，所以每个阶段都要用自己的时钟来观测。
 
-> ⚠️ 校勘（2026-10-23）：旧 FCM 前后台表限定为 AndroidConfig；AndroidConfigV2 当前为 EAP，另列规则。固定 r1 的通知超时同到期值问题、异步执行与返回边界均按源码保留，不当作设备性能承诺。
-
 > 源码基线：AOSP `android-17.0.0_r1`（Android 17，API 37）；内核 `android17-6.18-2026-06_r6`。
 
-平台侧结论用固定版本的 NMS（NotificationManagerService，通知管理系统服务）、`RemoteViews` 和 SystemUI 源码核查；Google Play services 的传输与代理包含闭源组件，这部分按 Firebase 公开契约描述，开源 Messaging SDK 另按固定提交核对。下文以旧 `AndroidConfig` 与 `onMessageReceived()` 为主线，EAP `AndroidConfigV2` 单列说明——这属于消息配置的代际切换，本身不是一次 Android OS 版本切换。
+平台侧逻辑基于 AOSP `android-17.0.0_r1` 的 NMS（NotificationManagerService，通知管理系统服务）、`RemoteViews` 与 SystemUI 源码；Google Play services 的传输与代理包含闭源组件，按 Firebase 公开契约描述，开源 Messaging SDK 则按固定提交核对。下文以旧 `AndroidConfig` 与 `onMessageReceived()` 为主线，EAP `AndroidConfigV2` 单列说明——这属于消息配置的代际切换，本身不是一次 Android OS 版本切换。
 
 ## 先定义“到达”和“显示”
 
@@ -121,7 +119,7 @@ flowchart LR
 | notification + data，前台 | 两部分都交给 `onMessageReceived()` | 由应用决定 UI 和数据处理 |
 
 
-“后台 notification message 更快”是排查推送延迟时的常见直觉，我们把它放回链路里检验：这种消息确实跳过了应用的业务 callback，但展示仍要经过 FCM 设备端组件、NMS 和 SystemUI，代理展示、权限和设备状态都会改变实际路径。旧 data message 把处理和展示的控制权交给应用，代价是进程启动、`Application.onCreate()` 与通知构造的耗时可能计入等待；固定开源 SDK 的自动展示路径也可能下载并等待远端图片。所以单看“有没有执行业务 callback”，判断不了哪条更快。[源码](https://github.com/firebase/firebase-android-sdk/blob/dc0ce88130e7f9621506471af919054cb2453aae/firebase-messaging/src/main/java/com/google/firebase/messaging/DisplayNotification.java)
+“后台 notification message 更快”是排查推送延迟时的常见直觉，我们把它放回链路里检验：这种消息确实跳过了应用的业务 callback，但展示仍要经过 FCM 设备端组件、NMS 和 SystemUI，代理展示、权限和设备状态都会改变实际路径。旧 data message 把处理和展示的控制权交给应用，代价是进程启动、`Application.onCreate()` 与通知构造的耗时可能计入等待；而开源 SDK 的自动展示路径也可能下载并等待远端图片。所以单看“有没有执行业务 callback”，判断不了哪条更快。[源码](https://github.com/firebase/firebase-android-sdk/blob/dc0ce88130e7f9621506471af919054cb2453aae/firebase-messaging/src/main/java/com/google/firebase/messaging/DisplayNotification.java)
 
 消息需要进入应用组件而进程还不存在时，Android 才会启动进程，并在相应进程中执行 `Application.onCreate()`、创建 `FirebaseMessagingService`；代理展示可以不启动 App。这里还要区分两种状态：进程被系统回收与用户 force-stop 不同，从“进程不存在”推不出这次推送必定会拉起进程。进程若处于 cached/frozen（缓存或冻结）状态，系统可能先将它解冻再继续工作。
 
@@ -148,7 +146,7 @@ Android 没有为这些状态规定固定延迟，线上分析套用“缓存进
 
 图：RemoteNotification 默认自动展示，mutable 才让应用生成响应；BackgroundSync 面向可延迟同步，不沿用旧前后台表。
 
-v2 不再用显式 priority 选择紧急程度，改按消息意图调度。mutable 回调返回 `NotificationResponse`；需要逐条发布时，`FcmNotificationManager` 只在本次回调内有效，完成后调用 `finished()`。当前预览文档给出的 20 秒处理超时、超时 fallback 与后台 suppress 限制都可能在 GA 前变化。应用未实现 v2 callback 时，迁移指南另有旧回调降级路径；埋点要记录配置类型、SDK 版本及实际入口，旧 `onMessageReceived()` 示例不能直接移名套用。
+v2 不再用显式 priority 选择紧急程度，改按消息意图调度。mutable 回调返回 `NotificationResponse`；需要逐条发布时，`FcmNotificationManager` 只在本次回调内有效，完成后调用 `finished()`。当前预览文档给出的 20 秒处理超时、超时 fallback 与后台 suppress 限制都可能在 GA 前变化。应用未实现 v2 callback 时，迁移指南另有旧回调降级路径；埋点要记录配置类型、SDK 版本及实际入口，旧 `onMessageReceived()` 的实现不能只改个方法名就直接套用到 v2。
 
 <!-- gracker-diagram: ch08-06-07-eap-manager-lifetime -->
 ![EAP 通知 manager 只在当前回调有效](../../assets/diagrams/ch08/ch08-06-07-eap-manager-lifetime.png)
@@ -199,7 +197,7 @@ v2 不再用显式 priority 选择紧急程度，改按消息意图调度。muta
 
 ## 旧回调的时间预算与后续工作
 
-进入应用侧，先看 `onMessageReceived()` 这段代码能跑多久。Firebase 文档说明它在独立工作线程调用，建议只用数秒完成处理，high 通常比 normal 稍长；固定开源 SDK 的方法注释另写应在 20 秒内完成，但把它当作可以放心占满的端到端时限或性能预算并不合适。回调里适合做的事是校验少量字段、构造通知并立即发布；如果在这里发起额外网络请求、下载图片或跑长事务，回调结束后系统可能不再保证进程继续运行，通知可能因此延迟，甚至未能发布。
+进入应用侧，先看 `onMessageReceived()` 这段代码能跑多久。Firebase 文档说明它在独立工作线程调用，建议只用数秒完成处理，high 通常比 normal 稍长；该版本开源 SDK 的方法注释另写应在 20 秒内完成，但把它当作可以放心占满的端到端时限或性能预算并不合适。回调里适合做的事是校验少量字段、构造通知并立即发布；如果在这里发起额外网络请求、下载图片或跑长事务，回调结束后系统可能不再保证进程继续运行，通知可能因此延迟，甚至未能发布。
 
 这些后续工作按交付优先级安排：
 
@@ -288,7 +286,7 @@ override fun onMessageReceived(message: RemoteMessage) {
 
 ## NMS 更新限速的判定
 
-应用侧最容易撞上的平台闸门，是 NMS 的更新限速。`android-17.0.0_r1` 的 NMS 把默认值定为 5.0（`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE = 5f`），并允许 `Settings.Global.MAX_NOTIFICATION_ENQUEUE_RATE` 覆盖；限速判断使用 [`RateEstimator.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/service/notification/RateEstimator.java) 计算 EWMA（指数加权移动平均）到达率，而不是简单统计最近一秒内调用了多少次。
+应用侧最容易撞上的平台闸门，是 NMS 的更新限速。`android-17.0.0_r1` 的 NMS 把默认值定为 5.0（`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE = 5f`），并允许 `Settings.Global.MAX_NOTIFICATION_ENQUEUE_RATE` 覆盖；限速判断通过 [`RateEstimator.java`](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/core/java/android/service/notification/RateEstimator.java) 计算 EWMA（指数加权移动平均）到达率，并非简单统计最近一秒内的调用次数。
 
 <!-- gracker-diagram: ch08-06-18-ewma-estimator -->
 ![EWMA 平滑间隔再换算到达率](../../assets/diagrams/ch08/ch08-06-18-ewma-estimator.png)
@@ -330,7 +328,7 @@ override fun onMessageReceived(message: RemoteMessage) {
 `setTimeoutAfter()` 适合内容过时后就没有展示价值的通知，它和 FCM TTL 管的是两个阶段：FCM TTL 控制消息可以在传输层保留多久，notification timeout 控制已进入 NMS 的通知保留多久。两项配置位于不同阶段，要分别记录。
 
 
-固定 r1 还有一个实现缺口：`TimeToLiveHelper` 的 `TreeSet` 比较器只比较到期毫秒，两个不同 key 若到期值完全相同，第二项可能加入集合失败，同一批通知未必都成功安排了超时；批量场景要核对设备版本和实际取消结果。
+r1 源码还存在一个实现细节：`TimeToLiveHelper` 的 `TreeSet` 比较器只比较到期毫秒，两个不同 key 若到期值完全相同，第二项可能加入集合失败，同一批通知未必都成功安排了超时；批量场景要核对设备版本和实际取消结果。
 
 <!-- gracker-diagram: ch08-06-24-ttl-helper-and-collision -->
 ![超时集合与相同到期毫秒的固定版本缺口](../../assets/diagrams/ch08/ch08-06-24-ttl-helper-and-collision.png)
@@ -379,7 +377,7 @@ Live Update 是一种获得系统突出展示的资格，与具体某个 notific
 
 自定义内容 View、group summary（通知组摘要）、colorized=true 和 `IMPORTANCE_MIN` 不符合通用资格；用户和 OEM 还可以把这些通知降级，或者加上额外条件。
 
-`MetricStyle` 文档允许 promoted 状态下用 metric / App 名补位标题；通用资格页则要求 content title。固定 r1 的 `hasTitle()` 对开启相应 flag 的 MetricStyle 有特殊分支，所以这里的例外有实现依据，不必判定为文档矛盾。
+`MetricStyle` 文档允许 promoted 状态下用 metric / App 名补位标题；通用资格页则要求 content title。r1 的 `hasTitle()` 对开启相应 flag 的 MetricStyle 有特殊分支，所以这里的例外有实现依据，不必判定为文档矛盾。
 
 
 在 API 37 上，我们应同时调用 `Notification.hasPromotableCharacteristics()` 和 `NotificationManager.canPostPromotedNotifications()`，分别核对内容特征与应用提升权限；两项都通过，也还不保证每次都被提升——最终 `FLAG_PROMOTED_ONGOING`、channel、用户与 OEM 条件要单独核对，只凭 style 推测不出来。
@@ -393,7 +391,7 @@ Android 17 的 Semantic Coloring API 为安全、警示、危险和中性信息�
 展示层还有一组旋钮容易和优先级混淆，我们先分清楚。`NotificationChannel` importance（渠道重要程度）控制声音、震动、状态栏和 heads-up（横幅通知）等展示行为；它改变不了 FCM 传输优先级，也提高不了 App 发往 NMS 的 Binder 请求调度优先级。
 
 
-Android 8（API 26）起，channel 创建后由用户掌控其行为，App 不能任意提高打扰级别；固定 API 契约还允许在用户未改过该 channel 设置时，通过重新创建降低 importance。名称和描述也可更新，按具体字段和用户锁定状态判断即可。
+Android 8（API 26）起，channel 创建后由用户掌控其行为，App 不能任意提高打扰级别；公开 API 契约还允许在用户未改过该 channel 设置时，通过重新创建降低 importance。名称和描述也可更新，按具体字段和用户锁定状态判断即可。
 
 <!-- gracker-diagram: ch08-06-33-channel-mutation -->
 ![channel 创建后的控制权与有限修改](../../assets/diagrams/ch08/ch08-06-33-channel-mutation.png)

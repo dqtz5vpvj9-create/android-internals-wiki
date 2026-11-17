@@ -82,9 +82,7 @@ consolidated_from:
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`；设备可能使用其他内核分支。应用 API 以 Android Developers 文档为准。
 
-> ⚠️ 校勘（2026-10-23）：已按固定源码补正 IAuthService 前端、进程边界、prune / busy 客户端分支、同步调用超时与释放语义，并区分平台认证、密码操作和业务会话完成。KeyMint 的最低 32 项合同与旧说明的 16 项存在文档差异，本文保留固定 AIDL 与实际设备两层证据。
-
-文中说的 operation，指一次有状态的密码操作会话：成功 begin 后，尚未结束或被回收的 operation 会保留后端状态；真正释放由 finish、abort、错误和服务回收路径决定。它的生命周期和服务行为，我们按 framework 与 `system/security` 源码逐一核对。
+本节提到的 operation 指一次有状态的密码操作会话：成功 begin 后，尚未结束或被回收的 operation 会保留后端状态，真正释放由 finish、abort、错误或服务回收路径决定。下面结合 framework 与 `system/security` 源码展开它的生命周期与服务行为。
 
 ## 密钥生成、访问与 KeyMint 延迟
 
@@ -194,9 +192,9 @@ flowchart LR
 
 #### begin/update/finish
 
-硬件保护的 operation 适合轻量工作：处理密钥、短 challenge、小 token，或做一次数据密钥封装 data key wrapping（数据密钥封装）。大文件、数据库页或长 JSON 直接送进 Keystore，Binder/KeyMint 往返和数据传输都会变多，operation slot 也被长时间占住。
+硬件保护的 operation 适合轻量工作：处理密钥、短 challenge、小 token，或做一次 data key wrapping（数据密钥封装）。大文件、数据库页或长 JSON 直接送进 Keystore，Binder/KeyMint 往返和数据传输都会变多，operation slot 也被长时间占住。
 
-大数据加密常改用信封加密 envelope encryption（信封加密）：业务数据交给临时数据密钥加密，Android Keystore 密钥只负责保护这把数据密钥。
+大数据加密常改用 envelope encryption（信封加密）：业务数据交给临时数据密钥加密，Android Keystore 密钥只负责保护这把数据密钥。
 
 1. 用经过安全审查的密码库生成 data encryption key（DEK，数据加密密钥）。
 2. 用 DEK 对业务数据执行 AEAD（带关联数据的认证加密），同时保证机密性和完整性。
@@ -316,7 +314,7 @@ Android 12 / API 31 及以上可通过 `KeyInfo.getSecurityLevel()` 读取：
 
 并发上限的新旧说法容易混淆，我们先把事实摆清楚：AOSP KeyMint AIDL 自 Android 12 / API 31 起，把 `IKeyMintDevice.begin()` 的最低并发上限写成 32，注释原文为 "IKeyMintDevice implementations must support 32 concurrent operations"；`source.android.com/docs/security/features/keystore/implementer-ref` 上仍写的 16，与这里核对的 Android 12 r1 和 Android 17 r1 AIDL（均为最低 32）存在差异，据此反推“所有旧版 KeyMint 都只支持 16”站不住脚；当前合同以固定 AIDL 为准。keystore2 代码本身没有固定配额常量，上限交给 KeyMint HAL 的 AIDL 合同。
 
-`vold` 是 Android 的卷管理守护进程，会使用 KeyMint 支撑存储加密。Keystore2 源码里并没有为它写死保留 slot；想给 `vold` 留余量，正确做法是在自测时直接观察 prune 和返回错误，而不是套用旧文档里的“15+1”分配。
+`vold` 是 Android 的卷管理守护进程，会使用 KeyMint 支撑存储加密。Keystore2 源码里并没有为它写死保留 slot；想给 `vold` 留余量，应在自测时直接观察 prune 和返回错误，不要套用旧文档里的“15+1”分配。
 
 32 是 HAL 合同的最低支持量；把它读成普通 App 的独占配额，或读成“第 32 个请求必然失败”的阈值，都会读错它的含义。
 
@@ -430,7 +428,7 @@ JCA Keystore API 没有统一的 per-operation deadline，超时语义要应用�
 
 处理超时应遵守：
 
-- 旧 worker（工作线程） 线程尚未结束时，不复用同一个密码对象；
+- 旧 worker（工作线程）尚未结束时，不复用同一个密码对象；
 - 将晚到结果标记为过期，不写入当前会话；
 - BiometricPrompt 取消按 API 结束认证会话、相关传感器工作及系统 UI，不保证中断独立的 JCA / KeyMint 调用；
 - 正常路径尽快完成 finish，失败后按 Provider 契约清理并弃用旧对象；JCA 没有统一的公开 abort / close 接口，单纯丢弃引用不保证 slot 立即释放；
@@ -505,7 +503,7 @@ TEE/StrongBox 内部阶段在普通 Perfetto trace 里通常看不到。时间�
 
 ### Passkey / Credential Manager 的角色
 
-密钥归谁管，直接决定性能指标该记到谁头上，我们先把这件事分清。Credential Manager 是初始登录的统一凭据入口，也支持后续的重新授权。普通依赖方 App（relying party）请求 passkey 时，私钥通常由凭据提供方 credential（凭据） provider（凭据提供方） 管理；用户创建 passkey，业务 App 自己的 `AndroidKeyStore` alias 并没有随之新增。
+密钥归谁管，直接决定性能指标该记到谁头上，我们先把这件事分清。Credential Manager 是初始登录的统一凭据入口，也支持后续的重新授权。普通依赖方 App（relying party）请求 passkey 时，私钥通常由 credential provider（凭据提供方）管理；用户创建 passkey，业务 App 自己的 `AndroidKeyStore` alias 并没有随之新增。
 
 
 性能指标应分开：
@@ -527,7 +525,7 @@ TEE/StrongBox 内部阶段在普通 Perfetto trace 里通常看不到。时间�
 | Android 11 / API 30 | `setUserAuthenticationParameters()` 明确认证有效期与 auth type |
 | Android 12 / API 31 | Keystore2 + KeyMint 架构；`KeyInfo.getSecurityLevel()` |
 | Android 13 / API 33 | KeyMint v2 增加 Curve25519 等能力 |
-| Android 17 / API 37 | 本文源码锚点；Keystore2 operation、Provider 和 AIDL KeyMint 主线按固定 tag 核查 |
+| Android 17 / API 37 | 本节源码锚点；Keystore2 operation、Provider 和 AIDL KeyMint 主线按 `android-17.0.0_r1` 核查 |
 
 平台版本表只描述 API 和架构层面的能力。StrongBox 支持情况、算法组合、可用 operation 数和安全环境耗时，仍由具体设备实现决定。
 
@@ -543,7 +541,7 @@ TEE/StrongBox 内部阶段在普通 Perfetto trace 里通常看不到。时间�
 - Keystore2 [`operation.rs`](https://android.googlesource.com/platform/system/security/+/android-17.0.0_r1/keystore2/src/operation.rs)：operation 生命周期、并发保护和 pruning 算法。
 - [`IKeyMintDevice.aidl`](https://android.googlesource.com/platform/hardware/interfaces/+/android-17.0.0_r1/security/keymint/aidl/android/hardware/security/keymint/IKeyMintDevice.aidl)：KeyMint HAL 的 generate/import/begin 接口。
 
-App 到 `keystore2`、`keystore2` 到 Binderized KeyMint HAL（通过 Binder 暴露的 KeyMint 服务），这两段都经过 Binder。内核侧按 `android17-6.18-2026-06_r6` 固定查看 [`drivers/android/binder.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/android/binder.c)。TEE / StrongBox 的具体 transport 和集成依设备实现；common kernel 可包含 OP-TEE 等通用驱动，别把“相关 driver 都不在 common kernel”当成默认结论。要把现场归到具体通道，仍需实际设备的内核、HAL 与固件证据；手头没有设备内核与 HAL 源码时，归因到这里为止，剩余部分明确记为厂商实现内部。
+App 到 `keystore2`、`keystore2` 到 Binderized KeyMint HAL（通过 Binder 暴露的 KeyMint 服务），这两段都经过 Binder。内核侧可查看 `android17-6.18-2026-06_r6` 的 [`drivers/android/binder.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/android/binder.c)。TEE / StrongBox 的具体传输方式和集成依设备实现而定；common kernel 也可能包含 OP-TEE 等通用驱动，不要把“相关 driver 都不在 common kernel”当成默认结论。要把瓶颈归到具体硬件通道，仍需结合实际设备的内核、HAL 与固件证据；缺少这些源码或日志时，排查推进到 KeyMint HAL 入口即可，其余部分属于厂商实现内部。
 
 
 ## 生物认证、凭据选择与登录完成
@@ -790,7 +788,7 @@ provider 集成时有四条硬约束：
 图：BiometricPromptData 的 crypto 非空时只接受精确 BIOMETRIC_STRONG，组合规则要与普通 App 分开查；固定实现部分组合未拒绝，也当不成已受支持的证明。
 
 1. 显式设置 `allowedAuthenticators`。当前 single tap 指南的创建部分与 [`BiometricPromptData` API 参考](https://developer.android.com/reference/androidx/credentials/provider/BiometricPromptData) 对默认值的描述不一致，默认值靠不住。
-2. 按公开 API 契约，`cryptoObject` 非空时，`allowedAuthenticators` 必须精确设置为 `BIOMETRIC_STRONG`。固定 AndroidX 源码的校验只检查生物强度掩码，部分 device credential 组合并不抛异常；这是实现与文档的差异；“构造成功”在这里说明的只是校验宽松，受支持与已安全授权都要按公开契约另行确认，这条宽松路径也当不成依赖。
+2. 按公开 API 契约，`cryptoObject` 非空时，`allowedAuthenticators` 必须精确设置为 `BIOMETRIC_STRONG`。固定版本 AndroidX 源码里的校验只检查生物强度掩码，部分 device credential 组合并不抛异常；这一实现差异只代表校验较宽松，不代表相应组合在系统上受支持或已完成安全授权，开发时仍应以公开契约为准，不要依赖这条宽松路径。
 3. 设备配置要求使用 PIN、图案或密码时，系统采用标准 Credential Manager 流程，provider 收到的 `biometricPromptResult` 为 `null`。
 4. provider 必须处理 result 为成功、错误和 `null` 三种情况；`null` 只说明这次没有内嵌生物认证结果，成功与失败都读不出来；provider 仍须按业务安全要求自行完成必要认证，授权这一步绕不过去。
 
