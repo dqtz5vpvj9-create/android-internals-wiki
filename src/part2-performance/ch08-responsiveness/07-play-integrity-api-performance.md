@@ -365,7 +365,7 @@ Classic 的 nonce 身兼两职：防止业务字段被篡改，也防止旧请�
 - nonce 中不要直接或间接携带个人信息。
 
 
-⚠️ 矛盾：当前 [Classic 指南](https://developer.android.com/google/play/integrity/classic) 用编码后 16–500 个字符描述 nonce，而[错误码文档](https://developer.android.com/google/play/integrity/error-codes) 用 Base64 前至少 16、少于 500 字节描述边界。两者单位不同；上面的 32 字节摘要 / 43 字符编码同时避开这两套边界，极限输入是否被接受，以实测和当前文档为准。
+[Classic 指南](https://developer.android.com/google/play/integrity/classic) 用编码后的 16–500 个字符描述 nonce，[错误码文档](https://developer.android.com/google/play/integrity/error-codes) 则用 Base64 编码前至少 16、少于 500 字节描述边界。两者的单位不同；上面的 32 字节摘要、43 字符编码避开了两套边界附近的取值。极限输入是否被接受，应以实测和当前文档为准。
 
 
 缓存 Classic verdict 或 token 会放大凭据被窃取和重放的风险。调用频率高到想复用结果时，就该重新评估是否改用 Standard；改用之后，每次动作仍单独申请 token。
