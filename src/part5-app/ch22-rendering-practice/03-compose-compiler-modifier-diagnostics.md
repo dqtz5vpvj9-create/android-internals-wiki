@@ -496,13 +496,13 @@ BOM 只约束它声明的 Compose artifacts（依赖模块），不会自动添�
 
 #### Kotlin 升级时把 classpath 故障与 Compose 诊断分开
 
-Kotlin/Compose 升级验收还应记录第三方 AAR/JAR 的 POM 与 class 签名：`firebase-auth:24.2.0` 的 Google Maven POM 未声明 `org.checkerframework` / `checker-qual`，但其 `classes.jar` 中至少 `FirebaseAuth$IdTokenListener.class`、`FirebaseAuth.class`、`zzbm.class`、`zzca.class` 和 `zzcj.class` 的签名字符串包含 `org/checkerframework/checker/initialization/qual/UnknownInitialization`。[已验证: https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-auth/24.2.0/firebase-auth-24.2.0.pom；已验证: https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-auth/24.2.0/firebase-auth-24.2.0.aar；来源: https://juejin.cn/post/7678586341090803748]
+Kotlin/Compose 升级验收还应记录第三方 AAR/JAR 的 POM 与 class 签名：`firebase-auth:24.2.0` 的 Google Maven POM 未声明 `org.checkerframework` / `checker-qual`，但其 `classes.jar` 中至少 `FirebaseAuth$IdTokenListener.class`、`FirebaseAuth.class`、`zzbm.class`、`zzca.class` 和 `zzcj.class` 的签名字符串包含 `org/checkerframework/checker/initialization/qual/UnknownInitialization`。[^source-audit-note-1]
 
-以下 FlutterFire 故障经过来自二手案例记录，本文没有复现其完整构建矩阵，不能据此泛化所有 Kotlin 2.4 项目。在 FlutterFire `firebase_auth 6.6.0` 的 Kotlin 重写中，`FirebaseAuth.IdTokenListener { auth -> ... }` 这类 Java SAM lambda 让 `auth` 参数由 Kotlin 推断；材料记录 Kotlin 2.4 会把缺失注解类导致的 “inferred type is inaccessible” 路径表现为编译错误，而 Kotlin 2.3 主要表现为警告。[来源: https://juejin.cn/post/7678586341090803748]
+以下 FlutterFire 故障经过来自二手案例记录，本文没有复现其完整构建矩阵，不能据此泛化所有 Kotlin 2.4 项目。在 FlutterFire `firebase_auth 6.6.0` 的 Kotlin 重写中，`FirebaseAuth.IdTokenListener { auth -> ... }` 这类 Java SAM lambda 让 `auth` 参数由 Kotlin 推断；材料记录 Kotlin 2.4 会把缺失注解类导致的 “inferred type is inaccessible” 路径表现为编译错误，而 Kotlin 2.3 主要表现为警告。[^source-audit-note-2]
 
-把这个故障算到 Compose Runtime、Stability 或 `Modifier.Node` 头上是误诊：它是 Kotlin 前端读取依赖 class 元数据时暴露出的 classpath / 发布元数据问题，排查顺序是先锁定 Kotlin、AGP、Firebase 与 FlutterFire 版本，再看报错中的 annotation class、来源 artifact 和 POM 依赖。[来源: https://juejin.cn/post/7678586341090803748；已验证: https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-auth/24.2.0/firebase-auth-24.2.0.pom]
+把这个故障算到 Compose Runtime、Stability 或 `Modifier.Node` 头上是误诊：它是 Kotlin 前端读取依赖 class 元数据时暴露出的 classpath / 发布元数据问题，排查顺序是先锁定 Kotlin、AGP、Firebase 与 FlutterFire 版本，再看报错中的 annotation class、来源 artifact 和 POM 依赖。[^source-audit-note-3]
 
-处置时别把 `skippable`、重组次数或 FrameTimeline 当主证据。对这个案例，材料记录的 FlutterFire 侧修复是把 `FirebaseAuth.IdTokenListener` / `AuthStateListener` 的 lambda 参数写成显式 `FirebaseAuth` 类型，并在测试工程覆盖 Kotlin `2.4.10`、AGP `8.11.1`、Gradle `8.14`。[来源: https://juejin.cn/post/7678586341090803748]
+处置时别把 `skippable`、重组次数或 FrameTimeline 当主证据。对这个案例，材料记录的 FlutterFire 侧修复是把 `FirebaseAuth.IdTokenListener` / `AuthStateListener` 的 lambda 参数写成显式 `FirebaseAuth` 类型，并在测试工程覆盖 Kotlin `2.4.10`、AGP `8.11.1`、Gradle `8.14`。[^source-audit-note-2]
 
 
 验收可以按下面的顺序执行：
@@ -1894,3 +1894,7 @@ Linux 内核锚点 `android17-6.18-2026-06_r6` 不参与 Node 链差分。只有
 全篇的线索到这里可以收拢：Compose 性能诊断的起点是状态在组合、布局还是绘制阶段被读取，其次才轮得到“全部可跳过”这类指标。Compiler 报告解释稳定性、重启组和跳过条件，Layout Inspector 与 Runtime Tracing 说明实际执行范围，FrameTimeline 和 Macrobenchmark 才证明用户可见的帧结果。
 
 `Modifier.Node` 是这条链上的运行时扩展点：Element 表达配置，Node 保留运行状态并参与具体阶段。迁移只有在节点复用、失效范围和热路径分配都得到同条件数据支持时才算完成；若 UI 线程已按时提交，还要继续追到 RenderThread、缓冲区、SurfaceFlinger 和 actual present。
+
+[^source-audit-note-1]: 已验证: <https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-auth/24.2.0/firebase-auth-24.2.0.pom>；已验证: <https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-auth/24.2.0/firebase-auth-24.2.0.aar>；来源: <https://juejin.cn/post/7678586341090803748>
+[^source-audit-note-2]: 来源: <https://juejin.cn/post/7678586341090803748>
+[^source-audit-note-3]: 来源: <https://juejin.cn/post/7678586341090803748>；已验证: <https://dl.google.com/dl/android/maven2/com/google/firebase/firebase-auth/24.2.0/firebase-auth-24.2.0.pom>

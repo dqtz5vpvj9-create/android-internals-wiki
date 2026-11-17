@@ -135,11 +135,11 @@ sequenceDiagram
 
 ### 3. Launcher 插件卡片与标准 App Widget 的分界
 
-车机或定制桌面常把可插拔业务视图也叫“Widget”，但这类 Launcher 插件卡片走的通常不是 `AppWidgetManager`、`AppWidgetServiceImpl` 和 `RemoteViews` 缓存这条链路。以一篇移植 SystemUI Plugin Framework 的车机 Launcher 实践为例：插件 APK 在 manifest 中把实现类声明成带 action 的 `service`，宿主用 `PackageManager.queryIntentServices()` 发现候选组件，再通过自定义 `WidgetViewPlugin` 接口取得插件提供的普通 View；`PluginActionManager` 源码里也保留着“这并不是真的 service、不应启动，只是便于用 PackageManager 管理插件”的注释。[来源: https://juejin.cn/post/7678556373495971883][已验证: packages/SystemUI/shared/src/com/android/systemui/shared/plugins/PluginActionManager.kt@android-17.0.0_r1]
+车机或定制桌面常把可插拔业务视图也叫“Widget”，但这类 Launcher 插件卡片走的通常不是 `AppWidgetManager`、`AppWidgetServiceImpl` 和 `RemoteViews` 缓存这条链路。以一篇移植 SystemUI Plugin Framework 的车机 Launcher 实践为例：插件 APK 在 manifest 中把实现类声明成带 action 的 `service`，宿主用 `PackageManager.queryIntentServices()` 发现候选组件，再通过自定义 `WidgetViewPlugin` 接口取得插件提供的普通 View；`PluginActionManager` 源码里也保留着“这并不是真的 service、不应启动，只是便于用 PackageManager 管理插件”的注释。[^source-audit-note-1][^source-audit-note-2]
 
-这个插件模型的加载与隔离方式也不同：`PluginActionManager` 在加载前检查插件权限和是否可启用，`PluginInstance` 为插件创建 `PathClassLoader`，把宿主类加载器包在只放行指定包名前缀的 `ClassLoaderFilter` 之后，再通过 `createApplicationContext()` 加载插件资源。它提供的是类可见性与资源上下文隔离；插件实例仍在宿主进程里执行，和 AppWidget 跨进程 `RemoteViews` 的进程级隔离是两回事。[已验证: packages/SystemUI/shared/src/com/android/systemui/shared/plugins/PluginActionManager.kt@android-17.0.0_r1][已验证: packages/SystemUI/shared/src/com/android/systemui/shared/plugins/PluginInstance.kt@android-17.0.0_r1] ClassLoaderFilter 不是不可信代码的安全沙箱，也不会隔离插件在宿主线程中的阻塞、崩溃或内存开销；实际生产加载还受非调试构建的特权名单等规则限制。
+这个插件模型的加载与隔离方式也不同：`PluginActionManager` 在加载前检查插件权限和是否可启用，`PluginInstance` 为插件创建 `PathClassLoader`，把宿主类加载器包在只放行指定包名前缀的 `ClassLoaderFilter` 之后，再通过 `createApplicationContext()` 加载插件资源。它提供的是类可见性与资源上下文隔离；插件实例仍在宿主进程里执行，和 AppWidget 跨进程 `RemoteViews` 的进程级隔离是两回事。[^source-audit-note-2][^source-audit-note-3] ClassLoaderFilter 不是不可信代码的安全沙箱，也不会隔离插件在宿主线程中的阻塞、崩溃或内存开销；实际生产加载还受非调试构建的特权名单等规则限制。
 
-所以，排查这类自定义 Launcher 卡片时，`adb shell dumpsys appwidget`、`partiallyUpdateAppWidget()` 和 `RemoteViews` 图像上限通常解释不了它的加载与刷新成本，应改看 Launcher 进程内的插件发现、类加载、资源加载、接口回调和 View 绘制。只有通过标准 `AppWidgetProvider` 或 Glance 发布到系统 AppWidget 服务的桌面组件，才适用本文后续的更新语义、缓存和 IPC 分析。[来源: https://juejin.cn/post/7678556373495971883][已验证: frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java@android-17.0.0_r1]
+所以，排查这类自定义 Launcher 卡片时，`adb shell dumpsys appwidget`、`partiallyUpdateAppWidget()` 和 `RemoteViews` 图像上限通常解释不了它的加载与刷新成本，应改看 Launcher 进程内的插件发现、类加载、资源加载、接口回调和 View 绘制。只有通过标准 `AppWidgetProvider` 或 Glance 发布到系统 AppWidget 服务的桌面组件，才适用本文后续的更新语义、缓存和 IPC 分析。[^source-audit-note-1][^source-audit-note-4]
 
 
 ## 二、三种更新语义的分工
@@ -220,10 +220,10 @@ fun updateWidgetTimestamp(
 
 Android 12 / API 31 增加了 `RemoteViews.setRemoteAdapter(viewId, RemoteCollectionItems)`：`RemoteCollectionItems` 是随 `RemoteViews` 一起提交的集合项快照，宿主无须再绑定 `RemoteViewsService`。API 35 已弃用 `notifyAppWidgetViewDataChanged()` 及其对应的 `Intent` 适配器，官方迁移方式是设置新的 `RemoteCollectionItems`，再调用适用的完整或局部更新接口。
 
-`remoteAdapterConversion` 功能开关开启时，旧式 `Intent` 适配器也会转换成集合快照：`AppWidgetManager.tryAdapterConversion()` 在提供方收集列表项后才提交更新；集合刷新则通过 `notifyCollectionWidgetChange()` 重新收集指定集合，再调用服务端的 `updateAppWidgetIds()`。继续使用 `RemoteViewsService` 的话，宿主是否仍按滚动位置逐项取数就没有保证。[已验证: frameworks/base/core/java/android/appwidget/AppWidgetManager.java@android-17.0.0_r1]
+`remoteAdapterConversion` 功能开关开启时，旧式 `Intent` 适配器也会转换成集合快照：`AppWidgetManager.tryAdapterConversion()` 在提供方收集列表项后才提交更新；集合刷新则通过 `notifyCollectionWidgetChange()` 重新收集指定集合，再调用服务端的 `updateAppWidgetIds()`。继续使用 `RemoteViewsService` 的话，宿主是否仍按滚动位置逐项取数就没有保证。[^source-audit-note-5]
 
 
-转换时，内部方法 `RemoteViewsFactory.getRemoteCollectionItems()` 会顺序读取项目，达到序列化数据或位图容量限制时停止收集。较大的集合要检查实际交付的项目数量；排查列表缺项时，同样要检查转换阶段的容量限制。[已验证: frameworks/base/core/java/android/widget/RemoteViewsService.java@android-17.0.0_r1] 固定源码中，单项序列化后 `dataSize > capSize` 或位图累计 `>= capBitmapSize` 会在加入当前项之前停止；`getViewAt()` 返回 null 也会结束本次收集。这些内部限制不是应用可依赖的完整交付协议，应核对实际item数并提供有界数据。
+转换时，内部方法 `RemoteViewsFactory.getRemoteCollectionItems()` 会顺序读取项目，达到序列化数据或位图容量限制时停止收集。较大的集合要检查实际交付的项目数量；排查列表缺项时，同样要检查转换阶段的容量限制。[^source-audit-note-6] 固定源码中，单项序列化后 `dataSize > capSize` 或位图累计 `>= capBitmapSize` 会在加入当前项之前停止；`getViewAt()` 返回 null 也会结束本次收集。这些内部限制不是应用可依赖的完整交付协议，应核对实际item数并提供有界数据。
 
 <!-- gracker-diagram: a250-08-collection-capacity-stop -->
 ![集合转换在加入超限当前项之前停止](../../assets/diagrams/ch22/a250-08-collection-capacity-stop.png)
@@ -544,3 +544,10 @@ Glance 改善的是状态到界面描述的组织方式，最终仍要生成 `Re
 - [Chronometer时基](https://developer.android.com/reference/android/widget/Chronometer)：宿主本地计时。
 
 本文的平台判断固定到 `android-17.0.0_r1`，Glance 判断固定到 1.2.0。升级 Android 或 Glance 后，应重新核对局部更新缓存、图像上限、集合适配器弃用状态、`GlanceAppWidget` 的会话执行方式和尺寸模式实现。
+
+[^source-audit-note-1]: 来源: <https://juejin.cn/post/7678556373495971883>
+[^source-audit-note-2]: 已验证: packages/SystemUI/shared/src/com/android/systemui/shared/plugins/PluginActionManager.kt@android-17.0.0_r1
+[^source-audit-note-3]: 已验证: packages/SystemUI/shared/src/com/android/systemui/shared/plugins/PluginInstance.kt@android-17.0.0_r1
+[^source-audit-note-4]: 已验证: frameworks/base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java@android-17.0.0_r1
+[^source-audit-note-5]: 已验证: frameworks/base/core/java/android/appwidget/AppWidgetManager.java@android-17.0.0_r1
+[^source-audit-note-6]: 已验证: frameworks/base/core/java/android/widget/RemoteViewsService.java@android-17.0.0_r1
