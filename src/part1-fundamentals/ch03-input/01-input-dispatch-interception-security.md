@@ -111,7 +111,7 @@ AOSP 的 `InputManager` 由 `InputManagerService` 的原生实现持有，默认
 - `InputProcessor` 的 HAL 工作线程：异步调用动作分类 HAL；
 - 应用主线程：通过自身的 Looper 监听并接收窗口 `InputChannel`。
 
-需要注意的是，`services/inputflinger` 仅代表源码目录名，系统运行时并不存在独立的 `inputflinger` 进程——`Android.bp` 仍将其构建为 `libinputflinger` 共享库，源码中也还保留着“移动到独立进程”的 TODO 注释。
+输入服务的原生代码位于 `services/inputflinger` 目录，`Android.bp` 将其构建为 `libinputflinger` 共享库，供 `system_server` 使用。源码中保留着将它移至独立进程的 TODO 注释。
 
 #### 1.2 输入线程的优先级由任务配置决定
 
