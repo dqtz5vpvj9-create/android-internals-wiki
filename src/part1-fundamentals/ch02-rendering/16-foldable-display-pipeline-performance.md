@@ -107,7 +107,7 @@ last_deep_review_at: '2026-10-18T12:42:42+08:00'
 
 # 折叠屏显示切换、窗口连续性与渲染性能
 
-折叠屏的性能问题常被简化成“大屏像素更多，所以 GPU 更慢”，但像素量只解释得了一部分。一次折叠或展开，往往同时触发一连串事件：
+折叠屏在姿态切换期间的性能开销不仅源于展开后像素面积增大导致的 GPU 负担上升，一次折叠或展开还往往同时触发多条系统链路：
 
 - 设备 posture（姿态） 变化；
 - 内建物理 Display（显示设备） 的开关或重映射；
@@ -117,13 +117,13 @@ last_deep_review_at: '2026-10-18T12:42:42+08:00'
 - SurfaceFlinger 为目标 Display 重新构建可见 layer（合成图层） 集合；
 - HWC（Hardware Composer，硬件合成器） 针对新 Display、mode（显示模式） 和 layer 属性重新选择合成策略。
 
-这些阶段分属不同进程、各有各的时间边界。我们排查时要先判断问题落在哪一层，再去讨论 GPU、Activity 重建或铰链传感器。
+这些阶段分属不同进程、各有各的时间边界。排查时需先定位问题所属层级，再进一步分析 GPU、Activity 重建或铰链传感器行为。
 
 > 源码基线：AOSP `android-17.0.0_r1`，Android 17 / API 37；Android 12～16 仅用于说明演进。
 
-## 1. 先建立对象模型
+## 1. 折叠显示系统的对象模型
 
-后面所有排查都落在这份对象模型上：物理面板、系统包装的显示设备、对外的逻辑显示与合成输出各是一层对象，我们先把它们分清楚。
+物理面板、显示设备包装、逻辑显示与合成输出在框架中分属不同层次，构成后续分析的基础模型。
 
 ### 1.1 Physical Display、DisplayDevice 与 LogicalDisplay
 
@@ -163,7 +163,7 @@ Android 显示框架把物理设备和系统对外使用的逻辑 Display 分开
 - lead display（联动显示中的主显示）；
 - brightness、refresh-rate、thermal、power（电源） throttling（亮度、刷新率、热管理和功耗限制） 策略 ID。
 
-logical display ID 由框架分配：`Layout.createDisplayLocked()` 调用 `DisplayIdProducer.getId(isDefault)`，把结果保存在 layout 中；`LogicalDisplayMapper` 再为默认 Display 返回 `DEFAULT_DISPLAY`，为非默认 Display 递增分配 ID。我们分析状态切换时，就用 `dumpsys display` 核对 layout 保存的 ID 与物理地址映射。[源码：`DeviceStateToLayoutMap.java` L168–179；`Layout.java` L155–163；`LogicalDisplayMapper.java` L223–224]
+logical display ID 由框架分配：`Layout.createDisplayLocked()` 调用 `DisplayIdProducer.getId(isDefault)`，把结果保存在 layout 中；`LogicalDisplayMapper` 再为默认 Display 返回 `DEFAULT_DISPLAY`，为非默认 Display 递增分配 ID。分析状态切换时，可通过 `dumpsys display` 核对 layout 保存的 ID 与物理地址映射。[源码：`DeviceStateToLayoutMap.java` L168–179；`Layout.java` L155–163；`LogicalDisplayMapper.java` L223–224]
 
 刷新率和亮度策略可以随 layout 改变，但 AOSP 没有“展开态固定 120 Hz、折叠态固定低刷新率”的通用规则。具体 mode 还要经过 `DisplayModeDirector`、设备配置、内容帧率投票、热限制和用户设置。
 
@@ -175,7 +175,7 @@ logical display ID 由框架分配：`Layout.createDisplayLocked()` 调用 `Disp
 
 ## 2. 设备状态主线
 
-对象模型建好之后，我们沿主线走一遍：传感器条件如何变成 DeviceState，DeviceState 又如何变成显示布局，切换中间为什么会出现黑场。
+在显示对象模型的基础上，状态驱动显示布局的完整主线依次经过传感器条件归纳、DeviceState 提交与显示布局过渡。
 
 ### 2.1 状态来源与设备配置
 
@@ -249,15 +249,15 @@ layout 应用这一侧，`applyLayoutLocked()` 会：
 
 后续 DisplayManager traversal（显示设备遍历） 使用 `SurfaceControl.Transaction` 更新 display layer stack、flags（标志位）、projection（投影与旋转映射）、size 和 surface。SurfaceFlinger 接收 display transaction，并为新的 display 与 output 状态构建合成输入。
 
-分工到这里就清楚了：SurfaceFlinger 不识别手机处于书本姿态还是桌面姿态，它处理的是 system_server（承载系统核心服务的进程） 已转换好的 Display 与 layer 状态。
+由此确立了两层分工：SurfaceFlinger 不识别手机处于书本姿态还是桌面姿态，它处理的是 system_server（承载系统核心服务的进程） 已转换好的 Display 与 layer 状态。
 
 ## 3. WMS、Shell 与应用窗口
 
-显示 layout 重映射之后，轮到窗口这一层：WMS 更新窗口树，Shell 播转场动画，应用窗口拿到新的尺寸与配置。这一节把三条线分开看。
+显示 layout 重映射之后，窗口层的更新沿三条独立路径推进：WMS 更新窗口树，Shell 播放转场动画，应用窗口接收新的尺寸与配置。
 
 ### 3.1 Display 树与 Surface 树
 
-进入 WMS 一侧，我们先分清两棵树。WMS 按以下对象组织窗口：
+在 WMS 一侧，首先需要区分窗口管理树与 SurfaceFlinger 图层树。WMS 按以下对象组织窗口：
 
 ```text
 RootWindowContainer
@@ -293,13 +293,13 @@ WM Shell 的 `UnfoldTransitionHandler` 在进度回调中创建 `SurfaceControl.
 
 ### 3.3 Configuration 与 WindowLayoutInfo 的到达顺序
 
-物理 Display 切换、窗口 bounds（边界） 更新和 WindowManager Extensions posture 更新来自不同组件。很多人把下面这条顺序当成前提：
+物理 Display 切换、窗口 bounds（边界） 更新和 WindowManager Extensions posture 更新来自不同组件，不能预设其固定按如下顺序依次到达：
 
 ```text
 WindowLayoutInfo → Configuration → onConfigurationChanged
 ```
 
-这些事件可能按不同顺序到达，我们写代码时应假设次序会变。一次折叠或展开可能改变 `screenSize`、`smallestScreenSize`、`screenLayout`、`orientation`、`density` 或其他配置；具体集合取决于物理面板、windowing mode（窗口模式）、rotation（旋转） 与厂商实现。
+在实际分发中，这些事件可能按不同顺序到达，应用实现时应假设次序会发生变化。一次折叠或展开可能改变 `screenSize`、`smallestScreenSize`、`screenLayout`、`orientation`、`density` 或其他配置；具体集合取决于物理面板、windowing mode（窗口模式）、rotation（旋转） 与厂商实现。
 
 默认情况下，Activity 未声明自行处理的 configuration change（配置变化） 会触发重建。若使用 `android:configChanges`，应用就要重新读取受影响的资源并更新 UI；只在回调里记录一下就原样返回，算不上自行处理。
 
@@ -379,7 +379,7 @@ STATE_PENDING / STATE_COLLECTING / STATE_STARTED → STATE_ABORT
 
 #### 3.5.5 折叠/展开分析的观察点
 
-折叠与展开常伴随 Task、Display、窗口尺寸及 starting window（启动窗口） 的变化，我们排查时按下面几类分别记录：
+折叠与展开常伴随 Task、Display、窗口尺寸及 starting window（启动窗口） 的变化，排查时可按以下四类线索分别记录：
 
 - 收集与启动：对齐 transition token、sync ID、Shell 收到请求与 WMS 执行 `start()` 的时间。`start()` 遇到已启动、已播放或已中止状态会提前返回；结合超时日志判断原因；状态不再是 `COLLECTING`，本身证明不了回告顺序错误。
 - 同步就绪：确认实际 sync method，再检查 ready 条件、依赖和未完成容器；把 `WindowState.finishDrawing()` 的序号与应用 `Choreographer#doFrame` 对照。
@@ -392,7 +392,7 @@ Logcat 可辅助查看 `TransitionController`、`Transition`、`BLASTSyncEngine`
 
 ### 4.1 WindowInfoTracker 的职责
 
-转过系统侧，我们再看应用能拿到什么。Jetpack WindowManager 的 `WindowInfoTracker.windowLayoutInfo(activity)` 返回持续更新的 `WindowLayoutInfo` 异步数据流。`displayFeatures` 中可能包含 `FoldingFeature`（窗口内的折叠或铰链特征）。
+在应用侧，Jetpack WindowManager 的 `WindowInfoTracker.windowLayoutInfo(activity)` 返回持续更新的 `WindowLayoutInfo` 异步数据流。`displayFeatures` 中可能包含 `FoldingFeature`（窗口内的折叠或铰链特征）。
 
 `FoldingFeature` 描述当前应用窗口坐标系中的 fold 或 hinge 特征：
 
@@ -402,7 +402,7 @@ Logcat 可辅助查看 `TransitionController`、`Transition`、`BLASTSyncEngine`
 - `occlusionType`：`NONE` 或 `FULL`；
 - `isSeparating`：该 feature 是否把可用窗口视为两个逻辑区域。
 
-`FoldingFeature` 没有 `CLOSED` 状态，也不提供精确 hinge angle；应用切到外屏后，当前窗口可能就不再包含 folding feature。我们把它当作“描述当前窗口如何布局”的接口来用就好，底层物理铰链的完整状态要看第 5 节的 sensor。
+`FoldingFeature` 没有 `CLOSED` 状态，也不提供精确 hinge angle；应用切到外屏后，当前窗口可能就不再包含 folding feature。该接口定位为描述当前窗口如何布局，底层物理铰链的完整状态需借助第 5 节的 sensor 获取。
 
 ### 4.2 orientation 的含义
 
@@ -459,7 +459,7 @@ lifecycleScope.launch(Dispatchers.Main) {
 
 ## 5. 原始 hinge angle sensor 的特性与用法
 
-`FoldingFeature` 给出的是离散姿态；要连续的角度变化，就得回到原始 sensor。我们先看它的上报特性，再看三条消费链路。
+`FoldingFeature` 给出的是离散姿态；要获取连续的角度变化，需依赖原始 sensor。下面分别说明其上报特性以及三条并行的消费链路。
 
 ### 5.1 TYPE_HINGE_ANGLE 是 on-change sensor
 
@@ -471,7 +471,7 @@ lifecycleScope.launch(Dispatchers.Main) {
 
 这台传感器属于可选硬件，应用要先检查 `getDefaultSensor(TYPE_HINGE_ANGLE)` 是否返回 null。
 
-on-change 的节奏跟着角度变化走，我们指望不上它提供固定的 60 Hz 或 120 Hz 周期；`SENSOR_DELAY_FASTEST` 只是请求尽快交付，实际节奏仍受 sensor 的 min delay（最小报告间隔）、HAL 去抖和事件变化规律限制。
+on-change 的节奏随角度变化触发，无法提供固定的 60 Hz 或 120 Hz 上报周期；`SENSOR_DELAY_FASTEST` 只是请求尽快交付，实际节奏仍受 sensor 的 min delay（最小报告间隔）、HAL 去抖和事件变化规律限制。
 
 ### 5.2 精确角度动画与设备校准
 
@@ -485,7 +485,7 @@ Android 官方提醒：不同设备的上报范围和精度可能不同，基于
 - 按 UI frame（界面帧） 节奏采样最新值，避免每个 sensor event 都触发全树 `requestLayout()`；
 - 页面停止或不需要动画时及时注销。
 
-“角度回调到屏幕超过两帧即可感知”这类说法没有统一依据；我们按目标刷新率、设备、动画速度和输入到显示的测量结果来定门槛。
+“角度回调到屏幕超过两帧即可感知”这类说法没有统一依据；具体阈值应按目标刷新率、设备、动画速度和输入到显示的实测结果确定。
 
 ### 5.3 三条角度消费链路
 
@@ -500,7 +500,7 @@ Perfetto 中出现 `DeviceStateChanged`，只证明 DeviceState 已提交；原�
 
 ## 6. 应用连续性与布局成本
 
-系统侧的链路走完了，我们回到应用自己：一次折叠会让 Activity 面临重建、重排和状态保留的取舍。
+在系统侧完成显示与窗口状态更新后，应用侧需要处理一次折叠带来的 Activity 重建、界面重排与状态保留的取舍。
 
 ### 6.1 Activity 重建与 ViewModel
 
@@ -592,7 +592,7 @@ SurfaceFlinger FrontEnd 接收 App、WMS 和 Shell 的 layer transaction。Compo
 
 present 调用返回与 fence signal 是不同时间点。HWC 契约中，video-mode 面板的 present fence 在该帧合成结果开始出现的 VSync 触发，command-mode 面板在开始向面板内存传输时触发；虚拟 Display 则在输出 buffer 写入完成、可安全读取时触发。整屏内容完整可见的光学时间点，要另行测量。[源码：`IComposerClient.hal` L690–699]
 
-同一 layer 经 mirror（镜像） 或 projection（投影映射） 出现在两个 Output 时，两次 present 分属两条时间线，我们分别记录。
+同一 layer 经 mirror（镜像） 或 projection（投影映射） 出现在两个 Output 时，两次 present 分属两条时间线，需分别记录。
 
 ### 7.2 展开后的像素成本
 
@@ -604,7 +604,7 @@ present 调用返回与 fence signal 是不同时间点。HWC 契约中，video-
 - buffer 内存占用；
 - HWC scaler（缩放器） 和 overlay 约束。
 
-最终成本还取决于 damage（需要更新的区域）、遮挡、`DEVICE` composition、动态分辨率、buffer format（像素格式）、刷新率和内容复杂度。不同设备的内外屏尺寸差异很大，“内屏固定是外屏 2～3 倍像素”这类经验值只能当参考，我们以实测为准。
+最终成本还取决于 damage（需要更新的区域）、遮挡、`DEVICE` composition、动态分辨率、buffer format（像素格式）、刷新率和内容复杂度。不同设备的内外屏尺寸差异很大，“内屏固定是外屏 2～3 倍像素”这类经验值只能作粗略参考，评估需以实测为准。
 
 ### 7.3 几何、buffer 与 present 三条线索
 
@@ -621,7 +621,7 @@ present 调用返回与 fence signal 是不同时间点。HWC 契约中，video-
 3. SF latch 了该 buffer；
 4. 目标 Display 对应帧的 present fence 已 signal。
 
-buffer 尺寸变了，内容未必完成适配；尺寸没变，内容也可能已经适配。`SurfaceHolder.setFixedSize()` 可以让 Surface 保持固定尺寸，对 SurfaceView 该设置须在其窗口所属线程调用。排查时我们还要核对内容布局和缩放关系，“新尺寸 buffer”只是其中一条线索。[源码：`SurfaceHolder.java` L185–202]
+buffer 尺寸变了，内容未必完成适配；尺寸没变，内容也可能已经适配。`SurfaceHolder.setFixedSize()` 可以让 Surface 保持固定尺寸，对 SurfaceView 该设置须在其窗口所属线程调用。排查时还需核对内容布局和缩放关系，“新尺寸 buffer”只是其中一条线索。[源码：`SurfaceHolder.java` L185–202]
 
 <!-- gracker-diagram: ch02-16-first-adapted-frame-evidence -->
 ![第一帧已适配：内容、latch 与目标 Display present 要对齐](../../assets/diagrams/ch02/ch02-16-first-adapted-frame-evidence.png)
@@ -632,7 +632,7 @@ buffer 尺寸变了，内容未必完成适配；尺寸没变，内容也可能�
 
 ### 8.1 推荐的时间点
 
-量折叠切换的性能，我们先把起点和终点定义清楚。一次 display switch 可以记录：
+量化折叠切换性能时，需先明确起点与终点的定义。一次 display switch 可以记录：
 
 | 时间点 | 含义 | 可用证据 |
 |---|---|---|
@@ -643,7 +643,7 @@ buffer 尺寸变了，内容未必完成适配；尺寸没变，内容也可能�
 | T4 | App 适配后内容的 buffer 被 SF 采纳 | App frame、`BufferTX`、latch |
 | T5 | 目标 Display 对应帧的 present fence signal | DisplayFrame、HWC、present fence |
 
-测量前我们先声明范围：是 T1→T5、T3→T5，还是 T0→光学显示。前两者以目标帧的 fence signal 为软件终点，分别观察系统状态提交后和应用收到窗口信息后的响应；完整物理动作到光学显示的延迟需要外部测量，present 调用返回和 fence signal 都顶替不了这个终点。
+测量前需先界定范围：是 T1→T5、T3→T5，还是 T0→光学显示。前两者以目标帧的 fence signal 为软件终点，分别观察系统状态提交后和应用收到窗口信息后的响应；完整物理动作到光学显示的延迟需要外部测量，present 调用返回和 fence signal 都顶替不了这个终点。
 
 ### 8.2 Perfetto 采集
 
@@ -669,7 +669,7 @@ adb shell perfetto \
 - App Window `BufferTX`、latch 与 FrameTimeline；
 - SurfaceFlinger 每个目标 Display 的 composition 与 present。
 
-系统不保证默认 trace 中包含原始 `android.sensor.hinge_angle` 连续轨道。需要原始角度时，我们应显式加入可控的 App 或 platform instrumentation（埋点与测试插桩）。
+系统不保证默认 trace 中包含原始 `android.sensor.hinge_angle` 连续轨道。需要原始角度时，应显式加入可控的 App 或 platform instrumentation（埋点与测试插桩）。
 
 ### 8.3 功能自动化与性能测试的分工
 
@@ -765,7 +765,7 @@ SF 的 `--display-id` 输出物理 Display ID、HWC display ID 与标识信息�
 - WMS 的 DisplayContent、Task 和窗口边界；
 - SF 侧物理 Display 与 HWC 标识的对应关系、显示设备与合成 Output 配置。
 
-快照没有时间信息，代替不了 Perfetto。我们最好在切换前、异常时、稳定后各保存一份，并用 display ID、physical address（物理地址） 和 layer stack 对齐。
+快照没有时间信息，代替不了 Perfetto。实际排查中宜在切换前、异常时、稳定后各保存一份，并用 display ID、physical address（物理地址） 和 layer stack 对齐。
 
 ## 9. 常见故障模式
 
@@ -817,7 +817,7 @@ Shell 端没有进度回调时，先沿同一个 transition token 与 sync ID �
 - visible layer set 与 transition leash；
 - GPU frequency、busy（频率与忙碌度）、内存带宽和 thermal 状态。
 
-面积、刷新率、合成策略和动画可能同时变化，我们应逐项对照。
+面积、刷新率、合成策略和动画可能同时变化，分析时需逐项对照。
 
 ### 9.5 双屏模式只有一侧更新
 
@@ -887,4 +887,4 @@ Shell 端没有进度回调时，先沿同一个 transition token 与 sync ID �
 4. App 处理新 window bounds、configuration 与 `FoldingFeature`；
 5. SurfaceFlinger 与 HWC 为每个目标 Display 合成并 present。
 
-分析性能时，我们用明确的起止时间对齐这五层；固定帧数或毫秒结论，要在同一设备、状态和刷新率下拿到 trace 与显示证据后才成立。
+分析性能时，需用明确的起止时间对齐这五层；固定帧数或毫秒结论，要在同一设备、状态和刷新率下拿到 trace 与显示证据后才成立。

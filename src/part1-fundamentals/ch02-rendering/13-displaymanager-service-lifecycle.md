@@ -386,7 +386,7 @@ SurfaceFlinger Scheduler / EventThread
 
 这条调用链从 SurfaceFlinger 的事件连接进入 App 进程，最终触发 `Choreographer.doFrame()`。DMS 不在这条逐帧投递路径中。`LocalDisplayAdapter` 也使用 `DisplayEventReceiver`，但它主要订阅 physical hotplug、mode change 和 frame-rate override（帧率覆盖）等 Display 事件，再更新 `DisplayDeviceInfo`。
 
-### 6.3 不要假设每块物理屏有独立硬件 VSync
+### 6.3 物理屏与 VSync 调度基准的共享边界
 
 Android 的 `DisplayEventReceiver.onVsync()` 参数包含 physical display ID，SurfaceFlinger 也按 Display 保存 mode 与 timing（时序）信息；这不等于每块屏都有一条可独立调度的 framework VSync 源。
 
@@ -749,7 +749,7 @@ mode 变化与 App 逐帧生产是两个阶段：前者完成只说明配置层�
 
 | 平台 | 相关边界 | 复核要点 |
 |---|---|---|
-| Android 12（API 31） | 现代 BLAST（以 BLASTBufferQueue 管理应用窗口 buffer 的路径）、DisplayArea、LogicalDisplay 与多 Display 基线已经存在 | 不要把 DMS 当作 Android 17 新服务 |
+| Android 12（API 31） | 现代 BLAST（以 BLASTBufferQueue 管理应用窗口 buffer 的路径）、DisplayArea、LogicalDisplay 与多 Display 基线已经存在 | DMS 并非 Android 17 新引入的服务 |
 | Android 13（API 33） | HWC HAL 转向 AIDL（Android Interface Definition Language，Android 接口定义语言）；DMS 与 SF 的 Display 职责分界保持 | HAL 接口变化不等于 LogicalDisplay 模型重写 |
 | Android 16（API 36） | `DisplayManager` 增加按 event mask 注册 listener 的公开能力与 `EVENT_TYPE_DISPLAY_*` 常量 | App callback 仍是管理事件，不是 present 信号 |
 | version 36.1 | 官方 API 文档标注 `DisplayTopology` 与相关访问入口 | topology 表示可达扩展屏相对位置，不替代 Layout 或 DisplayGroup |

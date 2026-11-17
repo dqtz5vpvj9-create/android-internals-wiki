@@ -29,33 +29,33 @@ consolidated_from:
 
 # 第 2 章：渲染系统
 
-Android 的掉帧、首帧延迟、SurfaceView 错位、视频抖动和刷新率切换，可能发生在渲染链路的不同阶段。应用主线程、HWUI RenderThread、GPU、BufferQueue、SurfaceFlinger、Composer HAL、显示控制器与面板各有独立的时钟、队列和完成信号。定位时要先确定内容经过哪条帧生产与合成路径，再判断延迟发生在哪个时间边界。
+Android 的图形显示跨越应用进程、系统合成服务、硬件抽象层与显示硬件多个层级。从界面状态更新到像素呈现在屏幕上，应用主线程、HWUI RenderThread、GPU、BufferQueue、SurfaceFlinger、Composer HAL、显示控制器与显示面板各有独立的时钟、队列和完成信号。掉帧、首帧延迟、SurfaceView 错位、视频抖动以及刷新率切换异常等问题，都可能发生在其中某一阶段或阶段交接处。因此，定位渲染问题需要先确定内容经过哪条帧生产与合成路径，再沿时间边界判断延迟或阻塞的来源。
 
-本章以 Android 17 / API 37 / `android-17.0.0_r1` 为平台基准，以 `android17-6.18-2026-06_r6` 为内核公共语义基准。GPU、HWC、overlay、带宽、面板和驱动策略包含厂商实现，AOSP（Android Open Source Project）只能证明公共接口与 framework 层行为。
+本章以 Android 17（API 37）的 `android-17.0.0_r1` 为平台基准，以 `android17-6.18-2026-06_r6` 为内核公共语义基准。其中，GPU、HWC、overlay、带宽、面板和驱动策略包含厂商实现，AOSP（Android Open Source Project）仅界定公共接口与 framework 层行为。
 
-先约定几类贯穿全章的对象：HWUI 是 View 体系的硬件加速渲染器，RenderThread 负责组织并提交部分绘制工作；Producer（生产者）取得 GraphicBuffer、写入内容，再通过 BufferQueue 入队，Consumer（消费者）从队列取得缓冲区。SurfaceFlinger 以 layer（合成图层）为单位组织屏幕内容，HWC（Hardware Composer）通过 Composer HAL 选择硬件或 GPU 合成，overlay 指交给显示硬件直接合成的平面。BLAST 用于协调 buffer 与 SurfaceControl transaction 的提交；fence 是表示读写何时完成的同步信号。
+贯穿全章的核心对象包括：HWUI 是 View 体系的硬件加速渲染器，RenderThread 负责组织并提交部分绘制工作；Producer（生产者）获取 GraphicBuffer、写入内容后通过 BufferQueue 入队，Consumer（消费者）则从队列取出缓冲区；SurfaceFlinger 以 layer（合成图层）为单位组织屏幕内容，HWC（Hardware Composer）通过 Composer HAL 选择硬件合成或 GPU 合成，overlay 指交由显示硬件直接合成的平面；BLAST 用于协调 buffer 与 SurfaceControl transaction 的提交；fence 则是标记异步读写何时完成的同步信号。
 
 ## 公共主线
 
-标准硬件加速 App Window 的公共主线是：
+标准硬件加速 App Window 的渲染主线依次经过以下环节：
 
 `VSync 调度 → Choreographer → ViewRootImpl/HWUI → RenderThread/GPU → BLAST → SurfaceFlinger → HWC → Display`
 
-这条主线提供分析基准，不代表所有内容都由 HWUI 生产。SurfaceView、TextureView、Camera、视频、Flutter、OpenGL ES、Vulkan 与游戏引擎会改变 Producer、Surface 数量、layer 拓扑或合成位置。遇到这些类型，应配合 [第 13 章：渲染管线专题](../../part2-performance/ch13-rendering-pipelines/README.md)按实际路径分类。
+这条主线为标准硬件加速窗口提供分析基准；在实际场景中，SurfaceView、TextureView、Camera、视频、Flutter、OpenGL ES、Vulkan 与游戏引擎会改变 Producer、Surface 数量、layer 拓扑或合成位置，遇到这些内容时应配合 [第 13 章：渲染管线专题](../../part2-performance/ch13-rendering-pipelines/README.md) 按实际路径分类分析。
 
 <!-- gracker-diagram: ch02-00-rendering-responsibility-map -->
 ![先确认 Producer 与 Surface，再沿 buffer 和显示信号定位](../../assets/diagrams/ch02/ch02-00-rendering-responsibility-map.png)
 
 图：普通硬件加速窗口从 UI 线程与 HWUI 生产内容，视频、Camera 或游戏可有自己的 Producer。先确认其 Surface 和 Layer 拓扑，再沿提交、采纳、合成和目标 Display 的 present 分段取证；共享 GPU、队列和 fence 会把等待传到上游。
 
-分析一帧时要分开四组时间点：
+分析单帧耗时需要区分四组时间点：
 
 1. App VSync 到 `Choreographer#doFrame()`：应用何时获得垂直同步回调并开始工作；
 2. `syncAndDrawFrame()`、GPU submit（提交命令）与 `queueBuffer()`：Producer 何时提交内容；
 3. SurfaceFlinger transaction、snapshot 与 latch：系统何时更新 layer 状态、形成待合成快照并取得可用 buffer；
 4. HWC validate/present 与 present fence：HWC 何时确认合成方案并提交显示，以及 Android 何时收到显示完成信号。
 
-`queueBuffer()` 返回只说明 buffer 已进入队列，不代表画面已经上屏；present fence 也不包含面板逐行扫描和像素响应时间。
+在解读这些时间点时需注意边界：`queueBuffer()` 返回仅表示 buffer 已进入队列，画面尚未完成合成与上屏；present fence 标志着本次合成越过 Android 可观察的显示边界，并未包含面板逐行扫描和像素响应时间。
 
 ## 内容索引
 

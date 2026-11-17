@@ -65,7 +65,7 @@ related_chapters:
 
 # HDR 显示管线与色彩管理性能
 
-HDR（High Dynamic Range，高动态范围）问题经常被压缩成一句“换成 10-bit，再做 tone mapping（色调映射）”。这句话漏掉了五个相互独立的维度：
+Android 显示管线中的 HDR（High Dynamic Range，高动态范围）与广色域呈现涉及五个相互独立的维度，而非单纯的位深切换或色调映射（tone mapping）：
 
 - **色域**：sRGB、Display P3、BT.2020 描述可表示颜色的范围；
 - **传递函数**：sRGB、PQ（Perceptual Quantizer，感知量化曲线，标准为 ST 2084）、HLG（Hybrid Log-Gamma，混合对数伽马）描述编码值与光之间的关系；
@@ -73,15 +73,15 @@ HDR（High Dynamic Range，高动态范围）问题经常被压缩成一句“�
 - **亮度语义**：SDR（Standard Dynamic Range，标准动态范围）白点、内容峰值、显示峰值和 HDR 与 SDR 的亮度比决定画面能使用多少 headroom（高光余量）；
 - **合成位置**：Producer（内容生产者）、RenderEngine（SurfaceFlinger 的 GPU 合成组件）、HWC（Hardware Composer，硬件合成器）、DPU（Display Processing Unit，显示处理单元）以及面板各自只处理其中一部分。
 
-性能分析必须先确认这五件事，再讨论 GPU 时间、内存带宽和功耗。只看“屏幕支持 HDR”或“Layer 是 `BT2020_PQ`”，既无法推出这一帧使用了硬件 plane（合成平面），也无法推出 tone mapping 没有成本。
+进行性能分析时，需要先确认上述五个维度，再评估 GPU 时间、内存带宽和功耗。仅凭“屏幕支持 HDR”或“Layer 是 `BT2020_PQ`”，既无法推出这一帧使用了硬件 plane（合成平面），也无法推出 tone mapping 没有成本。
 
 本文的平台源码锚点为 `android-17.0.0_r1`。内核只负责 dma-buf 的内存共享与 dma-fence 的同步，不决定 dataspace（像素颜色语义标签）、tone mapping curve（色调映射曲线）或 HWC plane allocation（硬件平面分配）；涉及内核边界时，以 `android17-6.18-2026-06_r6` 为准。Buffer 与 fence 的细节统一见 2.8。
 
 ---
 
-## 一、先把几个对象分清
+## 一、核心对象与语义边界
 
-### 1.1 `ColorSpace`、`Dataspace` 和像素格式不是一回事
+### 1.1 `ColorSpace`、`Dataspace` 与像素格式的职责区分
 
 | 对象 | 所在层次 | 解决的问题 | 不负责什么 |
 |---|---|---|---|
@@ -100,7 +100,7 @@ HDR（High Dynamic Range，高动态范围）问题经常被压缩成一句“�
 Dataspace = Standard | Transfer | Range
 ```
 
-例如，Display P3 使用 P3 原色、sRGB 传递函数和 full range（全范围）；`BT2020_PQ` 使用 BT.2020 原色、ST 2084 传递函数和相应范围。代码里不要用“P3 就是 HDR”或“10-bit 就是 HDR”代替这组语义。
+例如，Display P3 使用 P3 原色、sRGB 传递函数和 full range（全范围）；`BT2020_PQ` 使用 BT.2020 原色、ST 2084 传递函数和相应范围。在代码实现与排查中，“P3 即 HDR”或“10-bit 即 HDR”的简化判断并不成立，三个字段均需单独核对。
 
 ### 1.2 metadata 与像素沿两条通路移动
 
@@ -169,7 +169,7 @@ Android 17 的 `DisplayColorProfile` 从 HWC 能力构造以下信息：
 - PQ 或 HLG Layer 会记录 HDR 候选 dataspace；
 - 同时存在 PQ 与 HLG 时，Android 17 的实现通常选择 PQ；若 PQ 只有 legacy support（旧版兼容支持），或被判定为需要 RenderEngine 合成，则可能退到 Display P3。
 
-这一行为有 `OutputTest` 覆盖；`getBestDataspace()` 内还留着一处写着“混合时使用 HLG”的旧注释，不要照搬。随后 `pickColorProfile()` 根据 HDR 支持、是否强制 client composition（客户端合成）、用户与系统色彩设置和 HWC 能力，得到显示的 `ColorMode`、输出 dataspace 与 `RenderIntent`。
+这一行为有 `OutputTest` 覆盖；`getBestDataspace()` 内还留着一处写着“混合时使用 HLG”的旧注释，该旧注释与当前实现并不一致，分析时不能直接采信。随后 `pickColorProfile()` 根据 HDR 支持、是否强制 client composition（客户端合成）、用户与系统色彩设置和 HWC 能力，得到显示的 `ColorMode`、输出 dataspace 与 `RenderIntent`。
 
 因此，“某个 Layer 是 HDR”和“显示器当前运行在 HDR 输出模式”是两个不同事实。屏幕能力、可见 Layer 集合、强制 SDR 设置、镜像目标和 HWC 模式都会影响结果。
 
@@ -339,12 +339,12 @@ Android 8.0（API 26）为兼容设备提供广色域色彩管理。应用可以
 
 ### 5.3 WCG 不保证窗口一定使用 FP16
 
-官方文档列出的 EGL 广色域 buffer 组合包括 8/8/8/8、10/10/10/2 和 FP16。具体选择由渲染后端、`EGLConfig`、设备能力和系统策略决定。因此：
+官方文档列出的 EGL 广色域 buffer 组合包括 8/8/8/8、10/10/10/2 和 FP16。具体选择由渲染后端、`EGLConfig`、设备能力和系统策略决定。因此，在分析实际路径时需要注意以下边界：
 
-- 不要写成“开启 WCG 就把 Surface 换成 FP16”；
-- 不要用 Activity 的 color mode 推断某个 SurfaceView 的 buffer 格式；
-- 不要把 format 当作 dataspace；
-- 要从实际 buffer、Layer dump（状态转储）和 GPU capture（帧捕获）取证。
+- 开启 WCG 并不代表 Surface 必然切换为 FP16；
+- Activity 的 color mode 无法直接推导某个 SurfaceView 的 buffer 格式；
+- 像素 format（存储格式）不能替代 dataspace（色彩语义）；
+- 实际格式和语义需要从 buffer、Layer dump（状态转储）和 GPU capture（帧捕获）中获取证据。
 
 ### 5.4 Bitmap 转换的成本在哪里
 
@@ -389,7 +389,7 @@ Android 14（API 34）开始支持 Ultra HDR 图片。图片包含：
 
 Android 17 的 RenderEngine 包含 `GainmapFactory`，也能在截图路径生成 SDR rendition（SDR 版本）与 gain map。显示 Ultra HDR 时，目标 headroom 会影响 gain 的应用程度。
 
-官方建议在展示 Ultra HDR 时动态把 Window 切到 `COLOR_MODE_HDR`，离开该内容后恢复默认模式。对图片列表，不要因少量缩略图让整个页面长期处于 HDR：
+官方建议在展示 Ultra HDR 时动态把 Window 切到 `COLOR_MODE_HDR`，离开该内容后恢复默认模式。对图片列表，应避免因少量缩略图让整个页面长期处于 HDR：
 
 - HDR headroom 会改变 SDR UI 与高光的亮度关系；
 - HDR 窗口可能选择更高精度的 buffer；
@@ -430,7 +430,7 @@ Android 17 的 RenderEngine 包含 `GainmapFactory`，也能在截图路径生�
 
 图：SurfaceView 通常让解码 buffer 作为独立 Layer 进入 SF，HWC 可直接获得其 dataspace 和 HDR metadata；TextureView 则先采样到宿主 Window，HDR 支持受限。独立 Layer 提供设备合成机会，实际 DEVICE/CLIENT 仍由整屏条件与保护路径决定。
 
-### 7.2 protected 与 secure 不要混用
+### 7.2 protected 与 secure 的边界
 
 HDR 只描述色彩和亮度。DRM（Digital Rights Management，数字版权管理）视频还可能要求 protected buffer（受保护缓冲区）和 secure display path（安全显示路径）：
 
@@ -578,7 +578,7 @@ val srgb = p3.convert(ColorSpaces.Srgb)
 
 GPU 时间较低并不说明整机成本低。高亮 HDR 内容的主要功耗可能来自 OLED 发光和显示电源；大面积高 APL 内容与少量高光的功耗也不同。
 
-### 10.4 不要跨设备搬用固定功耗表
+### 10.4 功耗数据的设备依赖性与变量控制
 
 显示功耗取决于面板材料、尺寸、亮度曲线、APL、刷新率、温度、环境光策略和厂商校准。缺少测试夹具、内容 hash（内容文件指纹）、亮度计读数和电源测量方法时，测出的功耗值无法指导另一台设备。
 

@@ -66,9 +66,9 @@ Frame pacing（帧节奏控制）要同时约束三件事：应用从哪个节�
 
 > 源码基线：AOSP `android-17.0.0_r1`，内核 `android17-6.18-2026-06_r6`；Swappy 是随 APK 发布的 AGDK（Android Game Development Kit，Android 游戏开发套件）库，锚定 `frameworks/opt/gamesdk` 的 `android-games-sdk-games-frame-pacing-release` 分支提交 `f81f888fe11e`，排查线上应用时先记录实际打包的 Swappy 版本。
 
-## 先分清四个控制量
+## 帧节奏相关的四个核心控制量
 
-动手调帧节奏之前，我们先把四个容易混在一起的控制量分开，它们各自回答不同的问题：
+帧节奏控制涉及四个职责各异的控制量，它们分别回答不同的问题：
 
 | 控制量 | 回答的问题 | 常见接口或证据 |
 |---|---|---|
@@ -86,13 +86,13 @@ Frame pacing（帧节奏控制）要同时约束三件事：应用从哪个节�
 
 ## 帧节奏问题在 trace 中的表现
 
-我们先看数字：90 Hz 的刷新周期约为 11.11 ms，而 60 FPS 内容的目标帧间隔约为 16.67 ms，两者没有整数倍关系。应用如果每次 GPU 工作一结束就 present，显示侧可能让相邻内容帧分别停留一个和两个刷新周期，重负载下间隔的组合还会更杂乱。
+以 90 Hz 显示屏为例，其刷新周期约为 11.11 ms，而 60 FPS 内容的目标帧间隔约为 16.67 ms，两者没有整数倍关系。应用如果每次 GPU 工作一结束就 present，显示侧可能让相邻内容帧分别停留一个和两个刷新周期，重负载下间隔的组合还会更杂乱。
 
 另一类情况是 queue-stuffing：应用持续以最快速度提交，BufferQueue 很快积累多个待显示 buffer。队列满后，渲染线程会在 acquire、swap 或 present 附近受到反压，看起来像是系统自动替应用“限帧”。这时输入已经在更早的逻辑帧采样，多出来的排队会直接增加触控到显示的延迟。
 
-当然，trace 里很长的 wait slice（trace 中的一段等待区间） 未必都要修：它可能是队列堵住后的被动阻塞，也可能是 pacing 主动施加的等待，后者的目的正是阻止队列继续变深。
+trace 里较长的 wait slice（trace 中的一段等待区间）未必都表示异常阻塞：它可能是队列堵住后的被动阻塞，也可能是 pacing 主动施加的等待，后者的目的正是阻止队列继续变深。
 
-诊断时，我们把下面几组信号放在一起比较：
+诊断时，需将下面几组信号放在一起比较：
 
 - 目标 FPS、显示 refresh rate（刷新率） 与相邻 buffer 提交间隔是否相容。
 - `SurfaceView` 轨道中的 buffered frames（排队帧数） 是否长期大于 1，是否周期性顶满后再回落。
@@ -100,11 +100,11 @@ Frame pacing（帧节奏控制）要同时约束三件事：应用从哪个节�
 - 输入采样到 buffer present 的延迟是否随 queue depth（队列深度） 增长。
 - 支持 FrameTimeline 的窗口是否出现 `Buffer Stuffing`、`App Deadline Missed` 或 SurfaceFlinger 侧 jank（卡顿归因）。
 
-单看平均 FPS、一次 `eglSwapBuffers()` 的耗时或一条 `vkQueuePresentKHR()` 的耗时，都无法单独定责：swap/present 里可能混着驱动积累命令后的 flush、等可用 slot、等 fence，也可能就是 pacing 的主动休眠。定责时我们要把 CPU、GPU、BufferQueue 和显示时间放进同一段 trace 对照。
+单看平均 FPS、一次 `eglSwapBuffers()` 的耗时或一条 `vkQueuePresentKHR()` 的耗时，都无法单独定责：swap/present 里可能混着驱动积累命令后的 flush、等可用 slot、等 fence，也可能就是 pacing 的主动休眠。定责时需把 CPU、GPU、BufferQueue 和显示时间放进同一段 trace 对照。
 
 ## Swappy 的真实提交链
 
-我们顺着源码看 Swappy 在一次 swap 前后到底做了什么。`f81f888fe11e` 的 OpenGL 路径由 `SwappyGL::swapInternal()` 组织，fence、presentation time、等待策略和统计分别位于 `SwappyGL.cpp`、`EGL.cpp` 与 `SwappyCommon.cpp`。
+在 `f81f888fe11e` 中，OpenGL 路径由 `SwappyGL::swapInternal()` 组织，fence、presentation time、等待策略和统计分别位于 `SwappyGL.cpp`、`EGL.cpp` 与 `SwappyCommon.cpp`。
 
 下面的伪代码节选只保留调用顺序，错误处理和成员访问已简化。
 
@@ -144,7 +144,7 @@ bool SwappyGL::swapInternal(EGLDisplay display, EGLSurface surface) {
 
 接入 Swappy 时，公开约定只有一条：`SwappyGL_init(JNIEnv*, jobject)` 与 `SwappyVk_initAndGetRefreshCycleDuration(JNIEnv*, jobject, ...)` 都必须接收 JNI env（JNI 调用环境） 和 Activity。内部 `ChoreographerThread` 的选择树是实现细节，源码中的 `vm == nullptr` 分支只描述内部对象如何选择节拍源，不能据此省掉公开入口要求的 Android 上下文。
 
-我们直接看 `ChoreographerThread::createChoreographerThread()` 的选择顺序：
+`ChoreographerThread::createChoreographerThread()` 按以下顺序选择节拍源：
 
 - `vm == nullptr`，或者 `sdkInt >= 24`，优先使用 `NDKChoreographerThread`。源码里 `NDKChoreographerThread::MIN_SDK_VERSION = 24`。
 - `sdkInt < 24` 且 JVM（Java 虚拟机）、Activity 都在，尝试 `JavaChoreographerThread`。
@@ -164,7 +164,7 @@ bool SwappyGL::swapInternal(EGLDisplay display, EGLSurface surface) {
 
 ## Auto 模式与多刷新率按运行状态计算
 
-Auto 模式常被理解成 90 FPS、45 FPS、30 FPS 三档阈值表。我们拿 `SwappyCommon::calculateSwapInterval(frameTime, refreshPeriod)` 的源码对照一下，就会对不上。它的逻辑是：
+Auto 模式并非依据 90 FPS、45 FPS、30 FPS 三档固定阈值表切换档位。`SwappyCommon::calculateSwapInterval(frameTime, refreshPeriod)` 实际按以下逻辑在运行时计算 interval：
 
 - `frameTime < refreshPeriod`，interval 取 1。
 - 否则用 `frameTime / refreshPeriod` 做整数除法。
@@ -201,7 +201,7 @@ int SwappyCommon::calculateSwapInterval(nanoseconds frameTime,
 
 ## OpenGL、Vulkan 与非游戏场景的接入边界
 
-我们先看 OpenGL 的接入骨架，重点在初始化顺序和每帧入口；实际项目还要处理失败、窗口重建和 `SwappyGL_destroy()`。
+下面以 OpenGL 接入骨架说明初始化顺序和每帧入口；实际项目还要处理失败、窗口重建和 `SwappyGL_destroy()`。
 
 ```cpp
 bool swappyReady = SwappyGL_init(env, activity) && SwappyGL_isEnabled();
@@ -262,7 +262,7 @@ VkResult result = SwappyVk_queuePresent(queue, &presentInfo);
 图：创建 VkDevice 前先合并 Swappy 要求的扩展；对象创建后再初始化对应 swapchain，并设置 Window
 与 queue family 信息。每帧由 Swappy 接管 present，重建或退出时先清理库保存的 swapchain/device 状态，避免使用失效对象。
 
-Unity、Unreal 这类引擎的集成方式与默认开关随版本变化，分析时我们记录引擎版本、graphics API、render pipeline（渲染管线） 和 frame-pacing 配置；“引擎支持 Swappy”只是前提，某个 APK 是否启用，要看它的打包配置。
+Unity、Unreal 这类引擎的集成方式与默认开关随版本变化，分析时需记录引擎版本、graphics API、render pipeline（渲染管线） 和 frame-pacing 配置；“引擎支持 Swappy”只是前提，某个 APK 是否启用，要看它的打包配置。
 
 非游戏的 native 渲染器若只需要 VSync 驱动，直接用 `AChoreographer` 就够；Java 渲染循环则可以用 `Choreographer.FrameCallback`。下面的例子演示 callback 每次执行后把自己重新注册一次：
 
@@ -284,7 +284,7 @@ choreographer.postFrameCallback(callback);
 
 ## Android 17 的 Vulkan present timing
 
-Android 17/API 37 新增了 `VK_EXT_present_timing` 平台支持。对自研 Vulkan pacing 来说，这多了一套标准接口：我们可以查询 swapchain 支持的 time domain（时钟域），为 present 请求指定目标时间，并读取 `QUEUE_OPERATIONS_END`、`REQUEST_DEQUEUED`、`IMAGE_FIRST_PIXEL_OUT`、`IMAGE_FIRST_PIXEL_VISIBLE` 等 present 阶段的反馈。
+Android 17/API 37 新增了 `VK_EXT_present_timing` 平台支持。对自研 Vulkan pacing 来说，这提供了一套标准接口：可以查询 swapchain 支持的 time domain（时钟域），为 present 请求指定目标时间，并读取 `QUEUE_OPERATIONS_END`、`REQUEST_DEQUEUED`、`IMAGE_FIRST_PIXEL_OUT`、`IMAGE_FIRST_PIXEL_VISIBLE` 等 present 阶段的反馈。
 
 在 `swapchain.cpp` 的映射里，前两项分别对应 render-complete timestamp（渲染完成时间） 与 composition-latch timestamp（合成锁存时间）；后两项目前都落在同一个 actual-present timestamp（实际显示时间） 上，两者之差也就给不出 scan-out（扫描输出）时长。该扩展与较早的 `VK_GOOGLE_display_timing` 解决相近问题，但接口更标准，反馈阶段也更细。
 
@@ -303,7 +303,7 @@ AOSP 的 `VP_ANDROID_17_requirements.json` 把 `VK_EXT_present_timing`、`VK_KHR
 
 所以应用仍要自己执行 `vkEnumerateDeviceExtensionProperties()`，并通过 `VkPhysicalDevicePresentTimingFeaturesEXT`、`VkPhysicalDevicePresentId2FeaturesKHR` 等 feature 结构查询、启用所需能力；创建 swapchain 时还要设置 `VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT`。查询 past presentation timing（历史显示时序）之前，还要先用 `vkSetSwapchainPresentTimingQueueSizeEXT()` 配置反馈队列。
 
-Android 17 的实现目前只公布 absolute scheduling（绝对时间调度），还不支持 relative scheduling（相对时间调度）；`vkGetSwapchainTimeDomainPropertiesEXT()` 返回 `VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT`。要与 CPU 时钟关联，按规范经 calibrated timestamp 机制转换即可，不要把接口时间域直接写死成 `CLOCK_MONOTONIC`。
+Android 17 的实现目前只公布 absolute scheduling（绝对时间调度），还不支持 relative scheduling（相对时间调度）；`vkGetSwapchainTimeDomainPropertiesEXT()` 返回 `VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT`。与 CPU 时钟关联时，应按规范经 calibrated timestamp 机制转换，避免把接口时间域直接写死成 `CLOCK_MONOTONIC`。
 
 `targetTime = 0` 时，Android Vulkan WSI（Window System Integration，窗口系统集成层）不会设置 requested-present timestamp（请求显示时间）；非零目标会传入 native window。`BufferQueueConsumer::acquireBuffer()` 只在目标位于合理的未来窗口时返回 `PRESENT_LATER`，表示当前还不到取得该 buffer 的时刻；目标若比本轮 `expectedPresent` 晚超过 1 秒，系统会按安全规则立即处理，免得异常时间戳长期占住队列。
 
@@ -325,7 +325,7 @@ Android 17/API 37 还新增了 `Surface.setProducerThrottlingEnabled()` 和对�
 
 ## 验证路径：SurfaceView、Perfetto、FrameStatistics 三条线一起看
 
-验证前先把条件钉死：场景、目标 FPS、显示 refresh rate、分辨率、画质、温度和输入脚本都固定，再分别抓取 Swappy 开启与关闭时的 trace。两个样本若来自不同时间段，热降频、场景差异或刷新率切换都可能被误判成 pacing 收益。
+验证前需先固定测试条件：场景、目标 FPS、显示 refresh rate、分辨率、画质、温度和输入脚本都固定，再分别抓取 Swappy 开启与关闭时的 trace。两个样本若来自不同时间段，热降频、场景差异或刷新率切换都可能被误判成 pacing 收益。
 
 ### SurfaceView 与队列深度
 
@@ -350,7 +350,7 @@ python systrace.py -a your-app-package-name -o mygametrace.html \
 
 FrameTimeline 要求 Android 12/API 31 及以上。`Expected Timeline` 是 scheduler 给这一帧的时间预算；`Actual Timeline` 从 `Choreographer#doFrame` 或 `AChoreographer_vsyncCallback` 开始，到 `max(GPU complete, buffer post)` 结束。读数时留意：后者的 `ts` 只标记这段实际时间线的起点，与物理屏幕的 present timestamp 是两回事，相邻 `actual.ts` 不能直接当作相邻上屏时间。
 
-我们在 Perfetto UI 里按以下顺序展开：
+在 Perfetto UI 中可按以下顺序展开相关轨道：
 
 - 应用进程的 Choreographer/AChoreographer callback 与 render-thread marker（渲染线程标记）；
 - `Expected Timeline` 和 `Actual Timeline`；
@@ -407,7 +407,7 @@ I/FrameStatistics: offset from previous frame: <bucket histogram>
 I/FrameStatistics: frame latency: <bucket histogram>
 ```
 
-读数时：`idleFrames` 上升，通常是 buffer 在合成器队列里多等了刷新周期；`lateFrames` 上升，说明目标 presentation time 与完成时刻错位；`latencyFrames` 增大，说明从 CPU 工作开始到 present 的在途周期变多。我们把这些直方图与 queue depth、GPU fence 和输入延迟放在同一测试窗口内比较，才能判断主动等待是在维持稳定节拍，还是目标 interval 配置不当。
+读数时：`idleFrames` 上升，通常是 buffer 在合成器队列里多等了刷新周期；`lateFrames` 上升，说明目标 presentation time 与完成时刻错位；`latencyFrames` 增大，说明从 CPU 工作开始到 present 的在途周期变多。需将这些直方图与 queue depth、GPU fence 和输入延迟放在同一测试窗口内比较，才能判断主动等待是在维持稳定节拍，还是目标 interval 配置不当。
 
 ## 帧率投票、ARR 与版本边界
 
@@ -415,7 +415,7 @@ ARR（Adaptive Refresh Rate，自适应刷新率）允许显示刷新率随内�
 
 Pacing 决定每一帧落在哪个显示周期，frame-rate vote 帮助系统选择适合内容的 refresh rate，两件事要配合起来。只投票而不控制提交时刻，短帧和长帧仍可能交替；只控制提交却不声明内容率，120 Hz 屏幕也可能为 60 FPS 内容做不必要的刷新。
 
-同一个 `ANativeWindow` 上，应用不要让 Swappy 和业务代码同时持续调用 `Surface.setFrameRate()` 与 `ANativeWindow_setFrameRate()`：它们更新的是同一 Surface 的当前 vote，后续写入会改变先前设置，容易造成 mode 选择与 pacing 目标来回变化。系统如何综合多个 layer 的 vote 见 §2.2。
+同一个 `ANativeWindow` 上，应用应避免让 Swappy 和业务代码同时持续调用 `Surface.setFrameRate()` 与 `ANativeWindow_setFrameRate()`：它们更新的是同一 Surface 的当前 vote，后续写入会改变先前设置，容易造成 mode 选择与 pacing 目标来回变化。系统如何综合多个 layer 的 vote 见 §2.2。
 
 | 平台版本 | 与帧节拍直接相关的变化 |
 |---|---|
@@ -427,9 +427,9 @@ Pacing 决定每一帧落在哪个显示周期，frame-rate vote 帮助系统选
 | Android 15/API 35 | 支持设备引入 Adaptive Refresh Rate，刷新率选择更依赖平台策略 |
 | Android 17/API 37 | 平台增加 `VK_EXT_present_timing` 与 producer-throttling 控制；现有 Swappy release 实现仍需按自身版本确认底层扩展 |
 
-常见误判可以按下表排除：
+在排查帧节奏问题时，单一现象往往不足以直接定论，需结合补充证据完成归因：
 
-| 现象或做法 | 为什么证据不足 | 继续检查 |
+| 现象或做法 | 独立证据不足的原因 | 需补充核查的证据 |
 |---|---|---|
 | 用 `Thread.sleep()` 达到目标 FPS | sleep 不知道 VSync 相位、队列深度和 GPU 完成状态 | Choreographer、present target、fence、queue depth |
 | Vulkan 使用 `VK_PRESENT_MODE_FIFO_KHR` | FIFO（先进先出）保证队列顺序与 VBlank（垂直消隐期）语义，不提供完整的 Android pacing 反馈 | display timing、present interval、在途帧 |

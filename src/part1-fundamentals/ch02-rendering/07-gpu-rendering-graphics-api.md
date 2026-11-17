@@ -157,22 +157,21 @@ consolidated_from:
 
 # GPU 渲染与图形 API 选型
 
-“主线程不忙，所以 GPU 慢”——这句话把好几个互不相同的完成时刻混在了一起。需要区分五个时刻：UI 线程结束、RenderThread 提交命令、GPU completion（GPU 完成这批工作）、buffer queue（窗口 buffer 入队）、present（把显示帧提交给显示设备）。它们前后依赖、各管一段：buffer 可以先入队，再由 fence 表示 GPU 何时写完。任一关键阶段迟到，都可能让画面错过目标周期。
+Android 的图形渲染需要跨越多个异步衔接的执行阶段，一帧画面从产生到上屏需经过五个关键时刻：UI 线程结束、RenderThread 提交命令、GPU completion（GPU 完成该批工作）、buffer queue（窗口 buffer 入队）以及 present（将显示帧提交给显示设备）。这些阶段前后依赖、各自承担不同职责——buffer 可以先入队，再通过 fence 标记 GPU 的实际写入完成时刻；任一关键阶段延迟，都可能导致画面错过目标显示周期。
 
-我们先约定贯穿全文的三个对象：Producer 生成并提交 buffer，Consumer 取得并使用它，fence（异步工作完成凭证） 表示异步读写何时完成。
+贯穿本节的三类基础对象为：Producer 生成并提交 buffer，Consumer 取得并使用它，fence（异步工作完成凭证）表示异步读写何时完成。
 
-接着是三个渲染组件：HWUI 是 View/Compose 的硬件加速管线，RenderEngine 是 SurfaceFlinger 用 GPU 合成 CLIENT Layer 的组件，HWC（Hardware Composer，硬件合成器） 通过 display plane（显示控制器可独立处理的图层通道） 处理 DEVICE Layer，或接收 RenderEngine 生成的 client target。本文会分别标明“App GPU 工作”“SurfaceFlinger GPU 工作”和“不一定经过通用 GPU 的显示硬件工作”。
+对应的三个核心渲染组件为：HWUI 是 View/Compose 的硬件加速管线，RenderEngine 是 SurfaceFlinger 用 GPU 合成 CLIENT Layer 的组件，HWC（Hardware Composer，硬件合成器）通过 display plane（显示控制器可独立处理的图层通道）处理 DEVICE Layer，或接收 RenderEngine 生成的 client target。分析 GPU 负载时，需明确区分“App GPU 工作”“SurfaceFlinger GPU 工作”以及“不一定经过通用 GPU 的显示硬件工作”。
 
 > 源码基线：Android 17 / API 37，AOSP `android-17.0.0_r1`。
 
-本文覆盖三类内容：
+本节主要覆盖三类内容生产与合成路径：
 
 - View/Compose 经过 HWUI 与 Skia 生成 App Window buffer；
 - 原生图形应用或游戏通过 GLES/Vulkan 自己生产 Surface buffer；
 - SurfaceFlinger 必要时用 RenderEngine 做 CLIENT composition。
 
-它们可以共享同一块 GPU，也会竞争内存带宽，但线程、Surface、fence 和工具入口并不相同。
-GPU 性能取决于工作负载、提交方式、同步和带宽；图形 API 只决定应用怎样表达这些工作。选型前我们先把渲染内容、设备覆盖和工具能力确认清楚，再来比较 OpenGL ES、Vulkan 与 ANGLE 的工程成本。
+这些路径可以共享同一块 GPU 并竞争内存带宽，但各自的线程模型、Surface、fence 和性能工具入口并不相同。GPU 性能取决于工作负载、提交方式、同步机制与内存带宽，图形 API 则决定应用如何组织和表达这些工作。进行 API 选型前，需先明确渲染内容、设备能力覆盖与观测工具边界，再对比 OpenGL ES、Vulkan、ANGLE 与 WebGPU 的架构差异与工程成本。
 
 ## GPU 管线、瓶颈与测量
 
@@ -188,7 +187,7 @@ GPU 性能取决于工作负载、提交方式、同步和带宽；图形 API �
 | SurfaceFlinger CLIENT composition | RenderEngine | SurfaceFlinger 进程的 GPU 工作 | client target 交给 HWC |
 | HWC DEVICE composition | Composer/display hardware | 不一定使用通用 GPU | 独立 Layer 由硬件平面合成 |
 
-看到 GPU busy（GPU 处于工作状态的时间比例） 升高时，我们第一步先弄清这份 workload（提交给 GPU 的工作负载） 属于谁：App、另一个进程，还是 SurfaceFlinger。页面里只要有 `SurfaceView`、`TextureView`、游戏引擎或视频，宿主 `RenderThread` 就代表不了全部内容，表中每行给出的 Producer 才是归属线索。
+观察到 GPU busy（GPU 处于工作状态的时间比例）升高时，第一步需明确这份 workload（提交给 GPU 的工作负载）的归属：App、另一个进程，还是 SurfaceFlinger。页面包含 `SurfaceView`、`TextureView`、游戏引擎或视频时，宿主 `RenderThread` 无法代表全部内容，表中每行给出的 Producer 才是归属线索。
 
 表中的 child Surface 挂在宿主窗口层级之下，拥有独立的 buffer 提交路径，但仍由 SurfaceFlinger 与宿主窗口一起组织显示。
 
@@ -214,14 +213,14 @@ CPU record / submit
 
 顺着这条管线往下读：vertex processing 先变换顶点，primitive assembly 把顶点组成三角形等图元，clipping 在裁剪坐标中按 clip volume（裁剪体）裁剪图元；rasterization 再把图元转换成片元候选，fragment（等待着色与测试的片元候选）shading 计算颜色或采样纹理。到了输出端，depth/stencil tests 决定哪些结果可写入，blending 把它们与目标中已有颜色混合，最终接收颜色结果的图像就是 color attachment（颜色附件），深度和模板数据使用各自的附件。图中的顺序用于解释职责，深度或模板测试也可能提前执行。
 
-这些策略名词后文会反复出现，我们先把 Skia 侧的几个解释放在这里：analytic shader 用数学表达式直接计算覆盖率；实例化几何复用同一份几何描述绘制多个对象；tessellation 把曲线等复杂形状细分为 GPU 可处理的图元；纹理 quad 是采样一张纹理所用的矩形；离屏 pass 先把结果画到中间目标。backend 指 Skia 连接 OpenGL/Vulkan 与驱动的后端实现，GPU capability 则是设备实际支持的功能与限制。
+Skia 侧涉及的关键策略概念如下：analytic shader 用数学表达式直接计算覆盖率；实例化几何复用同一份几何描述绘制多个对象；tessellation 把曲线等复杂形状细分为 GPU 可处理的图元；纹理 quad 是采样一张纹理所用的矩形；离屏 pass 先把结果画到中间目标。backend 指 Skia 连接 OpenGL/Vulkan 与驱动的后端实现，GPU capability 则是设备实际支持的功能与限制。
 
 <!-- gracker-diagram: ch02-07-gpu-stage-model -->
 ![概念图形管线：从命令到颜色附件](../../assets/diagrams/ch02/ch02-07-gpu-stage-model.png)
 
 图：图是传统图形管线的职责模型，实际测试可以提前，Skia 也会按后端和能力选择不同策略。Fragment Shader 与固定功能混合不是同一个阶段；一个 Canvas draw 操作也不对应固定数量的顶点或 GPU 命令。
 
-还要拆掉一个常见误会：`View.invalidate()` 并不会立即启动 GPU。它只是标记内容需要更新，并安排一次 traversal（测量、布局、绘制等 View 树遍历工作）；UI 线程在帧回调中记录或更新 RenderNode，随后由 RenderThread 同步状态、准备 GPU 工作并提交窗口 buffer。RenderNode 是 HWUI 保存绘制指令与合成属性的节点。
+在调度时机上，`View.invalidate()` 仅标记内容需要更新并安排一次 traversal（测量、布局、绘制等 View 树遍历工作），并不会立即启动 GPU；UI 线程在帧回调中记录或更新 RenderNode，随后由 RenderThread 同步状态、准备 GPU 工作并提交窗口 buffer。RenderNode 是 HWUI 保存绘制指令与合成属性的节点。
 
 #### Vertex Shader 与几何阶段
 
@@ -237,7 +236,7 @@ Vertex Shader 对每个输入顶点执行位置变换，并输出后续插值所
 - 可见性裁剪和 LOD（按观察距离选择不同几何精度） 不充分；
 - vertex buffer 访问与 cache miss（缓存未命中）。
 
-标准 View 页面出现纯 vertex bound 的概率通常低于游戏；要确认，我们还是得看目标设备 counter（硬件性能计数器） 或帧分析，按 UI 元素数量猜是猜不出来的。
+标准 View 页面出现纯 vertex bound 的概率通常低于游戏；确认是否受限于几何阶段，仍需依靠目标设备 counter（硬件性能计数器）或帧分析工具，不能仅凭 UI 元素数量估算。
 
 #### Fragment Shader、测试与混合
 
@@ -257,7 +256,7 @@ alpha blending 通常由固定功能混合阶段按 pipeline（着色器与固�
 
 #### Framebuffer、render target 与 Android GraphicBuffer
 
-“Framebuffer”在不同 API 里指的东西并不一样，我们先把它在各处的含义分开列出来，再谈 Android 的 buffer 交付：
+“Framebuffer”在不同 API 中指向不同对象，在分析 Android 的 buffer 交付前需先区分其各自含义：
 
 - GLES framebuffer 是一组 attachment 的绑定状态；
 - Vulkan framebuffer 与传统 render pass 绑定 attachment；使用 dynamic rendering（在命令中直接声明渲染附件） 时也可以不创建 `VkFramebuffer` 对象；
@@ -274,7 +273,7 @@ App Window buffer 可以作为 GPU color attachment。App 提交 GPU 工作后�
 
 ### Shader Compilation Jank 与 pipeline 创建
 
-首次用上某个效果时卡一下，是这类问题的典型场景。我们把背后的准备链路拆开看。
+首次触发特定视觉效果时的短时卡顿，通常与着色器编译或管线创建相关。
 
 #### 从源码到 GPU 可执行状态
 
@@ -282,14 +281,14 @@ App Window buffer 可以作为 GPU color attachment。App 提交 GPU 工作后�
 
 1. 解析或编译 GLSL、SkSL、AGSL 等着色语言——GLSL 面向 OpenGL，SkSL 是 Skia 的着色语言，AGSL 是 Android Graphics Shading Language；
 2. 生成中间表示，例如 Vulkan 使用的 SPIR-V 字节码；
-3. link program（把多个 shader 阶段链接成可用程序） 或组合 pipeline state；
+3. link program（把多个 shader 阶段链接成可用程序）或组合 pipeline state；
 4. 驱动针对具体 GPU 生成机器码；
 5. 创建 pipeline、descriptor layout（描述 shader 如何访问 buffer、纹理等资源的布局）或其他关联对象；
 6. 把结果放入进程内或磁盘缓存。
 
-这些步骤落在哪一层，各 API 不一样。GLES 的 `glCompileShader()` / `glLinkProgram()` 可以触发编译与链接；Vulkan 使用 SPIR-V，仍可能在 `vkCreateGraphicsPipelines()`、首次使用 pipeline 或驱动内部阶段完成面向具体硬件的编译。SPIR-V 能把一部分工作提前完成，pipeline compilation jank（创建或编译 pipeline 导致的卡顿） 仍在。
+这些步骤落在哪一层，各 API 不一样。GLES 的 `glCompileShader()` / `glLinkProgram()` 可以触发编译与链接；Vulkan 使用 SPIR-V，仍可能在 `vkCreateGraphicsPipelines()`、首次使用 pipeline 或驱动内部阶段完成面向具体硬件的编译。SPIR-V 能把一部分工作提前完成，pipeline compilation jank（创建或编译 pipeline 导致的卡顿）仍在。
 
-卡顿究竟卡在哪一处——CPU 线程等待编译、驱动 worker（驱动内部工作线程）、RenderThread、RHI thread（游戏引擎封装图形 API 的渲染硬件接口线程），还是 GPU pipeline 切换——由 backend 和驱动决定。把它简单解释成“GPU 第一次看到 shader 后阻塞”，多半会归因错位置。
+卡顿究竟卡在哪一处——CPU 线程等待编译、驱动 worker（驱动内部工作线程）、RenderThread、RHI thread（游戏引擎封装图形 API 的渲染硬件接口线程），还是 GPU pipeline 切换——由 backend 和驱动决定，因此将其简单归因为“GPU 首次遇到 shader 时阻塞”往往会偏离实际瓶颈线程。
 
 #### HWUI 的持久缓存
 
@@ -312,7 +311,7 @@ App Window buffer 可以作为 GPU color attachment。App 提交 GPU 工作后�
 
 #### 怎样确认是 compilation/pipeline jank
 
-要确认这类卡顿，我们建议做冷/热两组采集：冷路径从没有可复用缓存或初始化状态开始，热路径则在同一进程已使用过该效果后再次执行。
+要确认这类卡顿，建议设计冷、热两组对照采集：冷路径从没有可复用缓存或初始化状态开始，热路径则在同一进程已使用过该效果后再次执行。
 
 1. 清理或使用新安装状态，首次进入目标效果；
 2. 保持同一进程，再次进入同一效果；
@@ -352,7 +351,7 @@ App Window buffer 可以作为 GPU color attachment。App 提交 GPU 工作后�
 | pipeline | program 与驱动状态组合 | pipeline creation 更显式，也更需要缓存 |
 | 工程复杂度 | 接入较简单 | 生命周期、同步和兼容判断更复杂 |
 
-从表中差异出发就能理解两边的性能来源。Vulkan 可以降低 CPU driver overhead（驱动在 CPU 侧附加的管理开销），并让成熟引擎更好地并行记录命令；它也允许应用制造昂贵的 barrier、频繁 allocation、pipeline miss 和过多 in-flight work（已提交但尚未完成的工作）。GLES 驱动在简单场景中可能足够快，“同一 draw call 固定快十倍”这类跨设备结论并不存在。
+从表中差异出发即可理解两者的性能来源。Vulkan 可以降低 CPU driver overhead（驱动在 CPU 侧附加的管理开销），并让成熟引擎更好地并行记录命令；但它也允许应用制造昂贵的 barrier、频繁 allocation、pipeline miss 和过多 in-flight work（已提交但尚未完成的工作）。GLES 驱动在简单场景中同样可能足够快，因此并不存在“同一 draw call 固定快若干倍”的跨设备规律。
 
 #### Vulkan 与 Android 窗口的连接
 
@@ -384,15 +383,15 @@ ANGLE 的结果有两面：
 - 统一 backend 有助于兼容性和驱动一致性；
 - 状态翻译、pipeline 变体和缓存 miss 也会产生 CPU/内存成本。
 
-Android 15 起 ANGLE 是可选 GLES-on-Vulkan 层；Android 17 的 `com.android.graphics.driver.prefer_angle` manifest metadata（应用清单中的元数据） 只表达偏好，平台侧用不上 ANGLE 时会回到 vendor GLES driver。比较性能前，我们应记录 EGL vendor/renderer、实际 driver、ANGLE 版本，并使用相同 workload（实际命令和资源负载）。
+Android 15 起 ANGLE 是可选 GLES-on-Vulkan 层；Android 17 的 `com.android.graphics.driver.prefer_angle` manifest metadata（应用清单中的元数据）只表达偏好，平台侧用不上 ANGLE 时会回到 vendor GLES driver。比较性能前，应记录 EGL vendor/renderer、实际 driver、ANGLE 版本，并使用相同 workload（实际命令和资源负载）。
 
-还有一个容易踩的坑：HWUI 目录中没有 Graphite pipeline，Graphite 是 Skia 正在发展的新一代 GPU 后端；ANGLE 的开发分支和 `android-17.0.0_r1` 平台行为也要分开看。网上流传的 PSO（Pipeline State Object，管线状态对象） 缓存层级、固定节流时长等说法，映射不到该平台标签时，就解释不了当前版本。
+此外还需注意两项实现边界：HWUI 目录中没有 Graphite pipeline，Graphite 是 Skia 正在发展的新一代 GPU 后端；ANGLE 的开发分支与 `android-17.0.0_r1` 平台行为也应分开看待，外部资料中流传的 PSO（Pipeline State Object，管线状态对象）缓存层级、固定节流时长等描述若无法映射到该平台标签，便不能直接套用于当前版本。
 
 ### GPU 瓶颈分类
 
-GPU 慢帧常被分为 vertex/geometry bound、fragment/fill bound 和 bandwidth bound 三类；做工程分析时，我们还要把 CPU submission、同步/back-pressure（下游释放不及时造成的反压）、频率/温控和 SurfaceFlinger composition 一并纳入。
+GPU 慢帧常被分为 vertex/geometry bound、fragment/fill bound 和 bandwidth bound 三类；做工程分析时，还需将 CPU submission、同步/back-pressure（下游释放不及时造成的反压）、频率/温控和 SurfaceFlinger composition 一并纳入。
 
-bound 的意思是帧时间主要受某类资源限制：vertex/geometry 看几何处理，fragment/fill 看像素覆盖与片元着色，bandwidth 看内存传输，CPU/driver 看命令准备与提交。要验证一帧 bound 在哪一类，我们用 A/B 实验——保持其他条件一致、只改变一个变量；直接依据再由硬件 counter 与 Trace 提供。
+bound 表示帧时间主要受某类资源限制：vertex/geometry 看几何处理，fragment/fill 看像素覆盖与片元着色，bandwidth 看内存传输，CPU/driver 看命令准备与提交。验证瓶颈归属通常采用受控 A/B 实验——保持其他条件一致、只改变一个变量，再结合硬件 counter 与 Trace 获取直接依据。
 
 | 类别 | 常见现象 | 有区分力的 A/B 实验 | 需要的直接证据 |
 | --- | --- | --- | --- |
@@ -404,7 +403,7 @@ bound 的意思是帧时间主要受某类资源限制：vertex/geometry 看几�
 | SF client composition | App buffer ready，SF GPU 工作增加 | 比较 DEVICE/CLIENT composition | layer composition type、RenderEngine、HWC |
 | Thermal / power bound | 运行一段时间后频率下降 | 固定温度/电源条件做短长对照 | GPU frequency、thermal、power rail（芯片供电轨的功耗数据） |
 
-另外，跨 GPU 通用的“Fragment Shader 超过 60% 就是 fill bound”阈值并不存在；counter 名称、单位与统计范围由 GPU producer/driver 在 descriptor（数据源对计数器字段的描述）中声明。
+跨 GPU 通用的“Fragment Shader 超过 60% 即为 fill bound”阈值并不存在；counter 名称、单位与统计范围由 GPU producer/driver 在 descriptor（数据源对计数器字段的描述）中声明。同样，GPU busy 较高也未必代表异常：若在按 deadline 稳定完成的前提下保持高利用率，可能是有效负载的正常表现，是否构成问题还需结合 deadline、功耗、温度、画质目标以及系统或其他进程的 GPU 占用综合评估。
 
 <!-- gracker-diagram: ch02-07-bottleneck-ab -->
 ![单因素实验缩小 GPU 瓶颈范围，counter 再验证](../../assets/diagrams/ch02/ch02-07-bottleneck-ab.png)
@@ -413,7 +412,7 @@ bound 的意思是帧时间主要受某类资源限制：vertex/geometry 看几�
 
 #### Fillrate bound
 
-fillrate（单位时间内生成并写出像素或片元结果的能力） 问题与 samples、shader、blend、overdraw 和 render-target 格式有关。对 native game Surface，我们可以降低 render scale（内部渲染分辨率比例） 做试探：如果 GPU 时间随像素数明显下降，说明 fragment 或带宽压力值得继续查。标准 View 页面没有通用的独立 render-scale 开关。
+fillrate（单位时间内生成并写出像素或片元结果的能力）问题与 samples、shader、blend、overdraw 和 render-target 格式有关。对 native game Surface，可降低 render scale（内部渲染分辨率比例）做试探：如果 GPU 时间随像素数明显下降，说明 fragment 或带宽压力值得继续查。标准 View 页面没有通用的独立 render-scale 开关。
 
 Debug GPU Overdraw（开发者选项中的“调试 GPU 过度绘制”） 只能定位 HWUI App Window 的逻辑重复绘制，而且它会额外重放一遍内容——开启状态下测不了性能，也覆盖不到独立 `SurfaceView` 或最终 HWC composition。颜色含义与完整流程见 [2.5 过度绘制](05-overdraw.md)。
 
@@ -428,7 +427,7 @@ Debug GPU Overdraw（开发者选项中的“调试 GPU 过度绘制”） 只�
 
 #### Vertex bound
 
-应先确认 GPU 的 vertex/primitive counter 与几何复杂度相关。复杂 Path 在 HWUI 中可能走 CPU tessellation、mask/coverage（像素覆盖遮罩） 或缓存——Path 多就归为 vertex bound，这个结论下早了。
+应先确认 GPU 的 vertex/primitive counter 与几何复杂度相关。复杂 Path 在 HWUI 中可能走 CPU tessellation、mask/coverage（像素覆盖遮罩）或缓存，因此仅凭 Path 数量多并不能直接归为 vertex bound。
 
 原生 engine 可尝试：
 
@@ -453,7 +452,7 @@ GPU busy 高而 shader 阶段利用率不高，只能作为线索；下一步应
 
 ### ASTC、ETC2 与普通 Android Bitmap 的边界
 
-先把作用范围说清：ASTC（Adaptive Scalable Texture Compression）与 ETC2（Ericsson Texture Compression 2）是 GPU 可直接采样的 texture 压缩格式，主要服务 GLES/Vulkan 游戏资源。它们和 JPEG/PNG 文件压缩是两回事，也不会自动改变普通 `Bitmap`、App Window `GraphicBuffer` 或 SurfaceFlinger client target 的格式。
+就适用范围而言，ASTC（Adaptive Scalable Texture Compression）与 ETC2（Ericsson Texture Compression 2）是 GPU 可直接采样的 texture 压缩格式，主要服务 GLES/Vulkan 游戏资源。它们与 JPEG/PNG 文件压缩属于不同层面，也不会自动改变普通 `Bitmap`、App Window `GraphicBuffer` 或 SurfaceFlinger client target 的格式。
 
 | 格式 | 能力边界 | 使用建议 |
 | --- | --- | --- |
@@ -487,7 +486,7 @@ Adreno、Mali、PowerVR 或其他 GPU 的 tile 大小、压缩、early test（�
 
 ### GPU 内存：对象、分配与共享
 
-带宽和容量问题最终都要落到具体的对象上。我们先看一张 buffer 从应用走到 kernel 要经过哪些包装。
+带宽和容量问题最终都需要落到具体内存对象上，这首先需要理清 buffer 从应用层传递至内核层所经历的包装与映射链条。
 
 #### GPU buffer 的对象链
 
@@ -522,7 +521,7 @@ Bitmap.Config.HARDWARE / HardwareBuffer / Surface / ANativeWindow
 - cache 属性；
 - protected 或设备专用 heap（特定用途的内存分配池）。
 
-`width × height × bytesPerPixel` 只能估算简单线性格式。应用不要依赖未公开的物理布局。
+`width × height × bytesPerPixel` 只能估算简单线性格式，应用不应依赖未公开的物理布局。
 
 #### BufferQueue slot 与实际 allocation
 
@@ -551,7 +550,7 @@ kernel 源码锚点 `android17-6.18-2026-06_r6` 包含以下相关文件：
 
 ### GPU 内存怎样追踪
 
-想找一个代表“应用独占 GPU 内存”的单一数字是找不到的：同一 dma-buf 可被 App、SurfaceFlinger、codec 和 HWC 导入，简单相加会重复计数。
+由于同一 dma-buf 可被 App、SurfaceFlinger、codec 和 HWC 共同导入，简单相加会造成重复计数，因此不存在代表“应用独占 GPU 内存”的单一数值。图形 buffer 通过 dma-buf 跨进程和设备共享，而 RSS（进程映射的驻留页总量）、PSS（共享页按比例分摊后的驻留量）、`gpu_mem`、dumpsys 与 driver 的统计口径各不相同，因此内存归属需结合 exporter（创建并导出 dma-buf 的组件）、importer（导入该对象的组件）与引用生命周期一并判断。
 
 #### Perfetto
 
@@ -613,7 +612,7 @@ executor.execute(() -> {
 
 ### Profiling 工具怎样分工
 
-GPU 排查要用到好几类工具，它们各看一层证据。我们先把系统级工具和帧级工具的分工摆清楚。
+GPU 性能排查涉及系统级与帧级多类工具，各自负责不同粒度的证据层次。
 
 #### Perfetto：定位系统责任边界
 
@@ -625,11 +624,11 @@ Perfetto 适合把以下时间放在同一时钟域，也就是用可直接对�
 - SurfaceFlinger、RenderEngine、HWC 与 display present；
 - CPU scheduling、thermal、memory 和 I/O。
 
-FrameTimeline 需要 Android 12 及以上，官方文档仍列有 SurfaceView 支持限制。先确认目标 Layer 是否上报了可关联的帧事件；有数据时，选中目标 `SurfaceFrame`（应用向某个 Surface 提交的一帧）和 `DisplayFrame`（显示系统合成并呈现的一帧），再追 producer fence 和 GPU submission。独立 Surface 没有对应帧事件时，改用引擎帧标识、buffer 提交、GPU stage、fence 与 Layer trace 继续关联，卡顿与否要从这些线索接着判断。GPU 数据缺失时，也不要用 RenderThread slice 代替 GPU completion。
+FrameTimeline 需要 Android 12 及以上，官方文档仍列有 SurfaceView 支持限制。先确认目标 Layer 是否上报了可关联的帧事件；有数据时，选中目标 `SurfaceFrame`（应用向某个 Surface 提交的一帧）和 `DisplayFrame`（显示系统合成并呈现的一帧），再追 producer fence 和 GPU submission。独立 Surface 没有对应帧事件时，改用引擎帧标识、buffer 提交、GPU stage、fence 与 Layer trace 继续关联，卡顿与否要从这些线索接着判断。GPU 数据缺失时，也不应使用 RenderThread slice 代替 GPU completion。
 
 #### APA 与 AGI：区分系统 profile、单帧分析
 
-当前官方把 Android Performance Analyzer（APA）定位为面向游戏和 Vulkan 图形的 profiler；AGI 页面也称 APA 是游戏性能分析的推荐工具，并指向 public beta 发布。APA 的 System Profiler 可以记录系统 trace，但别把它泛化到所有 App：非游戏、非 Vulkan 图形场景，优先用 Android Studio profiler 或 Perfetto。
+当前官方把 Android Performance Analyzer（APA）定位为面向游戏和 Vulkan 图形的 profiler；AGI 页面也称 APA 是游戏性能分析的推荐工具，并指向 public beta 发布。APA 的 System Profiler 可以记录系统 trace，但不宜泛化到所有应用：非游戏、非 Vulkan 图形场景，优先使用 Android Studio profiler 或 Perfetto。
 
 Android GPU Inspector（AGI）的 System Profiler 仍可采集 Perfetto 与 GPU 数据；新建游戏/图形 system profile 时，再根据 APA 的设备验证、数据源覆盖和目标场景决定是否使用 APA。
 
@@ -653,7 +652,7 @@ AGI Frame Profiler 继续负责单帧检查：对受支持应用查看 Vulkan AP
 
 ### GPU Trace 数据源与证据链
 
-GPU 数据不是由 SurfaceFlinger 统一产生的。采集前我们先查询目标设备的 data-source descriptor（数据源及字段描述） 与 tracefs event（Linux 内核 Trace 事件），再按问题逐层增加数据，否则容易出现“空轨道等于 GPU 空闲”的误判。
+GPU 数据并非由 SurfaceFlinger 统一生成。采集前应先查询目标设备的 data-source descriptor（数据源及字段描述）与 tracefs event（Linux 内核 Trace 事件），再按待验证的问题逐层增加数据源，以避免将缺失数据源引起的空轨道误判为 GPU 空闲。
 
 | 数据入口 | 主要证据 | 关键边界 |
 |---|---|---|
@@ -664,13 +663,13 @@ GPU 数据不是由 SurfaceFlinger 统一产生的。采集前我们先查询目
 | `vulkan.memory_tracker` | Vulkan create、bind、destroy 与 heap/type | 不覆盖 GLES、HWC、Camera、Codec 和全部 vendor 私有池 |
 | FrameTimeline / FrameTracer | 帧 deadline（截止时间）、jank 与 Layer buffer 生命周期 | 不提供 shader 指令或硬件瓶颈根因 |
 
-`GpuRenderStagesConfig` 的 `low_overhead=true` 会把多个细粒度 stage 合并为 workload stage（粗粒度工作阶段），适合先定位问题窗口；`full_loadstore` 和更详细的 per-stage metric（分阶段指标） 会增加观测成本，应在固定复现场景后再短时开启。`submission_id` 是 producer 可选的提交标识，Vulkan 通常对应一次 `vkQueueSubmit`，但它并不是 FrameTimeline token（跨轨道关联一帧的标识）、BufferQueue frame number 或 SurfaceFlinger Layer sequence（Layer 事件序号）。
+`GpuRenderStagesConfig` 的 `low_overhead=true` 会把多个细粒度 stage 合并为 workload stage（粗粒度工作阶段），适合先定位问题窗口；`full_loadstore` 和更详细的 per-stage metric（分阶段指标）会增加观测成本，应在固定复现场景后再短时开启。`submission_id` 是 producer 可选的提交标识，Vulkan 通常对应一次 `vkQueueSubmit`，但与 FrameTimeline token（跨轨道关联一帧的标识）、BufferQueue frame number 或 SurfaceFlinger Layer sequence（Layer 事件序号）属于不同层次的标识。
 
 硬件 counter 必须连同 descriptor 保存——descriptor 会声明 counter id、名称、单位、可选峰值、group 以及 counter block capacity；一次请求超过 block capacity，producer 可能拒绝、只启用子集，或者 multiplex（把多组 counter 分时轮换采集）。`counter_period_ns` 越短采样扰动越大；`fix_gpu_clock` 会固定 GPU 时钟、改变正常 DVFS 条件，只适合受控 A/B。
 
 Trace Processor 在解析 `GpuCounterEvent` 硬件采样时，会把“向前回看型”的值回填到前一个样本区间：当前事件报告的是刚刚结束的区间。`power/gpu_frequency` 等状态变化事件通常从事件时刻向后保持，回填规则要换一套。计算平均频率、带宽或利用率，要先确认数据源的区间语义，再按有效 duration 加权；对 `counter.value` 直接取平均是错误做法。
 
-`GpuCounterEvent` 还有尾样本边界：解析器先在当前时间戳写入 0，下一次采样才会回填这个位置。没有后续样本时，最后一行仍是占位 0，要当作占位看待，而非实测到的空闲区间。可用 `LEAD(ts) OVER (PARTITION BY track_id ORDER BY ts)` 取得后继时间，只对 `next_ts IS NOT NULL` 的 `[ts, next_ts)` 区间按分析窗口裁剪并加权；不要用 `value != 0` 排除尾行，否则会丢失有效的零值样本。这个尾行处理只适用于上述向前回看型硬件采样，不用于频率和内存等从事件时刻向后保持的状态数据。
+`GpuCounterEvent` 还有尾样本边界：解析器先在当前时间戳写入 0，下一次采样才会回填这个位置。没有后续样本时，最后一行仍是占位 0，要当作占位看待，而非实测到的空闲区间。可用 `LEAD(ts) OVER (PARTITION BY track_id ORDER BY ts)` 取得后继时间，只对 `next_ts IS NOT NULL` 的 `[ts, next_ts)` 区间按分析窗口裁剪并加权；切忌用 `value != 0` 排除尾行，否则会丢失有效的零值样本。这个尾行处理只适用于上述向前回看型硬件采样，不用于频率和内存等从事件时刻向后保持的状态数据。
 
 `gpu_slice` 也不只包含 render stage，还可能包含 Vulkan event 与 GPU log；下面的查询按 track type 过滤出 GPU render stage：
 
@@ -706,7 +705,7 @@ JOIN process AS p USING (upid)
 ORDER BY m.ts;
 ```
 
-第二组查询返回可按持续时间加权的频率与进程 GPU 内存区间。如果表为空，依次检查数据源是否注册、配置名称是否精确匹配、driver 是否上报、权限是否满足、目标 API 是否处于 producer 覆盖范围；关联字段不存在就不要补造。
+第二组查询返回可按持续时间加权的频率与进程 GPU 内存区间。如果表为空，依次检查数据源是否注册、配置名称是否精确匹配、driver 是否上报、权限是否满足、目标 API 是否处于 producer 覆盖范围；关联字段不存在时不应补造。
 
 ### 从系统 Trace 到帧级工具
 
@@ -720,10 +719,10 @@ ORDER BY m.ts;
 
 AGI 的 Vulkan frame capture、GLES-on-ANGLE capture、RenderDoc 与 Sokatoa 都可能改变原始驱动路径或时序，所以它们用来解释已定位的 GPU 时间窗口，替代不了原始系统 Trace。AOSP 的 `sfdo force-client-composition` 可强制 SurfaceFlinger 走 CLIENT composition，适合做 HWC/RenderEngine 单变量对照；`flatland` 是平台显示合成基准——两者都不是应用 GPU profiler，测试结束后必须恢复设备状态。
 
-下面几条证据门槛能帮我们少走弯路：
+下面几项证据门槛可用于界定问题归属：
 
 - 只有 CPU submission 按时、同一进程/context 的 GPU stage 跨过 deadline、producer fence 同步变晚，且降低 render scale 或关闭 pass 后窗口缩短，才足以把方向指向 App GPU workload。
-- App buffer 很早就 ready（可供下游读取）、`DisplayFrame` 仍 late（迟到），并且 RenderEngine/client target 或 HWC/present 证据变晚，问题才更靠近系统合成或显示。
+- App buffer 很早就 ready（可供下游读取）、`DisplayFrame` 仍 late（迟到），并且 RenderEngine/client target 或 HWC/present 证据变晚，问题才更靠近系统合成或显示；SurfaceFlinger 合成虽不属于 App renderer，但会直接影响最终 `DisplayFrame` 并与 App 争用 GPU 与内存带宽，归因报告中应分开界定责任后再说明共同资源影响。
 - GPU memory total 上升只说明统计口径内的 addressable total 变化；要判断泄漏，还需要 Vulkan event、dma-buf、buffer 数量、进程退出后状态和厂商分配证据。
 - GPU fence 长时间没有 signal（标记为完成），只能形成“疑似 GPU/驱动停滞”的判断；要下 hang/reset（挂起或重置） 结论，还需要 vendor kernel log、fault/reset event、device-lost（设备丢失错误） 或 crash dump。
 
@@ -764,7 +763,7 @@ AGI 的 Vulkan frame capture、GLES-on-ANGLE capture、RenderDoc 与 Sokatoa 都
 
 #### 6. 检查首次编译与资源上传
 
-对比冷/热路径，查 pipeline/cache、texture upload、glyph atlas、磁盘 I/O 和 driver worker（工作线程）；把所有首次慢帧都归因于 shader 是常见的误判。
+对比冷/热路径，查 pipeline/cache、texture upload、glyph atlas、磁盘 I/O 和 driver worker（工作线程），避免将所有首次慢帧都归因于 shader 编译。
 
 #### 7. 做持续运行测试
 
@@ -772,7 +771,7 @@ AGI 的 Vulkan frame capture、GLES-on-ANGLE capture、RenderDoc 与 Sokatoa 都
 
 ### 示例：图片列表滚动
 
-我们用一个例子把前面的流程串起来。图片列表同时可能有 UI、纹理上传、采样、overdraw 和带宽压力，先别预设“图片太大就是 bandwidth bound”，按以下证据推进：
+以图片列表滚动为例，该场景可能同时存在 UI 构建、纹理上传、采样、overdraw 与带宽压力。排查时不宜预先假设“图片尺寸大即等同于 bandwidth bound”，而应按以下证据推进：
 
 1. Layout Inspector 与 Debug GPU Overdraw 检查宿主窗口的重复背景；
 2. 关闭 overdraw 调试后抓取 Perfetto，确认 UI、RenderThread、GPU completion 和 App deadline；
@@ -812,36 +811,6 @@ fence wait 只说明依赖尚未完成。要判断 GPU 为何晚，需要找到 
 - Graphics HAL [allocator AIDL](https://android.googlesource.com/platform/hardware/interfaces/+/android-17.0.0_r1/graphics/allocator/aidl/)、[mapper stable-C](https://android.googlesource.com/platform/hardware/interfaces/+/android-17.0.0_r1/graphics/mapper/stable-c/)：allocator/mapper 当前接口。
 - Kernel [`dma-buf.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/dma-buf/dma-buf.c)、[`dma-heap.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/dma-buf/dma-heap.c)、[`dma-fence.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/dma-buf/dma-fence.c)、[`sync_file.c`](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/dma-buf/sync_file.c)：共享 buffer 与同步。
 
-### 常见误区
-
-#### “Perfetto 有 GPU Track，就能直接看 Vertex/Fragment 时间”
-
-设备可能只提供粗粒度 render stage 或 busy/frequency。Vertex、fragment、tiler、cache 和带宽通常依赖厂商 counter 或 AGI/厂商 profiler。
-
-#### “Vulkan 使用 SPIR-V，所以没有 shader jank（shader 准备导致的卡顿）”
-
-驱动仍需生成硬件代码并创建 pipeline。pipeline cache、预热和稳定 state 设计依然重要。
-
-#### “Vulkan 一定比 GLES 快”
-
-结果取决于 renderer、driver、同步、内存、pipeline 和 workload。Vulkan 给出更多控制，也要求应用正确使用这些控制。
-
-#### “ANGLE 固定增加某个百分比的开销”
-
-ANGLE 可能增加翻译成本，也可能因 Vulkan driver 质量改善表现。只能在相同设备、driver 和场景下测量。
-
-#### “GPU busy 高就一定有问题”
-
-稳定按 deadline 完成的高利用率可能是有效工作。还要看 deadline、功耗、温度和画质目标；系统或其他进程也可能占用 GPU。
-
-#### “GraphicBuffer 都计入 App RSS”
-
-图形 buffer 可通过 dma-buf 跨进程和设备共享，RSS（进程映射的驻留页总量）、PSS（共享页按比例分摊后的驻留量）、gpu_mem、dumpsys 和 driver 统计口径不同。归属需要结合 exporter（创建并导出 dma-buf 的组件）、importer（导入该对象的组件） 与引用生命周期。
-
-#### “SurfaceFlinger 合成不算 App 的 GPU 问题”
-
-它不属于 App renderer，但会影响最终 DisplayFrame，并与 App 争用 GPU/带宽。报告时应分开归因，再说明共同资源影响。
-
 ### 官方资料
 
 - [Android graphics architecture: BufferQueue and Gralloc](https://source.android.com/docs/core/graphics/arch-bq-gralloc)
@@ -859,23 +828,23 @@ ANGLE 可能增加翻译成本，也可能因 Vulkan driver 质量改善表现�
 
 ## OpenGL ES、Vulkan 与 ANGLE 选型
 
-确认瓶颈位于 CPU 提交、GPU 执行还是内存带宽之后，API 选型才有意义；低层控制能力要和驱动差异、着色器管线和维护成本一起评估。
+确认瓶颈位于 CPU 提交、GPU 执行还是内存带宽之后，API 选型才有实际依据；底层控制能力需结合驱动差异、着色器管线与工程维护成本共同评估。
 
-Android 上的 OpenGL ES、Vulkan、ANGLE 和 WebGPU 分属不同抽象层：OpenGL ES 与 Vulkan 是应用可直接使用的 GPU API；ANGLE 接收 EGL/OpenGL ES 调用，再翻译到 Vulkan 等后端；AndroidX WebGPU 则用更高层的对象模型和 WGSL（WebGPU Shading Language） 屏蔽一部分后端差异。只问“谁更快”，会把 API 开销、驱动质量、引擎实现和显示管线混在一起。
+Android 上的 OpenGL ES、Vulkan、ANGLE 和 WebGPU 分属不同抽象层：OpenGL ES 与 Vulkan 是应用可直接使用的 GPU API；ANGLE 接收 EGL/OpenGL ES 调用，再翻译到 Vulkan 等后端；AndroidX WebGPU 则用更高层的对象模型和 WGSL（WebGPU Shading Language）屏蔽一部分后端差异。脱离具体场景仅比较抽象层面的“速度快慢”，容易将 API 开销、驱动质量、引擎实现和显示管线混为一谈。
 
-我们先把四个容易混用的名称约定清楚：API 是应用发出图形命令的接口；renderer 是应用或引擎组织场景、资源和绘制的渲染实现；backend 是 renderer 连接某种图形 API/驱动的后端；driver 则把 API 命令变成目标 GPU 能执行的工作。ANGLE 属于翻译层：应用仍调用 GLES，ANGLE 可以在内部使用 Vulkan backend，厂商 Vulkan driver 才负责接到硬件。
+本节涉及四个容易混用的名称，其职责界定如下：API 是应用发出图形命令的接口；renderer 是应用或引擎组织场景、资源和绘制的渲染实现；backend 是 renderer 连接某种图形 API/驱动的后端；driver 则把 API 命令变成目标 GPU 能执行的工作。ANGLE 属于翻译层：应用仍调用 GLES，ANGLE 可以在内部使用 Vulkan backend，厂商 Vulkan driver 才负责接到硬件。
 
-综合前面的抽象层与版本差异，我们的选型原则如下：
+综合上述抽象层与版本差异，API 选型应遵循以下原则：
 
 - 已有稳定的 GLES 渲染器，不必仅因系统升级就重写为 Vulkan。先测 CPU 提交、GPU 执行、驱动兼容性和维护成本。
 - Vulkan 适合需要可预测资源管理、多线程命令录制、复杂同步或现代渲染能力的引擎，但它把更多正确性责任交给应用。
 - ANGLE 是 GLES 驱动选项，不是新的应用 API。Android 17 允许应用表达偏好，平台仍会结合设备能力和策略决定是否采用。
-- WebGPU 在 Android 17 时间点仍是 AndroidX developer preview（开发者预览版），适合能接受预览期 API 变化、又希望获得现代图形与计算接口的项目；把它当成成熟 Vulkan 渲染器的无成本替代并不合适。
+- WebGPU 在 Android 17 时间点仍是 AndroidX developer preview（开发者预览版），适合能接受预览期 API 变化、又希望获得现代图形与计算接口的项目，不宜将其视为成熟 Vulkan 渲染器的无成本替代。
 - 无论上游使用哪种 API，可见画面通常都要经 `ANativeWindow`、BufferQueue、SurfaceFlinger 和 HWC 到达显示设备——API 选型绕不过显示系统。
 
 ### 1. 先分清四个抽象层
 
-一帧从应用代码到屏幕，至少跨过 API、驱动、Android 图形缓冲区和显示合成四层。我们用下面这张图确认每个名字所在的位置。
+一帧从应用代码到屏幕，至少跨过 API、驱动、Android 图形缓冲区和显示合成四层。各组件的层级位置如下图所示：
 
 ```mermaid
 flowchart LR
@@ -930,7 +899,7 @@ Android 官方仍支持 OpenGL ES，但已不再积极开发其新特性；新�
 
 GLES 的核心模型是 context 内的可变状态：`glBindTexture()`、`glUseProgram()` 和 blend/depth（混合/深度测试） 设置会改变后续 draw call 的解释方式；驱动要根据当前状态生成或选择底层命令，并处理应用看不到的缓存、资源驻留和同步。这个模型容易入门，也给驱动留下了较大的实现空间。
 
-“GLES 必然单线程”并不准确：应用可以建立共享 context，在不同线程上传或编译资源，驱动内部也可以异步工作。限制来自两处——context 状态的顺序语义，以及共享对象同步：同一个 context 的 draw call 要留在绑定它的线程里顺序发出，多 context 方案则要仔细管理资源何时可见以及 fence。
+GLES 并非严格局限于单线程执行：应用可以建立共享 context，在不同线程上传或编译资源，驱动内部也可以异步工作。其并发限制主要来自两处——context 状态的顺序语义，以及共享对象同步：同一个 context 的 draw call 要留在绑定它的线程里顺序发出，多 context 方案则要仔细管理资源何时可见以及 fence。
 
 #### 2.2 Vulkan
 
@@ -943,7 +912,7 @@ Vulkan 从 Android 7.0 / API 24 开始提供。Android 官方的版本表给出�
 | 1.3 | Android 13 / API 33 | Android 13 起首发、支持 64 位 ABI 且非低内存设备的要求提升到 1.3 |
 | 1.4 | Android 16 / API 36 | Android 16 起首发、支持 64 位 ABI 且非低内存设备的要求提升到 1.4 |
 
-表里的“平台支持”和“首发设备要求”含义不同：升级到 Android 17 的旧设备，不会因为系统版本变化就获得新的 GPU 硬件特性。所以创建 device 前，我们要先查询 physical device（物理 GPU） 的 API version、extension、feature、format 和 queue family（具有某类命令能力的一组队列）。
+表里的“平台支持”和“首发设备要求”含义不同：升级到 Android 17 的旧设备，不会因为系统版本变化就获得新的 GPU 硬件特性。因此创建 device 前，应先查询 physical device（物理 GPU）的 API version、extension、feature、format 和 queue family（具有某类命令能力的一组队列）。
 
 Vulkan 把大量隐式工作变成应用可见对象：
 
@@ -994,7 +963,7 @@ Android 17 还增加了两类限制。第一，声明 Vulkan 1.1 及相应 featu
 
 应用仍应在运行时枚举设备真正暴露的能力。AOSP `libvulkan/driver.cpp` 提供了一个直接例子：只有在 SurfaceFlinger present timestamp 属性和对应平台 flag 开启，并且 ICD 支持 `VK_KHR_calibrated_timestamps` 时，加载器才会暴露 `VK_EXT_present_timing`。系统镜像、设备首发条件、厂商 ICD 和升级路径会共同影响最终结果。
 
-AVP 2025 服务的是另一类问题：官方覆盖率统计回答“活跃 Vulkan 设备中有多少满足某组能力”，适合制定降级策略；它不会让缺失的 extension 出现在设备上。工程上我们可以先用 Profile 做设备分层，再对要启用的 feature、extension 和 format 做精确检查。
+AVP 2025 服务的是另一类问题：官方覆盖率统计回答“活跃 Vulkan 设备中有多少满足某组能力”，适合制定降级策略；它不会让缺失的 extension 出现在设备上。工程上可先用 Profile 做设备分层，再对要启用的 feature、extension 和 format 做精确检查。
 
 ### 4. GLES 与 Vulkan 的架构差异
 
@@ -1011,7 +980,7 @@ GLES 允许应用逐步修改 context 状态，驱动在 draw 前后决定怎样
 | 错误暴露 | 部分错误可由 `glGetError()` 观察 | 错误码、validation layer、GPU-assisted validation（借助 GPU 检查越界访问等问题） |
 | 多线程 | 多 context 可用，状态和共享同步较难 | command pool（分配命令缓冲区所用内存的池）/command buffer 可按线程组织，queue 外部同步仍由应用负责 |
 
-Vulkan 适合把 scene traversal（遍历场景对象）、visibility（可见性判断）、resource preparation（资源准备） 和 command recording（命令录制） 分配给多个 worker，但并行化要应用自己来做：若所有 worker 争用同一个 allocator、descriptor pool（集中分配 descriptor set 的池） 或 pipeline cache，线程数越多，锁竞争和缓存抖动越明显。
+Vulkan 适合把 scene traversal（遍历场景对象）、visibility（可见性判断）、resource preparation（资源准备）和 command recording（命令录制）分配给多个 worker，但并行化需由应用主动设计：只有在 workload 可拆分、每线程资源独立且 CPU 核心充足时才能获益；若任务过小或所有 worker 争用同一个 allocator、descriptor pool（集中分配 descriptor set 的池）或 pipeline cache，线程数越多，锁竞争和缓存抖动反而越明显。
 
 #### 4.2 Command buffer 复用
 
@@ -1028,7 +997,7 @@ Vulkan 适合把 scene traversal（遍历场景对象）、visibility（可见�
 
 GLES 驱动可能在 program link、首次 draw 或状态组合变化时编译底层 shader/pipeline。Vulkan 把 pipeline 对象暴露给应用，使预热和持久化更可控，但 pipeline 变体数量仍可能很大。
 
-`VK_EXT_shader_object`、graphics pipeline library 和 pipeline binary 各解决不同环节，把某一个扩展描述成“消除 shader jank”的通用开关并不成立：
+`VK_EXT_shader_object`、graphics pipeline library 和 pipeline binary 各解决不同环节，它们均不能单独作为“消除 shader jank”的通用开关：
 
 - shader object 允许独立绑定 shader，减少对完整 graphics pipeline 对象的依赖；
 - graphics pipeline library 允许把 pipeline 分成可复用的几部分；
@@ -1053,7 +1022,7 @@ Java `Surface` 可由 `ANativeWindow_fromSurface()` 转成 `ANativeWindow`。EGL
 
 GLES 应用发出 draw call 后，通过 `eglSwapBuffers()` 提交 window surface 的当前 buffer；实现内部要完成必要的 driver flush（把尚未提交的驱动命令送入执行队列）、producer fence 传递和 `ANativeWindow` buffer 交换。
 
-`eglSwapBuffers()` 返回只说明 EGL 定义的交换动作完成，像素离显示还有一段路：buffer 之后要等 SurfaceFlinger latch、合成决策、HWC 显示和面板扫描。函数耗时长也别直接归因于 shader——它可能在等可用 BufferQueue slot、release fence、swap interval（允许交换的刷新间隔） 或 frame pacing。
+`eglSwapBuffers()` 返回只说明 EGL 定义的交换动作完成，像素离显示还有一段路：buffer 之后要等 SurfaceFlinger latch、合成决策、HWC 显示和面板扫描。函数耗时长也未必源于 shader——它可能在等可用 BufferQueue slot、release fence、swap interval（允许交换的刷新间隔）或 frame pacing。
 
 #### 5.2 Vulkan / present
 
@@ -1089,7 +1058,7 @@ Android 17 增加的 `VK_EXT_present_mode_fifo_latest_ready` 允许 FIFO（先�
 
 ### 6. Android 17 的 ANGLE 选路
 
-Android 17 CDD 没有规定所有设备都必须把 ANGLE 作为默认 GLES 驱动。官方路线是让更多新设备采用 ANGLE，同时保留 GLES 应用兼容性。对应用来说，我们要区分“manifest 或设置表达偏好”“平台策略选中 ANGLE”和“EGL loader 实际加载 ANGLE”三个阶段。
+Android 17 CDD 没有规定所有设备都必须把 ANGLE 作为默认 GLES 驱动。官方路线是让更多新设备采用 ANGLE，同时保留 GLES 应用兼容性。从应用视角来看，需区分“manifest 或设置表达偏好”“平台策略选中 ANGLE”和“EGL loader 实际加载 ANGLE”三个阶段。
 
 Android 17 提供 manifest 偏好。以下配置适合希望优先测试或使用 ANGLE 的游戏：
 
@@ -1125,7 +1094,7 @@ adb shell settings delete global angle_gl_driver_selection_pkgs
 adb shell settings delete global angle_gl_driver_selection_values
 ```
 
-配置命令本身只改变选路输入。验证结果时要检查 `dumpsys gpu`、logcat（Android 日志） 的 GraphicsEnvironment/EGL 信息，以及 `glGetString(GL_VENDOR)`、`glGetString(GL_RENDERER)`；要下性能结论，再结合 Perfetto 或 AGI。判断 backend 时，“设备是 Android 17”这条信息还不够。
+配置命令本身只改变选路输入。验证结果时要检查 `dumpsys gpu`、logcat（Android 日志）的 GraphicsEnvironment/EGL 信息，以及 `glGetString(GL_VENDOR)`、`glGetString(GL_RENDERER)`；要下性能结论，再结合 Perfetto 或 AGI。仅凭“设备运行 Android 17”无法确定进程实际加载的 backend。
 
 <!-- gracker-diagram: ch02-07-angle-selection-load -->
 ![ANGLE 偏好、策略选中和实际加载是三道边界](../../assets/diagrams/ch02/ch02-07-angle-selection-load.png)
@@ -1145,7 +1114,7 @@ adb shell settings delete global angle_gl_driver_selection_values
 | 新的 Kotlin/Java 图形或 GPU 计算项目 | 评估 AndroidX WebGPU preview | 接口更高层，但要接受 alpha 阶段变化 |
 | 依赖特定 Vulkan extension、显式显存预算或厂商工具 | Vulkan | WebGPU/GLES 不一定暴露所需控制面 |
 
-“Vulkan 比 GLES 快多少”没有脱离 workload 的固定答案，我们分三种情况看：CPU 时间主要耗在游戏逻辑时，换 API 缩短不了逻辑；GPU 被 fragment shader 或带宽压满时，降低 draw-call 驱动开销也解决不到点子上；首帧卡在 shader/pipeline 编译时，缓存、预热和变体管理往往比 API 标签更重要。
+“Vulkan 比 GLES 快多少”没有脱离 workload 的固定答案，具体表现随负载特征分为三种情况：CPU 时间主要耗在游戏逻辑时，换 API 缩短不了逻辑；GPU 被 fragment shader 或带宽压满时，降低 draw-call 驱动开销也解决不到点子上；首帧卡在 shader/pipeline 编译时，缓存、预热和变体管理往往比 API 标签更重要。
 
 #### 7.2 Vulkan 的采用条件
 
@@ -1175,7 +1144,7 @@ adb shell settings delete global angle_gl_driver_selection_values
 
 #### 8.1 CPU 侧
 
-我们先找到应用自己掌握的 render loop。GLES 常见分界是 `eglSwapBuffers()`；Vulkan 还应观察 acquire、command recording、`vkQueueSubmit*()` 与 `vkQueuePresentKHR()`。线程名字只能当线索，调用栈、应用 trace marker 和提交事件更可靠。
+首先定位应用自身控制的 render loop。GLES 常见分界是 `eglSwapBuffers()`；Vulkan 还应观察 acquire、command recording、`vkQueueSubmit*()` 与 `vkQueuePresentKHR()`。线程名字只能当线索，调用栈、应用 trace marker 和提交事件更可靠。
 
 | 现象 | 可能原因 | 下一步证据 |
 |---|---|---|
@@ -1185,11 +1154,11 @@ adb shell settings delete global angle_gl_driver_selection_values
 | submit 很快但 GPU 晚 | shader、overdraw、带宽、同步 bubble（前后任务依赖造成的 GPU 空档）、频率或热限制 | GPU render stage、counter、频率、fence signal |
 | buffer 已 queue 但未及时显示 | acquire fence 晚、错过 latch、目标时间未到、合成或 HWC 延迟 | layer trace、FrameTimeline、SF/HWC slice、present fence |
 
-`eglSwapBuffers()` 或 `vkQueuePresentKHR()` 返回都不表示“用户已经看到这一帧”，显示时间要继续跟到 BufferQueue、SurfaceFlinger、HWC 和 display present；producer completion fence 与 display present fence 要分开记录，免得把 GPU 完成误写成屏幕显示。
+`eglSwapBuffers()` 或 `vkQueuePresentKHR()` 返回均不表示“用户已经看到这一帧”，显示时间需继续跟到 BufferQueue、SurfaceFlinger、HWC 和 display present；producer completion fence 与 display present fence 应分开记录，避免将 GPU 完成误判为屏幕显示。
 
 #### 8.2 ANGLE 侧
 
-我们把 ANGLE 路径分成应用 GLES、ANGLE 状态跟踪/shader 翻译，以及 Vulkan driver/GPU 三段。大量细碎状态切换可能增加翻译成本；pipeline cache 命中、厂商 Vulkan 驱动质量也可能让它优于原生 GLES。
+分析 ANGLE 路径时，可将其拆分为应用 GLES、ANGLE 状态跟踪/shader 翻译以及 Vulkan driver/GPU 三段。大量细碎状态切换可能增加翻译成本；pipeline cache 命中、厂商 Vulkan 驱动质量也可能让它优于原生 GLES。
 
 AGI 适合检查 Vulkan queue、shader 和 GPU counter；Perfetto 适合把应用线程、调度、GPU、BufferQueue、SurfaceFlinger 与 FrameTimeline 放到同一时间轴。trace 中出现 Vulkan slice，只说明该层存在 Vulkan 工作；应用是否直接使用 Vulkan，还要看提交方——ANGLE、HWUI 或系统 RenderEngine 都可能提交 Vulkan。
 
@@ -1228,32 +1197,6 @@ producer 持续尽快提交会逐渐占满可用 buffer；随后 render thread �
 | kernel fence 文件桥接 | `drivers/dma-buf/sync_file.c` |
 
 阅读源码时应确认 tag（固定版本标签）：平台文件均以 `android-17.0.0_r1` 为准，kernel 文件以 `android17-6.18-2026-06_r6` 为准。厂商 ICD 不在 AOSP 中，涉及 shader compiler（着色器编译器）、GPU scheduler（调度器）、内存压缩和硬件 counter 的结论还要结合具体 SoC 文档与设备 trace。
-
-### 常见误区
-
-#### Vulkan 没有 driver overhead
-
-driver overhead 指应用发出绘制意图后，驱动在校验、状态处理、命令构造和内核提交上消耗的 CPU 时间。Vulkan 减少了部分隐式状态推导，并允许应用更早组织工作，但 loader、ICD、内存管理、descriptor、pipeline 和内核提交仍有成本。Vulkan 做的是让成本更可控，成本本身仍然在那里。
-
-#### Vulkan 多线程录制一定更快
-
-只有 workload 可拆分、每线程资源独立且 CPU 核数足够时才可能获益。任务过小或共享锁过多时，并行录制会增加开销。
-
-#### Android 17 上 GLES 都会走 ANGLE
-
-CDD 没有这一规定。系统默认、allowlist/denylist（允许/拒绝名单）、设备等级、vendor API level、开发设置和 manifest 都可能影响选路，应以进程运行时信息为准。
-
-#### ANGLE 只是兼容层，所以一定更慢
-
-ANGLE 多了一层状态翻译，也可能绕开质量较差的厂商 GLES 实现，并利用较好的 Vulkan 驱动。结论只能来自同设备、同场景、同温度条件下的 A/B 测试。
-
-#### `vkQueuePresentKHR()` 返回表示画面已显示
-
-present 只把 swapchain image 交给 presentation engine（接收待呈现图像并对接窗口系统的组件）；Android 上还要经过 native window、BufferQueue、SurfaceFlinger、HWC 和显示设备。要判断可见时间，应使用 present timing、FrameTimeline、layer trace 和 display fence 等证据。
-
-#### 满足 Android 17 就可以跳过 capability query
-
-capability query 是应用在运行时查询 GPU、驱动和 Surface 实际支持能力的过程。升级设备、不同设备类型、系统属性、平台 flag 和 ICD 能力都会影响结果。版本号适合筛选大范围，feature/extension/format 查询负责最终决策。
 
 ## 参考资料
 

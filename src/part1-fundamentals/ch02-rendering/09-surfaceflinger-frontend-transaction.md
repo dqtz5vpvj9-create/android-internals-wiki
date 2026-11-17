@@ -142,9 +142,9 @@ consolidated_from:
 - src/part1-fundamentals/ch02-rendering/25-sf-transaction-queue-lockless.md
 ---
 
-# SurfaceFlinger 合成、FrontEnd（前端状态层） 与事务队列
+# SurfaceFlinger 合成、FrontEnd 与事务队列
 
-SurfaceFlinger 接收 buffer（图像缓冲区） 与 SurfaceControl transaction（事务），生成 layer（合成图层） 快照，再交给 CompositionEngine（SurfaceFlinger 的合成策略组件） 和 HWC（Hardware Composer，硬件合成器）。一次窗口更新什么时候进入当前合成周期，由 FrontEnd 状态、事务就绪条件和 latch（接入图层状态） 时刻共同决定，这正是本文要展开的主线。
+SurfaceFlinger 接收来自客户端的 buffer（图像缓冲区）与 SurfaceControl transaction（事务），经 FrontEnd（前端状态层）处理并生成 layer（合成图层）快照，再交由 CompositionEngine（SurfaceFlinger 的合成策略组件）与 HWC（Hardware Composer，硬件合成器）完成显示合成。一次窗口更新何时进入当前合成周期，由事务入队与就绪过滤、FrontEnd 状态计算以及 buffer latch（将就绪缓冲区接入图层状态）时刻共同决定。本节从合成主线、FrontEnd 状态机以及无锁事务队列三个层面展开解析。
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -152,11 +152,11 @@ SurfaceFlinger 接收 buffer（图像缓冲区） 与 SurfaceControl transaction
 
 ### SurfaceFlinger 位于哪一段
 
-应用完成一帧渲染并提交 buffer 之后，显示流程还没走完。剩下的路交给 SurfaceFlinger：接收 buffer 与 `SurfaceControl.Transaction`（一次提交的一组图层状态更新），更新 Layer（图层）层级，为每个 Display 构造可见内容，再与 HWC 协商合成方案并执行 present（提交显示）。
+应用完成一帧渲染并提交 buffer 之后，后续流程进入 SurfaceFlinger：接收 buffer 与 `SurfaceControl.Transaction`（一次提交的一组图层状态更新），更新 Layer（图层）层级，为每个 Display 构造可见内容，再与 HWC 协商合成方案并执行 present（提交显示）。
 
-我们先约定贯穿全文的对象：Layer 是 SurfaceFlinger 组织合成内容的单位，transaction 是对一个或多个 Layer 属性或 buffer 的一组更新。FrontEnd 把客户端请求整理成 RequestedLayerState，再生成本轮可消费的 LayerSnapshot（包含继承与可见性计算结果的图层快照）；CompositionEngine 按每个 Display 构造 Output（显示输出）。
+贯穿本节的核心对象包括：Layer 是 SurfaceFlinger 组织合成内容的单位；transaction 是对一个或多个 Layer 属性或 buffer 的一组更新；FrontEnd 将客户端请求整理为 `RequestedLayerState`，再生成本轮可消费的 `LayerSnapshot`（包含继承与可见性计算结果的图层快照）；CompositionEngine 按每个 Display 构造 `Output`（显示输出）。
 
-在这条链上，需要 GPU 合成的 CLIENT Layer 由 RenderEngine 先画成 client target，DEVICE Layer 则交给 HWC 的设备合成路径；fence（同步栅栏） 则标记 buffer 何时可读、可复用或完成 present。
+在这条链路上，需要 GPU 合成的 CLIENT Layer 由 RenderEngine 绘制进 client target，DEVICE Layer 则交给 HWC 的设备合成路径；fence（同步栅栏）负责标记 buffer 何时可读、可复用或完成 present。
 
 标准窗口的主路径可以概括为：
 
@@ -175,7 +175,7 @@ flowchart LR
     C -. "present fence / layer release fences" .-> T
 ```
 
-这张图上有两件事要先说清楚。其一，SurfaceFlinger 面前只有 Layer 与 Display，App 内部的 View 或 Compose 节点在这里看不到身影；其二，同一帧里设备合成与客户端合成可以并存，RenderEngine 先生成 client target，HWC 再把它与可由设备处理的 Layer 一起提交显示。
+该主线包含两项关键边界：其一，SurfaceFlinger 面对的是 Layer 与 Display，无法直接感知 App 内部的 View 或 Compose 节点；其二，同一帧内设备合成与客户端合成可以并存，RenderEngine 先生成 client target，HWC 再将其与可由设备处理的 Layer 一起提交显示。
 
 Android 12 的 `INVALIDATE/REFRESH` 只用于解释旧 Trace，Android 13 之后按 `commit`（准备本帧合成状态）/`composite` 主线阅读。
 
@@ -183,25 +183,25 @@ Android 12 的 `INVALIDATE/REFRESH` 只用于解释旧 Trace，Android 13 之后
 
 #### 1. 管理 Transaction 与 Layer 状态
 
-来自应用、WindowManager、WM Shell、SystemUI、媒体组件的 `SurfaceControl.Transaction` 最终进入 SurfaceFlinger。Transaction 可以同时修改多个 Layer 的 buffer、位置、裁剪、alpha（透明度）、可见性、父子关系、z-order（前后显示顺序）、dataspace（色彩空间与传递特性等颜色描述） 和 frame timeline 信息。
+来自应用、WindowManager、WM Shell、SystemUI、媒体组件的 `SurfaceControl.Transaction` 最终进入 SurfaceFlinger。Transaction 可以同时修改多个 Layer 的 buffer、位置、裁剪、alpha（透明度）、可见性、父子关系、z-order（前后显示顺序）、dataspace（色彩空间与传递特性等颜色描述）和 frame timeline 信息。
 
 FrontEnd 把客户端请求整理成服务器侧状态：
 
 - `TransactionHandler` 收集并筛选可提交的 transaction；
 - `LayerLifecycleManager` 维护 `RequestedLayerState` 与 Layer 生命周期；
-- `LayerHierarchyBuilder` 构造父子、relative-z（相对另一个 Layer 的前后顺序） 与镜像关系；
+- `LayerHierarchyBuilder` 构造父子、relative-z（相对另一个 Layer 的前后顺序）与镜像关系；
 - `LayerSnapshotBuilder` 生成按 z-order 排列的 `LayerSnapshot`；
 - CompositionEngine 和输入、无障碍等消费者读取 snapshot（快照）。
 
-这套结构把“客户端请求”与“本帧合成状态”分开了。当前源码仍保留部分 legacy `Layer` 互操作，但我们跟踪合成问题时，优先看 FrontEnd state、snapshot (图层快照) 和 Output。
+这套结构把“客户端请求”与“本帧合成状态”分开了。当前源码仍保留部分 legacy `Layer` 互操作，但排查合成问题时应优先核查 FrontEnd state、snapshot（图层快照）和 Output。
 
 #### 2. 参与 VSync 调度与帧目标计算
 
 调度这一侧，HWC 的硬件 VSync callback 为预测器提供样本，Scheduler 的 VSync schedule、dispatch 与 EventThread 生成应用和系统侧的调度事件。`VsyncModulator` 调整 app/SF work duration 与 phase，完整的 VSync 分发实现不止这一个类。
 
-SurfaceFlinger 还创建 DisplayEventConnection，让应用侧 Choreographer 等消费者接收软件 VSync。SF 自身的帧信号进入 `Scheduler::onFrameSignal()`。SF 的帧处理会先为 pacesetter display（提供调度基准的显示器） 和可参与本轮的 follower display（跟随该节拍的显示器） 计算 `FrameTarget`，再决定 commit 与 composite。本轮期望呈现时间与 deadline 等目标，就记在 `FrameTarget` 里。
+SurfaceFlinger 还创建 DisplayEventConnection，让应用侧 Choreographer 等消费者接收软件 VSync。SF 自身的帧信号进入 `Scheduler::onFrameSignal()`。SF 的帧处理会先为 pacesetter display（提供调度基准的显示器）和可参与本轮的 follower display（跟随该节拍的显示器）计算 `FrameTarget`，再决定 commit 与 composite。本轮期望呈现时间与 deadline 等目标，就记在 `FrameTarget` 里。
 
-详细的预测、phase 与 VSync-app/VSync-sf 关系见 [2.3 VSync、Choreographer 与 SurfaceFlinger 调度](03-vsync-choreographer-sf-scheduling.md)。这里我们关注 SF 收到帧信号之后的工作。
+详细的预测、phase 与 VSync-app/VSync-sf 关系见 [2.3 VSync、Choreographer 与 SurfaceFlinger 调度](03-vsync-choreographer-sf-scheduling.md)。本节主要关注 SF 收到帧信号之后的处理流程。
 
 #### 3. 为每个 Display 选择并执行合成方案
 
@@ -255,7 +255,7 @@ traverseBottomToTop(node):
 
 #### 可见 Layer 与 buffer 复用
 
-一个可见 Layer 没有新 buffer 时，SurfaceFlinger 可以继续使用上次选中的内容。视频以 24/30 fps 更新、Display 以 60/120 Hz 刷新时，多次复用旧 buffer 可能符合设计。我们判断丢帧时，看的是 Producer 时间戳、目标 present、buffer 选择和 cadence（内容帧与显示刷新之间的节奏关系）；每个 SF frame 是否出现新 `BufferTX`，跟着内容与刷新率的节奏走就好，不必一概强求。
+一个可见 Layer 没有新 buffer 时，SurfaceFlinger 可以继续使用上次选中的内容。视频以 24/30 fps 更新、Display 以 60/120 Hz 刷新时，多次复用旧 buffer 可能符合设计。判断丢帧时，应核对 Producer 时间戳、目标 present、buffer 选择和 cadence（内容帧与显示刷新之间的节奏关系）；每个 SF frame 是否出现新 `BufferTX` 取决于内容与刷新率节奏，不必一概强求。
 
 ### Transaction：状态原子性与 buffer 就绪
 
@@ -273,7 +273,7 @@ readiness（可提交条件）判断会考虑 fence、present time、barrier (�
 
 一笔 transaction 可以原子地表达“新 buffer、位置和裁剪一起生效”。buffer 的 Producer 仍可能异步写入，acquire fence 负责保护内容。Android 13 起支持受限的 unsignaled（acquire fence 尚未触发） buffer latch（fence 尚未 signal 时提前接纳 buffer） 模式：满足策略条件的简单更新可以先推进 transaction readiness（事务就绪性），但 RenderEngine/HWC 真正读取内容前仍要等 acquire fence signal。
 
-BLASTBufferQueue 的同步 transaction、WMS transition sync（WindowManager 为窗口过渡组织的同步）与应用的 `SurfaceSyncGroup`（应用侧把多个 Surface 更新纳入同一同步组的接口）覆盖的参与者和等待条件不同，也可能在同一次更新中配合使用。排查跨窗口动画时，我们先确认哪些 Surface 被加入同步组，再检查 transaction barrier、buffer readiness（就绪判断）和 callback；屏幕上同时移动的 Surface，未必自动属于同一同步事务。
+BLASTBufferQueue 的同步 transaction、WMS transition sync（WindowManager 为窗口过渡组织的同步）与应用的 `SurfaceSyncGroup`（应用侧把多个 Surface 更新纳入同一同步组的接口）覆盖的参与者和等待条件不同，也可能在同一次更新中配合使用。排查跨窗口动画时，应先确认哪些 Surface 被加入同步组，再检查 transaction barrier、buffer readiness（就绪判断）和 callback；屏幕上同时移动的 Surface，未必自动属于同一同步事务。
 
 ### BLAST：标准 App Window 的 buffer 怎样进入 SF
 
@@ -302,9 +302,9 @@ App RenderThread / Producer
           RequestedLayerState / LayerSnapshot
 ```
 
-普通 BLAST 窗口中的 BufferQueue acquire 常发生在应用进程的 BLAST Consumer，SurfaceFlinger 接收带 buffer 和 fence 的 transaction。把所有现代窗口都写成“SurfaceFlinger 直接调用 BufferQueue `acquireBuffer()`”会混淆进程与所有权。
+普通 BLAST 窗口中的 BufferQueue acquire 常发生在应用进程的 BLAST Consumer，SurfaceFlinger 接收带 buffer 和 fence 的 transaction。因此将所有现代窗口表述为“SurfaceFlinger 直接调用 BufferQueue `acquireBuffer()`”会混淆进程边界与所有权。
 
-SurfaceFlinger 通过 release callback（释放回调）把 buffer 的释放信息和 release fence 返回 BLAST，再由 BLAST 把 fence 交回 BufferQueue 并释放对应的 `BufferItem`（BufferQueue 中记录 buffer、slot、fence 等信息的条目）。callback 到达时 fence 可能尚未 signal，BLAST 也可能为控制队列深度暂存释放项；Producer 再次写入前仍需满足 release fence。`queueBuffer()`、BLAST acquire、`BufferTX - <layerName>`（指定图层的待处理 buffer transaction）增加、SF latch、HWC present 与 release callback 各自对应不同的时间点，我们分析时要分开看。
+SurfaceFlinger 通过 release callback（释放回调）把 buffer 的释放信息和 release fence 返回 BLAST，再由 BLAST 把 fence 交回 BufferQueue 并释放对应的 `BufferItem`（BufferQueue 中记录 buffer、slot、fence 等信息的条目）。callback 到达时 fence 可能尚未 signal，BLAST 也可能为控制队列深度暂存释放项；Producer 再次写入前仍需满足 release fence。`queueBuffer()`、BLAST acquire、`BufferTX - <layerName>`（指定图层的待处理 buffer transaction）增加、SF latch、HWC present 与 release callback 各自对应不同的时间点，分析时需分别核对。
 
 ### Android 17 主循环：`onFrameSignal → commit → composite`
 
@@ -365,9 +365,9 @@ void Scheduler::onFrameSignal(ICompositor& compositor,
 7. 更新可见区域、输入、Layer history 与刷新率选择；
 8. 根据 transaction、buffer、Display/HWC 请求判断 `mustComposite`（本轮是否必须进入合成阶段）。
 
-`updateLayerSnapshots()` 会执行 `TransactionHandler:flushTransactions`、`LayerLifecycleManager.applyTransactions()`（应用事务）、`LayerHierarchyBuilder.update()` 与 `LayerSnapshotBuilder:update`。commit 变长时，我们要先区分时间花在了哪：transaction 数量、Layer 创建销毁、hierarchy（层级）/geometry（层级或几何属性） 变化、buffer latch (把就绪 buffer 接入图层状态)，还是锁等待。
+`updateLayerSnapshots()` 会执行 `TransactionHandler:flushTransactions`、`LayerLifecycleManager.applyTransactions()`（应用事务）、`LayerHierarchyBuilder.update()` 与 `LayerSnapshotBuilder:update`。commit 变长时，应先区分耗时所在：transaction 数量、Layer 创建销毁、hierarchy（层级）/geometry（层级或几何属性）变化、buffer latch（把就绪 buffer 接入图层状态），还是锁等待。
 
-`commit` 返回 `false` 可能只是本轮没有需要提交到显示的变化，也可能受 mode set 或 backpressure 分支影响；把它直接记成丢帧，结论下早了。
+`commit` 返回 `false` 可能只是本轮没有需要提交到显示的变化，也可能受 mode set 或 backpressure 分支影响，直接将其记为丢帧缺乏依据。
 
 <!-- gracker-diagram: ch02-09-commit-composite -->
 ![每轮先建立 Display 目标，commit 决定是否合成](../../assets/diagrams/ch02/ch02-09-commit-composite.png)
@@ -408,7 +408,7 @@ Android 13 的 `MessageQueue::Handler::handleMessage()`（消息处理器的回�
 
 当 HWC 要求某些 Layer 使用 `Composition.CLIENT` 时，SurfaceFlinger 通过 RenderEngine 把这些 Layer 按顺序绘制进一个 client target。RenderEngine 后端可使用基于 OpenGL 的 SkiaGL 或基于 Vulkan 的 SkiaVk，具体选择取决于设备配置与系统 build。
 
-client target 连同它的 acquire fence 一起交给 HWC；该 fence 告诉 HWC 何时可以读取 RenderEngine 的输出。HWC 再把这个 client target 作为一个输入，与仍为 DEVICE、CURSOR（硬件光标）、SIDEBAND（不经普通 BufferQueue 提交内容的旁路流） 等类型的 Layer 一起 present。CLIENT composition 会使用 GPU 和内存带宽，但成本取决于 client Layer 的像素覆盖、格式、色彩转换、blur、shadow、缩放和 GPU 状态，按 Layer 数量直接换算会算错。
+client target 连同它的 acquire fence 一起交给 HWC；该 fence 告诉 HWC 何时可以读取 RenderEngine 的输出。HWC 再把这个 client target 作为一个输入，与仍为 DEVICE、CURSOR（硬件光标）、SIDEBAND（不经普通 BufferQueue 提交内容的旁路流）等类型的 Layer 一起 present。CLIENT composition 会使用 GPU 和内存带宽，其成本取决于 client Layer 的像素覆盖、格式、色彩转换、blur、shadow、缩放和 GPU 状态，不能仅按 Layer 数量简单折算。
 
 #### DEVICE：Composer 负责该 Layer
 
@@ -443,7 +443,7 @@ DEVICE composition 通常可以减少 SF 的 GPU client composition 工作，但
 - Display 分辨率、刷新率、输出模式和厂商功耗策略；
 - transition leash、SystemUI、IME（输入法窗口）、dim Layer（用于压暗背景的半透明 Layer） 和多个视频流形成的整屏组合。
 
-要验证策略变化，我们看该帧的 composition type、Layer 属性、RenderEngine slice、HWC/vendor trace 和 present 结果；只看功耗或某条 SF slice 变短，还说明不了策略变了。
+要验证策略变化，应核查该帧的 composition type、Layer 属性、RenderEngine slice、HWC/vendor trace 和 present 结果；仅凭功耗变化或单条 SF slice 变短无法证明策略发生调整。
 
 ### HWC 协商：validate、presentOrValidate 与 present
 
@@ -560,7 +560,7 @@ FrameTimeline 用 token（跨轨道关联同一帧记录的标识）串起不同
 - SF `DisplayFrame` 使用 `display_frame_token` 表示一次显示合成；
 - 一个 DisplayFrame 可以包含多个进程、多个 Layer 的 SurfaceFrame。
 
-两类 token 各管一段，合成一个“全程 VSync ID”会丢信息。我们先用 process/layer 锁定 App SurfaceFrame，再查看它进入哪个 DisplayFrame。
+两类 token 各管一段，合并成单个“全程 VSync ID”会丢失边界信息。分析时应先用 process/layer 锁定 App SurfaceFrame，再追踪它进入哪个 DisplayFrame。
 
 Perfetto 的 FrameTimeline 文档要求 Android 12（S）及以上，并仍注明 SurfaceView 尚不受支持。分析 SurfaceView 时，应先确认目标构建是否生成了对应的 SurfaceFrame 和关联关系；缺少记录时，就继续检查其独立 Layer 的 `BufferTX`、latch、fence 与 HWC 轨道；FrameTimeline 轨道上找不到它，还说明不了它没参与合成。
 
@@ -615,7 +615,7 @@ adb shell dumpsys SurfaceFlinger --list
 adb shell dumpsys SurfaceFlinger --display-id
 ```
 
-我们在快照中先确认目标 Layer 名、owner、parent、layer stack、active buffer、composition type 与目标 Display，再回到 Perfetto 对齐发生时刻。一次静态 dump 代替不了连续帧的时序。
+应在快照中先确认目标 Layer 名、owner、parent、layer stack、active buffer、composition type 与目标 Display，再回到 Perfetto 对齐发生时刻。一次静态 dump 代替不了连续帧的时序。
 
 ### 七种常见 Jank 组合
 
@@ -635,7 +635,7 @@ adb shell dumpsys SurfaceFlinger --display-id
 
 当前可见的分类包括 App deadline、SurfaceFlinger CPU/GPU deadline、DisplayHAL、SurfaceFlinger scheduling、Buffer Stuffing（Producer 提交过快造成 buffer 堆积） 和 Prediction Error（预测呈现时间与实际情况不符） 等。分类由时间关系推导，适合用来选择下一组该看的材料；业务代码或 vendor driver 的根因还要继续往下查。
 
-例如 `SurfaceFlingerCpuDeadlineMissed` 出现时，我们仍要区分主线程执行过长和 runnable（可运行） delay；`SurfaceFlingerGpuDeadlineMissed` 还要确认是 RenderEngine、App GPU 竞争还是其他 GPU 客户端；`DisplayHAL` 要继续进入 Composer/driver/present。
+例如 `SurfaceFlingerCpuDeadlineMissed` 出现时，仍需区分主线程执行过长和 runnable（可运行）delay；`SurfaceFlingerGpuDeadlineMissed` 还要确认是 RenderEngine、App GPU 竞争还是其他 GPU 客户端；`DisplayHAL` 要继续进入 Composer/driver/present。
 
 #### SF 主线程卡顿的影响范围
 
@@ -655,7 +655,7 @@ SurfaceFlinger 是系统级服务，同一主线程上的 transaction、snapshot
 
 `Scheduler::onFrameSignal()` 先为 pacesetter display 建立目标，再计算 follower display 是否参与本轮；`FrameTargeter` 会考虑 expected present、pending present fence 与 backpressure，每个 Display 最终拥有自己的 present fence。
 
-我们做多显示排查时，至少按 `displayId` 分组：
+进行多显示排查时，至少按 `displayId` 分组核对以下信息：
 
 - refresh rate 与 expected present；
 - Output 可见 Layer；
@@ -676,7 +676,7 @@ kernel 基线固定为 `android17-6.18-2026-06_r6`：
 
 AOSP SurfaceFlinger 能说明 framework 怎样传递 buffer/fence、调用 Composer HAL 和记录 FrameTimeline。Overlay plane 分配、内存带宽投票、secure path（受保护内容使用的安全显示链路）、DRM/KMS atomic commit（Linux 显示子系统一次性提交完整显示状态） 与 panel 时序由厂商 HAL/driver 决定。Android 设备也不保证使用与主线一致的 DRM/KMS 实现。
 
-当 present 或 release fence 迟到时，我们要把 Composer HAL、vendor display trace、GPU/DPU frequency、DRM/display driver（显示驱动）、IOMMU（设备访问内存时使用的地址映射与隔离单元） 和内存带宽放在同一时间轴。通用 dma-fence 只描述依赖关系，硬件任务为何执行过慢，要靠这条时间轴回答。
+当 present 或 release fence 迟到时，需将 Composer HAL、vendor display trace、GPU/DPU frequency、DRM/display driver（显示驱动）、IOMMU（设备访问内存时使用的地址映射与隔离单元）和内存带宽放在同一时间轴上核查。通用 dma-fence 只描述依赖关系，硬件任务为何执行过慢，需借助这条时间轴回答。
 
 ### Android 11—17 版本演进
 
@@ -691,28 +691,6 @@ AOSP SurfaceFlinger 能说明 framework 怎样传递 buffer/fence、调用 Compo
 | Android 17 / API 37 | 当前锚点：FrontEnd transaction/snapshot、`commit(PhysicalDisplayId, FrameTargets)`、`composite(...FrameTargeters)`、AIDL Composer3/HWComposer 协商 | 所有当前方法名、composition type 和 fence 分支按 `android-17.0.0_r1` 解释 |
 
 这张表只把已核对的版本差异写成“该版本存在”。判断某个内部类或优化是否首次出现，需要继续比较父 tag 与提交历史。
-
-### 常见误判
-
-#### `queueBuffer()` 之后的链路
-
-后面还有 BLAST acquire、SF transaction、latch、acquire fence、composition 和 present。要确认 DisplayFrame 正常，App 与 SF 的 CPU 工作按时只是起点，还要看后续各段。
-
-#### commit 阶段的时间构成
-
-`commit` 主要处理 transaction、Layer state、snapshot、buffer latch、refresh rate 和 callback。RenderEngine 绘制与 HWC present 位于后续 `composite`/Output 流程。
-
-#### DEVICE composition 的 GPU 成本
-
-它说明该 Layer 由 Composer 设备路径处理。其他 CLIENT Layer、App 渲染和 SurfaceFlinger 特效仍可占用 GPU，HWC/DPU 也有带宽与同步成本。
-
-#### Layer 退回 CLIENT 的判定条件
-
-HWC 能力和策略来自 vendor 实现。plane 数量、格式、缩放、HDR、保护内容和带宽要以目标设备的 HAL/driver 与当帧可见集合为准。
-
-#### present fence 的完成范围
-
-它在物理显示上标记开始呈现的时间边界，在虚拟显示上标记输出 buffer 写入完成；整屏扫描完成、像素响应和用户观察时间仍需其他证据。
 
 ### Android 17 源码锚点
 
@@ -736,7 +714,7 @@ SurfaceFlinger 把多个 Producer 的 buffer 与客户端 transaction 整理成 
 
 `Scheduler::onFrameSignal → SurfaceFlinger::commit → FrontEnd snapshot → SurfaceFlinger::composite → CompositionEngine → RenderEngine/HWComposer → present fences`
 
-性能分析时，我们按同一 App SurfaceFrame、Layer、DisplayFrame 和 displayId 依次检查：
+性能分析时，应按同一 App SurfaceFrame、Layer、DisplayFrame 和 displayId 依次检查：
 
 1. Producer 是否按时提交 buffer；
 2. BLAST 与 transaction 是否按时进入 SF；
@@ -782,7 +760,7 @@ FrontEnd 的职责，是把客户端请求转换成当前帧可消费的状态�
 7. 兼容路径在同一锁作用域内继续让对应 `Layer` 执行 `latchBufferImpl()`，把已经就绪的 buffer 接入当前图层状态；
 8. 后续 composition 阶段把 snapshot 加入 `RefreshArgs`，再调用 `CompositionEngine::present()` 生成显示输出。
 
-上面八步里有三个常被混为一谈的时刻，我们把它们摆在一起区分：transaction 已进入 `RequestedLayerState`、新 buffer 已被 latch、目标 display 已经 present。第一项是请求状态更新；后两项还涉及 buffer、fence、CompositionEngine、HWC 和显示设备，各自有各自的完成条件。
+其中有三个常被混为一谈的时刻需要明确区分：transaction 已进入 `RequestedLayerState`、新 buffer 已被 latch、目标 display 已经 present。第一项是请求状态更新；后两项还涉及 buffer、fence、CompositionEngine、HWC 和显示设备，各自有各自的完成条件。
 
 
 ### 2. FrontEnd 与旧 `Layer` 对象共存
@@ -798,7 +776,7 @@ FrontEnd 的职责，是把客户端请求转换成当前帧可消费的状态�
 
 `updateLayerSnapshots()` 在更新 FrontEnd 状态和 snapshot 后，仍会找到对应的 legacy `Layer`，执行 `latchBufferImpl()`，并维护 release callback、FrameTimeline 和 layer history（图层历史）；composition 阶段则把 snapshot 绑定到 `LayerFE`（CompositionEngine 读取图层状态的前端接口）。
 
-这是一段共存实现，我们读源码时两边都要照顾：layer 请求、层级、可见性与合成输入，优先从 FrontEnd 对象理解；buffer latch、release callback 和一部分历史兼容行为，仍要回到 `Layer`。另外两个提醒：Android 12、13 那种“逐个 `Layer` 更新全部状态”的模型照搬不过来；看到 FrontEnd 也别假设 legacy 路径都已删除。
+由于当前实现处于新旧共存阶段，源码分析需要兼顾两条路径：layer 请求、层级、可见性与合成输入，优先从 FrontEnd 对象理解；buffer latch、release callback 和一部分历史兼容行为，仍要回到 `Layer`。需要注意两项边界：Android 12、13 那种“逐个 `Layer` 更新全部状态”的模型不能直接套用到新路径；同时，FrontEnd 的引入并不意味着 legacy 路径已全部移除。
 
 ### 3. `RequestedLayerState` 保存什么
 
@@ -841,7 +819,7 @@ struct RequestedLayerState : layer_state_t {
 
 #### 3.2 为什么 layer 关系保存为 id
 
-`RequestedLayerState` 用 `parentId`、`relativeParentId`、`layerIdToMirror`、`touchCropId` 等 id 表示跨 layer 关系，而不是持有客户端 handle：这样可以避免状态对象因保存 handle 而意外延长其生命周期。
+`RequestedLayerState` 用 `parentId`、`relativeParentId`、`layerIdToMirror`、`touchCropId` 等 id 表示跨 layer 关系，而避免直接持有客户端 handle：这样可以防止状态对象因保存 handle 而意外延长其生命周期。
 
 对应的引用关系由 `LayerLifecycleManager` 维护。这组概念要分开记：id 标识关系本身；handle 是否仍存活是一个生命周期条件，layer 是否仍有 parent 是另一个生命周期条件；“从可见层级不可达”和“对象可以销毁”也是两回事。
 
@@ -855,11 +833,11 @@ struct RequestedLayerState : layer_state_t {
 - display rotation（显示旋转）和 output filter（输出筛选条件）；
 - 输入区域、圆角、阴影、模糊和 metadata 继承。
 
-所以，Winscope 中的最终 bounds 与 transaction 参数对不上时，我们先怀疑路径：确认父层级和 traversal path（图层在关系图中的遍历路径），再考虑 transaction 丢失的可能。
+因此，Winscope 中的最终 bounds 与 transaction 参数对不上时，应优先排查路径：确认父层级和 traversal path（图层在关系图中的遍历路径），再考虑 transaction 丢失的可能。
 
 ### 4. `LayerLifecycleManager` 管理创建、更新和销毁
 
-`LayerLifecycleManager` 拥有 `RequestedLayerState` 集合，同时维护 id 到状态的映射，以及“哪些 layer 正在引用它”的反向映射。它本身不是线程安全类，成员由 SurfaceFlinger 主线程上下文保护；FrontEnd 里只有 transaction 入口的收集过程用了 `LocklessQueue`，把整个 FrontEnd 当成无锁实现就错了。
+`LayerLifecycleManager` 拥有 `RequestedLayerState` 集合，同时维护 id 到状态的映射，以及“哪些 layer 正在引用它”的反向映射。它本身不是线程安全类，成员由 SurfaceFlinger 主线程上下文保护；FrontEnd 里只有 transaction 入口的收集过程用了 `LocklessQueue`，不能将整个 FrontEnd 视为无锁实现。
 
 #### 4.1 新建 layer
 
@@ -1061,7 +1039,7 @@ FrontEnd 文档说明，snapshot 理论上可以 clone（复制）；普通路�
 
 ### 8. 如何从 trace 判断问题在哪一段
 
-我们观察时，把请求排队、状态计算、buffer latch 和 present 分开看。Perfetto 中 counter（计数器） 记录随时间变化的数值，slice 记录一段工作的持续时间，两者各有分工，互相顶替不了。
+观察 trace 时，需要将请求排队、状态计算、buffer latch 和 present 分开分析。Perfetto 中 counter（计数器） 记录随时间变化的数值，slice 记录一段工作的持续时间，两者各有分工，互相顶替不了。
 
 | 证据 | 能说明什么 | 不能单独说明什么 |
 | --- | --- | --- |
@@ -1073,7 +1051,7 @@ FrontEnd 文档说明，snapshot 理论上可以 clone（复制）；普通路�
 | Winscope transaction 与 layer trace | transaction、层级、可见性和几何随时间的变化 | GPU 或 HWC 已完成读取 |
 | present fence 与 release fence | display present 或 buffer 可复用的时间边界 | 客户端最初提交了什么请求 |
 
-`TransactionHandler:flushTransactions` 这个 slice 在 `updateLayerSnapshots()` 中包住的不止筛选函数，还包括接收新 layer、获取 `mCreatedLayersLock`、登记 layer、应用事务和更新 hierarchy。区间变长时，我们先用 `sched_switch`、`sched_waking` 和线程状态轨道把 running、runnable delay 与阻塞等待分开，再评估其中有多少是过滤器的 CPU 开销。
+`TransactionHandler:flushTransactions` 这个 slice 在 `updateLayerSnapshots()` 中包住的不止筛选函数，还包括接收新 layer、获取 `mCreatedLayersLock`、登记 layer、应用事务和更新 hierarchy。区间变长时，应先用 `sched_switch`、`sched_waking` 和线程状态轨道把 running、runnable delay 与阻塞等待分开，再评估其中有多少是过滤器的 CPU 开销。
 
 `TransactionQueue` 在 `queueTransaction()` 时增加，在 ready transaction 被 flush 后按数量减少。持续升高说明消费速度跟不上入队速度；具体卡在哪里，还要继续检查：
 
@@ -1087,7 +1065,7 @@ FrontEnd 文档说明，snapshot 理论上可以 clone（复制）；普通路�
 
 ### 9. 一套可复现的验证方法
 
-验证 FrontEnd 开销时，我们至少准备两组负载：
+验证 FrontEnd 开销时，至少准备两组负载：
 
 1. **内容与属性组**：固定 layer 数，只更新 buffer，或只更新不会改变 hierarchy 的内容属性。
 2. **层级组**：使用同样的 layer 数，再加入 reparent、relative Z、mirror，以及 create/destroy（创建与销毁）。
@@ -1101,7 +1079,7 @@ FrontEnd 文档说明，snapshot 理论上可以 clone（复制）；普通路�
 - SurfaceFlinger 主线程处于 runnable、running（正在运行） 状态的时长，以及调度延迟；
 - 对应 display 的 present fence 与 FrameTimeline 结果。
 
-如果第二组的 snapshot 更新耗时显著增长，而 HWC 与 present 时长接近，说明压力更可能来自 hierarchy 或 snapshot 计算；如果两组 FrontEnd slice 接近，变长的却是 fence 或 HWC 耗时，瓶颈就在下游。FrontEnd 节省了多少毫秒，离开同机、同配置的对照数据是量化不出来的。
+如果第二组的 snapshot 更新耗时显著增长，而 HWC 与 present 时长接近，说明压力更可能来自 hierarchy 或 snapshot 计算；如果两组 FrontEnd slice 接近，变长的却是 fence 或 HWC 耗时，瓶颈就在下游。离开同机、同配置的对照数据，无法准确量化 FrontEnd 节省的耗时。
 
 ### 10. App 和系统组件怎样提交 transaction
 
@@ -1109,19 +1087,19 @@ FrontEnd 文档说明，snapshot 理论上可以 clone（复制）；普通路�
 
 同一帧需要一起生效的 position、crop、alpha、visibility 和 buffer，应放在同一笔 transaction，或按明确顺序 merge 后一次 apply。transaction merge 满足结合律，不满足交换律：后合入的同字段值会覆盖前面的值。
 
-反过来，没有原子关系的更新也别为了“减少笔数”硬合并：一笔 transaction 中任一关键 buffer 或 barrier 未 ready，整笔 transaction 都可能跟着等待。粒度由视觉一致性决定。
+反过来，没有原子关系的更新也不应为了“减少笔数”硬合并：一笔 transaction 中任一关键 buffer 或 barrier 未 ready，整笔 transaction 都可能跟着等待。粒度应由视觉一致性决定。
 
 #### 10.2 区分属性更新和层级更新
 
-reparent、relative Z、mirror、create/destroy 会改变 hierarchy；position、crop、alpha 等几何或可见性字段也可能要求更新子节点和 visible region（可见区域）。所以只更新内容时，别顺带反复提交无变化的层级操作。
+reparent、relative Z、mirror、create/destroy 会改变 hierarchy；position、crop、alpha 等几何或可见性字段也可能要求更新子节点和 visible region（可见区域）。因此只更新内容时，应避免顺带反复提交无变化的层级操作。
 
 #### 10.3 动画跟随正确的帧节奏
 
-由 App 驱动的逐帧 `SurfaceControl` 动画，通常应与 Choreographer 与 FrameTimeline 的节奏对齐，避免定时器无界地产生 transaction。媒体、相机等独立 producer 有自己的时钟，App UI 节奏套用不上；这类路径靠 frame-rate vote、时间戳和同步策略协调。
+由 App 驱动的逐帧 `SurfaceControl` 动画，通常应与 Choreographer 与 FrameTimeline 的节奏对齐，避免定时器无界地产生 transaction。媒体、相机等独立 producer 有自己的时钟，不适用 App UI 节奏；这类路径靠 frame-rate vote、时间戳和同步策略协调。
 
 #### 10.4 用完显式释放
 
-handle 存活会让 offscreen layer 继续占用资源。Java 代码应在生命周期结束时显式释放拥有的 `SurfaceControl`，回收时机交给 GC 是不行的；对 WMS、Shell 或系统动画创建的 leash（动画期间使用的临时父 Surface），也要检查异常与取消路径是否成对清理。
+handle 存活会让 offscreen layer 继续占用资源。Java 代码应在生命周期结束时显式释放拥有的 `SurfaceControl`，不能仅依赖 GC 决定回收时机；对 WMS、Shell 或系统动画创建的 leash（动画期间使用的临时父 Surface），也要检查异常与取消路径是否成对清理。
 
 ### 结论
 
@@ -1133,15 +1111,15 @@ SurfaceFlinger FrontEnd 可以按五个对象理解：
 - `LayerHierarchyBuilder`：用图表达 parent、relative Z、mirror 与 offscreen 关系。
 - `LayerSnapshotBuilder`：把请求状态和 traversal path 计算成按 z-order 排列的 snapshot。
 
-我们排查时始终先问一句：手上的材料属于哪一层——transaction 入队、请求状态、snapshot、buffer latch、composition strategy (合成策略)，还是 display present？只要这些层次没有混在一起，FrontEnd 问题就能定位到具体队列、filter、layer 或 traversal path。
+排查时首先需要区分手上的证据属于哪一层——transaction 入队、请求状态、snapshot、buffer latch、composition strategy (合成策略)，还是 display present。只要这些层次彼此边界清晰，FrontEnd 问题就能定位到具体队列、filter、layer 或 traversal path。
 
 ## 事务入队、分桶与就绪过滤
 
-状态进入 FrontEnd 之前先经过事务队列。无锁入口只减少提交端竞争，apply token、时间戳和同步条件仍会影响事务何时可用。“TransactionHandler 如何决定本轮应用哪些事务”一节已经列出 readiness 的四种结果和两类 barrier，我们这里接着补齐入口结构、三个过滤器各自检查的字段，以及 flush 重复扫描的停止条件。
+状态进入 FrontEnd 之前先经过事务队列。无锁入口只减少提交端竞争，apply token、时间戳和同步条件仍会影响事务何时可用。前文“TransactionHandler 如何决定本轮应用哪些事务”一节已经列出 readiness 的四种结果和两类 barrier，下面进一步说明入口结构、三个过滤器各自检查的字段，以及 flush 重复扫描的停止条件。
 
-### 1. 先限定“无锁架构”的范围
+### 1. “无锁架构”的适用边界
 
-`LocklessQueue` 的无锁性质只覆盖事务入口，扩大到整个事务系统就错了。这里的“无锁”指队列用原子操作协调并发，不获取队列自身的互斥锁。
+`LocklessQueue` 的无锁性质只覆盖事务入口，而不适用于整个事务处理系统。这里的“无锁”指队列用原子操作协调并发，不获取队列自身的互斥锁。
 
 `SurfaceFlinger::setTransactionState()` 会在 Binder 调用线程上完成权限清洗、layer handle（图层引用句柄） 解析、buffer 包装、workload hint（工作负载提示） 收集等工作，然后把 `QueuedTransactionState` 交给 `TransactionHandler::queueTransaction()`；只有最后这段入口交接使用 `LocklessQueue<QueuedTransactionState>`。
 
@@ -1169,12 +1147,12 @@ SurfaceFlinger FrontEnd 可以按五个对象理解：
 6. 取得 `mStateLock` 后处理 display transaction，再调用 `LayerSnapshotBuilder::update()`；
 7. 在同一 `mStateLock` 作用域内，`applyTransactionsLocked()` 继续处理回调、统计、input command（输入系统命令）和遗留事务标记，随后执行 buffer latch 与本轮变化清理。
 
-这里有两个要一起记住的结论：
+上述流程中需要同时明确两点：
 
 - layer 请求状态进入 FrontEnd 的关键调用是 `LayerLifecycleManager::applyTransactions()`；
 - `applyTransactionState()` 没有消失，仍在主线程、`mStateLock` 保护下处理回调、统计、输入命令和事务标记等职责。
 
-把整条链描述成“flush 后直接在 `mStateLock` 内逐 layer 修改”，FrontEnd 就被漏掉了；`applyTransactionState()` 的调用今天也仍然存在。
+因此，如果将整条链简化为“flush 后直接在 `mStateLock` 内逐 layer 修改”，就会遗漏 FrontEnd 阶段；`applyTransactionState()` 的调用在当前实现中也仍然存在。
 
 ### 3. LocklessQueue 如何工作
 
@@ -1233,7 +1211,7 @@ pop():
 - 在高竞争下，CAS 重试会消耗 CPU 和 cache（缓存） coherence（多核缓存一致性） 带宽；
 - 该实现要求单消费者，多个线程并发 `pop()` 是不支持的。
 
-所以，把 `queueTransaction()` 简写成“永不阻塞、只执行一次 CAS、绝不发生系统调用”是不成立的；AOSP 只是从入口队列自身的同步设计里移除了互斥锁。
+因此，将 `queueTransaction()` 简写成“永不阻塞、只执行一次 CAS、绝不发生系统调用”并不准确；AOSP 只是从入口队列自身的同步设计里移除了互斥锁。
 
 ### 4. 两层队列与 applyToken
 
@@ -1255,7 +1233,7 @@ pop():
 
 相同 token 下，`flushPendingTransactionQueues()` 只看队头。队头返回 `NotReady`、`NotReadyBarrier` 或 `NotReadyUnsignaled` 后，该桶停止继续弹出，后续事务只能排在后面，这就是同一桶内的 head-of-line blocking（队首阻塞）。
 
-外层循环仍会检查其他 token 的桶，一个 token 因 desired present time 或 fence 等待时，其他客户端不必跟着停住。不过 Android 17 新增的 transaction barrier 可以跨 token 建立显式依赖，“不同 token 永远互不影响”也就不成立了。
+外层循环仍会检查其他 token 的桶，一个 token 因 desired present time 或 fence 等待时，其他客户端不必跟着停住。不过 Android 17 新增的 transaction barrier 可以跨 token 建立显式依赖，不同 token 之间也并非在任何情况下都互不影响。
 
 #### 4.2 one-way 与队列就绪是两件事
 
@@ -1266,7 +1244,7 @@ pop():
 - 保证事务在当前 display frame 被采纳；
 - 让 acquire fence 自动变为 signaled。
 
-我们排查 BLAST transaction 时，要分别观察 Binder 异步提交和 SF 主线程的就绪判断。
+排查 BLAST transaction 时，需要分别观察 Binder 异步提交和 SF 主线程的就绪判断。
 
 ### 5. Android 17 的三个过滤器
 
@@ -1276,7 +1254,7 @@ pop():
 2. `transactionReadyBufferCheck()`；
 3. `TransactionHandler::isBarrierSignalledOrExpired()`。
 
-`mTransactionReadyFilters` 的类型是 `ftl::SmallVector<TransactionFilter, 3>`。`SmallVector` 的模板参数 `3` 表示三个元素可以放在对象自身的 inline storage（内联存储），对 `emplace_back()` 的总数量没有限制；AOSP 当前正好注册三个过滤器，由此推不出“最多三个”，更推不出“第三个留给厂商”。
+`mTransactionReadyFilters` 的类型是 `ftl::SmallVector<TransactionFilter, 3>`。`SmallVector` 的模板参数 `3` 表示三个元素可以放在对象自身的 inline storage（内联存储），对 `emplace_back()` 的总数量没有限制；AOSP 当前正好注册三个过滤器，这仅说明当前内置数量为 3，不能据此推断数量上限为 3 或存在预留给厂商的第三槽位。
 
 #### 5.1 timeline：判断这笔事务是否适合本轮
 
@@ -1320,13 +1298,13 @@ Android 17 的 `AutoSingleLayer` 至少要求：
 - wait transaction 从 `postTime` 起超过默认 **5 秒** 后放行；
 - 已 signal 的 token 记录超过默认 **5 秒** 后会被清理。
 
-这套五秒 TTL 与 buffer frame barrier 的四秒超时属于两种机制，讨论时别共用一个“barrier TTL”概念。
+这套五秒 TTL 与 buffer frame barrier 的四秒超时属于两种独立机制，分析时需要分开核对，不能混用同一个“barrier TTL”概念。
 
 ### 6. 为什么 flush 要重复扫描
 
 pending 容器按 apply token 分桶，`unordered_map` 的遍历次序没有业务含义。某个 WAIT barrier 所在桶可能先被检查，此时 signal 事务还没被弹出，而 signal 又可能位于另一个 token 的桶。
 
-`flushTransactions()` 因此反复调用 `flushPendingTransactionQueues()`，直到 `NotReadyBarrier` 的数量在相邻两轮之间不再变化。循环的目的是继续解析跨 token 的 barrier 依赖链；停止条件就看等待 barrier 的事务数是否还在变化，“没有新 Ready 事务”这样的概括对不上号。
+`flushTransactions()` 因此反复调用 `flushPendingTransactionQueues()`，直到 `NotReadyBarrier` 的数量在相邻两轮之间不再变化。循环的目的是继续解析跨 token 的 barrier 依赖链；循环的停止条件是等待 barrier 的事务数在相邻两轮之间不再变化，而“没有新 Ready 事务”并不能准确描述这一判断逻辑。
 
 每弹出一笔事务，处理状态会同步更新：
 
@@ -1361,7 +1339,7 @@ SurfaceFlinger::setTransactionFlags(eTransactionFlushNeeded, ...)
 
 `scheduleCommit()` 调用 `Scheduler::scheduleFrame()`，由 Scheduler 根据当前 frame target、VSync modulation（VSync 调度配置切换） 和既有调度状态安排唤醒。相同 transaction flag 已经置位时，新的事务通常不会重复安排一帧，但 active frame hint（活跃帧提示） 仍会重置 idle timer（空闲计时器）。
 
-有一个单独的例外：事务包含 frame-rate change（帧率变化），且已安排的 callback 距当前超过 30 ms 时，SF 会调用 `scheduleImmediateFrame()`。这个分支推广不到“所有 transaction 都会立即唤醒”。
+有一个单独的例外：事务包含 frame-rate change（帧率变化），且已安排的 callback 距当前超过 30 ms 时，SF 会调用 `scheduleImmediateFrame()`。这一例外仅适用于满足条件的帧率变更事务，不能推广为“所有 transaction 都会立即唤醒”。
 
 从 App `apply()` 到 SF 采纳事务的延迟，要结合 Binder 调度、SF 已安排的 scheduled frame（已调度帧）、就绪状态和系统负载判断，固定的进程间通信耗时，这里预设不出来。
 
@@ -1413,7 +1391,7 @@ Android 13 的入口使用 `mQueueLock` 保护 `mTransactionQueue`，主线程�
 
 收益取决于 Binder producer 数量、事务频率、CPU 拓扑、cache 竞争、SF 主线程负载和原有锁冲突程度。事务量较低时，两种入口的差异可能很小；压力升高后，CAS 重试本身也有成本。
 
-没有同设备、同构建、同场景的变更前后对照数据时，我们能做的只是提出可验证假设；“节省若干毫秒”“完全消除上下文切换”这类写法，现有材料都支撑不起。
+缺少同设备、同构建、同场景的变更前后对照数据时，仅能据此提出可验证假设；现有实现依据并不能直接推导出“节省若干毫秒”或“完全消除上下文切换”等固定数值结论。
 
 ### 10. Android 13 到 Android 17 的演进
 
@@ -1425,7 +1403,7 @@ Android 13 的入口使用 `mQueueLock` 保护 `mTransactionQueue`，主线程�
 | Android 16（API 36） | `LocklessQueue<QueuedTransactionState>` | timeline、buffer 两个过滤器 | 队列元素切换为 FrontEnd 使用的 queued state |
 | Android 17（API 37） | `LocklessQueue` 头文件移到 `libs/gui/include/gui/` | timeline、buffer、transaction barrier 三个过滤器 | 新增显式 WAIT/SIGNAL barrier 与五秒 TTL |
 
-`LocklessQueue` 在 Android 14 已进入这条路径；到 Android 17，AOSP 注册了第三个显式 transaction barrier 过滤器，“自定义第三槽位”是预留不出来的。
+`LocklessQueue` 在 Android 14 已进入这条路径；到 Android 17，AOSP 注册了第三个显式 transaction barrier 过滤器，源码中并不存在可自定义的“预留第三槽位”。
 
 ### 11. Perfetto：怎样验证是哪一段在等
 
@@ -1499,9 +1477,9 @@ data_sources {
 
 这类数据应与端到端 FrameTimeline、SF 主线程耗时一起分析，避免把局部 CPU 指标当成显示延迟。
 
-### 12. 常见误读
+### 12. 事务队列机制边界速查
 
-| 误读 | Android 17 的准确边界 |
+| 待核查点 | Android 17 的准确边界 |
 |---|---|
 | SurfaceFlinger transaction handler 已完全无锁 | 仅 MPSC 入口 queue 无 mutex；created layers、stalled 信息和全局状态仍有锁 |
 | push 永远只做一次 CAS | `compare_exchange_weak` 在竞争或弱失败时会循环 |
@@ -1523,7 +1501,7 @@ Android 17 的 transaction queue 设计可以拆成三段：
 - SF 主线程按 apply token 放入 FIFO，保持同 token 次序并隔离队头阻塞；
 - 三个过滤器按 timeline、buffer、显式 transaction barrier 决定本轮可应用集合。
 
-这套设计降低了入口 queue mutex 的共享压力，transaction 顺序、buffer fence、barrier 和 display 时序约束则原样保留。我们分析性能时，先证明事务卡在入口、per-token 队头还是合成后段，再来讨论无锁队列是否相关。
+这套设计降低了入口 queue mutex 的共享压力，transaction 顺序、buffer fence、barrier 和 display 时序约束则原样保留。分析性能时，需先定位事务究竟停留在入口、per-token 队头还是合成后段，再判断无锁队列是否与当前瓶颈相关。
 
 > 版本范围：主线按 AOSP `android-17.0.0_r1` 核对；历史表保留 Android 13～16 的架构演进，结论最高到 Android 17（API 37）。
 
@@ -1537,7 +1515,7 @@ Android 17 的 transaction queue 设计可以拆成三段：
 | Android 16（API 36） | 对象主线延续，但字段、change flags、readiness 和 SurfaceFlinger 兼容路径仍在变化。 |
 | Android 17（API 37） | 当前版本锚点。以上函数名、`PostProcess` change flag、WAIT/SIGNAL barrier、fast path 和 legacy `Layer` 共存关系均按 `android-17.0.0_r1` 解释。 |
 
-这些类位于 SurfaceFlinger 内部，不是稳定的 SDK API。调试其他 Android 版本或厂商分支时，应查看对应 tag 或 commit，只按 API 级别推测内部实现是要出错的。
+这些类位于 SurfaceFlinger 内部，不是稳定的 SDK API。调试其他 Android 版本或厂商分支时，应查看对应 tag 或 commit，仅凭 API 级别推测内部实现容易产生偏差。
 
 ## 参考资料
 

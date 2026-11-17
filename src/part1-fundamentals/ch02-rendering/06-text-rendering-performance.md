@@ -75,18 +75,13 @@ related_chapters:
 
 # 文字渲染性能
 
-一段文字从业务数据变成屏幕像素，至少要经过内容处理、段落测量、换行、View 绘制命令录制、Skia glyph（字形）资源准备和窗口 buffer 提交。这些工作分布在不同线程，也受不同缓存约束，把文字卡顿只记在 `TextView.onMeasure()` 头上，往往会查偏方向。
+一段文字从业务数据变为屏幕像素，需要依次经过内容处理、段落测量、换行、View 绘制命令录制、Skia glyph（字形）资源准备与窗口 buffer 提交。这些阶段横跨主线程、RenderThread 与 GPU 等不同执行域，并受各自独立的缓存机制约束，因此文字渲染延迟既可能源于主线程排版（如 `TextView.onMeasure()`），也可能发生在绘制录制、字形光栅化或下游合成阶段。
 
-排查时我们先回答两个问题：
-
-1. 本帧为什么需要重新排版或重录文字？
-2. 最早超时的是主线程、RenderThread 与 GPU，还是后续窗口显示链路？
-
-列表滚动时，可见 `TextView` 未必每个都在每帧重新 measure；反过来，RenderThread 上出现文字相关开销，也说明不了主线程必然重新执行了文字整形（shaping）。这两个方向要分别取证，下面我们按层次把工作拆开来看。
+定位文字性能问题时，需从触发原因与线程归属两方面入手：首先确认本帧为何需要重新排版或重录文字，再排查最早超过帧预算的是主线程、RenderThread 与 GPU，还是后续窗口显示链路。列表滚动期间，可见的 `TextView` 未必在每帧重新执行 measure；同样，RenderThread 上出现文字绘制耗时，也不意味主线程必然重新执行了文字整形（shaping），两者需分别取证。
 
 ## 文字工作的五个层次
 
-拿到文字相关的卡顿，我们第一步是按线程和产物把工作拆开：同样表现为“文字慢”，慢的可能在测量、在绘制录制，也可能在字形准备，对应的优化完全不同。普通 View 页面走的是标准 HWUI（Android 硬件加速 UI 渲染库） 应用窗口路径，文字工作可以分成五层：
+定位文字相关延迟时，首先应按所属线程与中间产物将文字工作拆分为五个层次。普通 View 页面遵循标准 HWUI（Android 硬件加速 UI 渲染库）应用窗口路径，其层次划分如下：
 
 | 层次 | 常见线程 | 主要产物 | 典型触发条件 |
 |---|---|---|---|
@@ -120,11 +115,11 @@ flowchart LR
     BW --> SF["SurfaceFlinger / HWC / present"]
 ```
 
-`measure`、`layout` 和 `draw` 是否执行，由 `ViewRootImpl.performTraversals()` 根据 dirty flag（需要重新处理的脏标记） 决定。只改变滚动位置、item（列表项） 与 DisplayList 都能复用时，文字布局可能完全不重建；新的 item bind（列表项数据绑定）、宽度变化、字体参数变化或 `requestLayout()`，才会把排版工作带回本帧。后面讲到的优化手段，大多围绕“让能复用的层继续复用”这一条展开。
+`measure`、`layout` 和 `draw` 是否执行，由 `ViewRootImpl.performTraversals()` 根据 dirty flag（需要重新处理的脏标记）决定。只改变滚动位置、item（列表项）与 DisplayList 都能复用时，文字布局可能完全不重建；新的 item bind（列表项数据绑定）、宽度变化、字体参数变化或 `requestLayout()`，才会把排版工作带回本帧。因此，减少文字渲染开销的关键在于保持各阶段缓存与绘制记录的稳定复用。
 
 ## `TextView` 怎样选择 Layout
 
-一段文本最终交给哪个 Layout 排版，`TextView` 有一套固定的判断顺序。`TextView.makeNewLayout()` 最终调用 `makeSingleLayout()`：先看文本是否需要 `DynamicLayout`；其余文本由 `BoringLayout.isBoring()` 做资格检查，资格和宽度条件都通过时用 `BoringLayout`，否则用 `StaticLayout`。常见的“单行用 Boring、多行用 Static、EditText 用 Dynamic”只是这条顺序的粗略概括。我们评估文字测量成本前，先要弄清目标文本实际落在哪条路径上。
+一段文本最终交给哪个 Layout 排版，`TextView` 遵循固定的判断顺序。`TextView.makeNewLayout()` 最终调用 `makeSingleLayout()`：先看文本是否需要 `DynamicLayout`；其余文本由 `BoringLayout.isBoring()` 做资格检查，资格和宽度条件都通过时用 `BoringLayout`，否则用 `StaticLayout`。评估文字测量成本前，需先确认目标文本实际命中的 Layout 路径。
 
 ### `DynamicLayout`：面向可变或可选择文本
 
@@ -164,25 +159,25 @@ flowchart LR
 1. 为每个段落取得或创建 `PrecomputedText.ParagraphInfo`，其中保存 `MeasuredParagraph`；
 2. 把 `MeasuredParagraph` 与当前宽度、缩进、断行策略、hyphenation（自动连字符）、两端对齐等约束交给 `LineBreaker.computeLineBreaks()`。
 
-`StaticLayout` 还要处理 `LeadingMarginSpan`、`LineHeightSpan`、tab、ellipsize、最大行数、行高和每行方向信息。一段长文本慢不慢，字符数说明不了全部：段落数、run（连续采用同类排版属性的文本段）数量、Span 的分布、宽度和断行策略都会改变工作量，字体 fallback（缺字时换用其他字体）也在其列。我们拿到一段慢文本时，先看的就是这些结构因素。
+`StaticLayout` 还要处理 `LeadingMarginSpan`、`LineHeightSpan`、tab、ellipsize、最大行数、行高和每行方向信息。长文本的排版耗时不仅取决于字符数，段落数、run（连续采用同类排版属性的文本段）数量、Span 的分布、可用宽度、断行策略以及字体 fallback（缺字时换用其他字体）都会显著改变工作量，排查慢文本时应优先核查这些结构因素。
 
 ## Minikin：字体选择、整形和断行
 
-Layout 选定之后，排版准备进入 Minikin。这一层做三件事：字体选择、整形和断行；文字慢的问题落到这一层时，我们要把三者的开销分开算，后面的断行和缓存小节会分别展开。`LayoutPiece` 先调用 `FontCollection.itemize()`，按字体覆盖范围把输入拆成若干 font run（采用同一字体匹配结果的连续文本段），再对每个 script run（采用同一文字体系规则的连续文本段）调用 HarfBuzz 的 `hb_shape()`。`android-17.0.0_r1` 中的 `external/harfbuzz_ng` 对应 HarfBuzz 11.4.1。
+Layout 选定之后，排版准备进入 Minikin。这一层承担字体选择、整形和断行三项工作，排查该层耗时需要将三者开销分开核算。`LayoutPiece` 先调用 `FontCollection.itemize()`，按字体覆盖范围把输入拆成若干 font run（采用同一字体匹配结果的连续文本段），再对每个 script run（采用同一文字体系规则的连续文本段）调用 HarfBuzz 的 `hb_shape()`。`android-17.0.0_r1` 中的 `external/harfbuzz_ng` 对应 HarfBuzz 11.4.1。
 
-整形（shaping）把 Unicode 输入映射成 glyph、cluster（共同参与排版的一组字符）、advance（排版推进距离）和 offset（字形偏移）。按“一个 Unicode 对应一个 glyph”来估整形复杂度会走样：连字、组合附加符号、emoji ZWJ（Zero Width Joiner，零宽连接符）序列、variation selector（变体选择符）和字体 fallback（当前字体缺字时换用其他字体）都会改变码点与 glyph 的关系，不同语言文字体系之间也没有固定的开销倍数。所以复杂度这一项，我们以目标字体、真实语料和设备上的实测为准。
+整形（shaping）把 Unicode 输入映射成 glyph、cluster（共同参与排版的一组字符）、advance（排版推进距离）和 offset（字形偏移）。连字、组合附加符号、emoji ZWJ（Zero Width Joiner，零宽连接符）序列、variation selector（变体选择符）和字体 fallback（当前字体缺字时换用其他字体）都会打破“一个 Unicode 对应一个 glyph”的简单比例，不同语言文字体系之间也没有固定的开销倍数。因此，整形复杂度应以目标字体、真实语料和目标设备上的实测为准。
 
 ### 断行包含两个阶段
 
-Minikin 的 `WordBreaker` 先用 ICU break iterator（Unicode 文本边界迭代器）给出候选断点，`LineBreaker` 再按当前宽度和 break strategy（断行策略）从候选里选出实际行断点。CJK（中日韩文字）、泰文、URL、emoji 序列适用的规则各不相同，“CJK 都靠字典查找”的说法只覆盖其中一部分。
+Minikin 的 `WordBreaker` 先用 ICU break iterator（Unicode 文本边界迭代器）给出候选断点，`LineBreaker` 再按当前宽度和 break strategy（断行策略）从候选里选出实际行断点。CJK（中日韩文字）、泰文、URL、emoji 序列适用的规则各不相同，部分文字体系才依赖字典查找。
 
-自动连字符要进入对应的测量路径，前提是断行策略不是 `BREAK_STRATEGY_SIMPLE`，且 hyphenation frequency（自动连字符频率） 不是 `NONE`。`TextView` 的注释里还留着一段版本历史：
+自动连字符要进入对应的测量路径，前提是断行策略不为 `BREAK_STRATEGY_SIMPLE`，且 hyphenation frequency（自动连字符频率）不为 `NONE`。`TextView` 的注释里保留了版本差异说明：
 
 - Android 10 之前，主题默认可能是 `HYPHENATION_FREQUENCY_NORMAL`；
 - Android 10 起，`TextView` 和 `EditText` 的主题默认改为 `NONE`；
 - 自建 `PrecomputedText.Params.Builder` 的默认值与 `TextView` 未必相同，应优先从目标 View 取得 `getTextMetricsParams()`。
 
-动手优化前，我们先读出设备上实际的 `breakStrategy` 和 `hyphenationFrequency`：默认已是 `NONE` 的设备上再设置一遍，省不下排版工作。
+优化前应先读出设备上实际生效的 `breakStrategy` 和 `hyphenationFrequency`：在默认已是 `NONE` 的设备上重复关闭，无法节省排版工作。
 
 <!-- gracker-diagram: ch02-06-shaping-linebreak -->
 ![字体整形产出 glyph，断行还需要宽度与策略](../../assets/diagrams/ch02/ch02-06-shaping-linebreak.png)
@@ -199,7 +194,7 @@ Minikin 的 `WordBreaker` 先用 ICU break iterator（Unicode 文本边界迭代
 - 文本、字体、locale、方向或 variation settings 改变，会形成不同的缓存键；
 - 两条业务文本只有局部字词相同时未必共享缓存，因为键里还包含传入的文字上下文和 range。
 
-整形缓存之外，`TextLine` 另有一个容量为 3 的静态对象池，用来减少临时对象分配；它缓存的是可复用对象，排版结果不在里面。再往绘制执行一侧，Skia 的 `StrikeCache` 管理 GPU 文字 strike/glyph 资源，一个 strike 对应同一字体、字号和变换参数下的一组字形。它和 Minikin 的整形缓存处在流水线的不同阶段，我们分开统计各自的命中率，不合成一个笼统的“文字缓存命中率”。
+整形缓存之外，`TextLine` 另有一个容量为 3 的静态对象池，用来减少临时对象分配；它缓存的是可复用对象，排版结果不在里面。再往绘制执行一侧，Skia 的 `StrikeCache` 管理 GPU 文字 strike/glyph 资源，一个 strike 对应同一字体、字号和变换参数下的一组字形。它和 Minikin 的整形缓存处在流水线的不同阶段，统计时应分别核算各自命中率，避免合并为单一的“文字缓存命中率”。
 
 <!-- gracker-diagram: ch02-06-text-cache-scopes -->
 ![整形缓存、对象池与 GPU 字形资源的分工](../../assets/diagrams/ch02/ch02-06-text-cache-scopes.png)
@@ -212,7 +207,7 @@ Span 和 emoji 是文字内容里最常见的两个变量，它们把成本加�
 
 ### Span 类型与排版成本
 
-我们按 Span 改变的层次来分类：
+按影响的渲染阶段分类，各类 Span 的成本特征如下：
 
 | Span 类型 | 主要影响 |
 |---|---|
@@ -222,13 +217,13 @@ Span 和 emoji 是文字内容里最常见的两个变量，它们把成本加�
 | `CharacterStyle` | 通常改变颜色、背景或绘制效果；不一定改变测量 |
 | `ClickableSpan` | 主要增加点击命中和 movement method（键盘、触摸移动处理）开销，本身不是文字测量参数 |
 
-所以评估富文本时，我们要数的是会改变 metrics（测量指标）的 Span 切分点、`ReplacementSpan` 数量和段落级 Span；Span 总数里混着只影响绘制和交互的条目，直接换算成排版耗时会把它们也带上。
+因此评估富文本时，应重点统计会改变 metrics（测量指标）的 Span 切分点、`ReplacementSpan` 数量和段落级 Span；仅影响绘制或点击交互的 Span 应分开统计，不宜直接折算为排版耗时。
 
 ### 系统 emoji 与 EmojiCompat 是两条路径
 
-系统 emoji 走系统或厂商字体的正常路径，参与 fallback、整形和 Skia 绘制。EmojiCompat（emoji2）是另一条路：它先把需要兼容的序列处理成带 `EmojiSpan` 的 `Spanned`；在当前 AndroidX 实现里，`TypefaceEmojiSpan` 最终切换到 emoji typeface 并调用 `Canvas.drawText()`，“每次绘制都先解码 bitmap（位图）”的描述并不成立。
+系统 emoji 走系统或厂商字体的正常路径，参与 fallback、整形和 Skia 绘制。EmojiCompat（emoji2）是另一条路径：它先把需要兼容的序列处理成带 `EmojiSpan` 的 `Spanned`；在当前 AndroidX 实现里，`TypefaceEmojiSpan` 最终切换到 emoji typeface 并调用 `Canvas.drawText()`，无需每次绘制都先解码 bitmap（位图）。
 
-EmojiCompat 的成本，我们也按阶段拆开看：
+EmojiCompat 的成本同样需要按阶段拆解：
 
 - 初始化和可下载字体的准备属于字体加载阶段；
 - `EmojiCompat.process()` 扫描并生成 Span，官方允许在后台处理并缓存结果；
@@ -239,7 +234,7 @@ AndroidX 默认的 initializer（初始化器） 会把字体加载推迟到首�
 
 ## 减少无效重建
 
-前面把文字工作拆到了线程、层次和缓存，优化要解决的就是其中的重复劳动：让没变的内容复用旧结果，把重算留给真正变化的部分。
+减少文字无效重建的关键在于让未变化的内容复用旧结果，仅对真正变化的部分重新计算。
 
 ### `PrecomputedText` 预计算了什么
 
@@ -285,7 +280,7 @@ AndroidX 的 `AppCompatTextView.setTextFuture()` 会在 `onMeasure()` 中调用 
 
 ### 列表场景的触发源
 
-列表里重复创建 Layout 的触发源屈指可数，我们优先处理这几类：
+列表里重复创建 Layout 的触发源主要集中在以下六类：
 
 1. 用 payload（局部更新信息） 或内容 diff（差异比较） 避免对未变化字段重复 `setText()`；
 2. 固定 item 的文字宽度约束，避免动画期间反复改变可用宽度；
@@ -302,17 +297,17 @@ AndroidX 的 `AppCompatTextView.setTextFuture()` 会在 `onMeasure()` 中调用 
 
 API 35 增加了以 glyph bounds 计算宽度和处理 start overhang（起始悬垂）的相关 API。`TextView` 对 target SDK 35 及以上默认启用 `useBoundsForWidth`；`shiftDrawingOffsetForStartOverhang` 默认仍为 false，并且只有前者启用时才生效。自建 `StaticLayout.Builder` 的话，默认值要按 Builder 文档单独确认。
 
-这一组选项的用途，是修正 advance width（排版推进宽度） 与 glyph bounds 对不上时造成的裁切和对齐问题，会影响宽度、断行或 drawing offset（绘制偏移）。开启前我们做的是视觉回归和基准测试；“只有微秒级成本”这类脱离字体与文本的结论，并不可靠。
+这一组选项的用途，是修正 advance width（排版推进宽度）与 glyph bounds 对不上时造成的裁切和对齐问题，会影响宽度、断行或 drawing offset（绘制偏移）。开启前应基于真实字体与文本进行视觉回归和基准测试，不能脱离具体场景套用“微秒级开销”的经验判断。
 
 ### 可变字体动画与缓存
 
-Minikin 的 `Font.cpp` 会缓存调整过的 HarfBuzz font 和 typeface；variation settings 同时也是 `LayoutCacheKey` 的一部分。动画反复落在同一组 axis（可变字体轴） 值上，对象和整形结果都可能复用；连续扫过大量不同的 axis 值，则会不断产生新的 cache key（缓存键）。
+Minikin 的 `Font.cpp` 会缓存调整过的 HarfBuzz font 和 typeface；variation settings 同时也是 `LayoutCacheKey` 的一部分。动画反复落在同一组 axis（可变字体轴）值上，对象和整形结果都可能复用；连续扫过大量不同的 axis 值，则会不断产生新的 cache key（缓存键）。
 
-字重动画若每帧修改 variation settings，可能同时带来排版、DisplayList 重录和 glyph 资源变化。我们先用真实动画范围做 cold/warm（首次运行与缓存已热）两组测量，再决定是否降低更新频率、量化 axis 值，或改用不改变文字 metrics 的视觉方案。
+字重动画若每帧修改 variation settings，可能同时带来排版、DisplayList 重录和 glyph 资源变化。应先用真实动画范围做 cold/warm（首次运行与缓存已热）两组测量，再决定是否降低更新频率、量化 axis 值，或改用不改变文字 metrics 的视觉方案。
 
 ## 用 Perfetto 定位文字卡顿
 
-机制讲完，回到 trace 上。`ViewRootImpl` 在 `TRACE_TAG_VIEW`（View 子系统的 trace 标签）下稳定记录的是窗口级 `measure`、`layout` 和 `draw`；逐个 View 的 `onMeasure TextView ...`、`onLayout ...` 要启用 framework 的 traversal tracing（逐 View 遍历跟踪）才会出现。所以普通应用 trace 里，我们先按窗口级 slice（时间片）分析，不假定能看到 `TextView.onMeasure()` slice。
+在 Perfetto trace 中，`ViewRootImpl` 在 `TRACE_TAG_VIEW`（View 子系统的 trace 标签）下稳定记录的是窗口级 `measure`、`layout` 和 `draw`；逐个 View 的 `onMeasure TextView ...`、`onLayout ...` 仅在启用 framework 的 traversal tracing（逐 View 遍历跟踪）时才会出现。因此普通应用 trace 需优先从窗口级 slice（时间片）入手分析，而不能预设能直接看到 `TextView.onMeasure()` slice。
 
 采集时至少启用：
 
@@ -332,7 +327,7 @@ Minikin 的 `Font.cpp` 会缓存调整过的 HarfBuzz font 和 typeface；variat
 | App SurfaceFrame（应用窗口帧）按时，DisplayFrame（显示帧）超时 | 沿 BLAST 缓冲队列、SurfaceFlinger、HWC 和 present（提交显示）继续分析，不能只改文字布局 |
 | 只在首次字体、emoji 或生僻字出现时变慢 | 对比首次运行与缓存已热的运行，检查字体准备、EmojiCompat 初始化和 Skia strike/glyph cache（字形资源缓存） |
 
-窗口级 `measure` 定位不到具体控件时，我们可以在应用可控的位置补少量 trace。下面的标记用于区分业务富文本构造和 `setText()`，不用在每个字符或每个 Span 上打点。
+窗口级 `measure` 定位不到具体控件时，可以在应用可控的位置补少量 trace。下面的标记用于区分业务富文本构造和 `setText()`，无需在每个字符或每个 Span 上打点。
 
 ```kotlin
 Trace.beginSection("messageText/buildSpans")
@@ -379,28 +374,6 @@ try {
 | Android 15（API 35） | bounds-for-width、start overhang 和 minimum font metrics（最小字体指标）API 公开；target SDK 35 及以上版本的 `TextView` 默认使用 glyph bounds 计算宽度 | 升级 target SDK 后需要回归文字宽度、换行、对齐与裁切 |
 | Android 17（API 37） | 当前源码锚点；Minikin 当前的排版与可变字体缓存、HarfBuzz 11.4.1，以及 HWUI 到 Skia text blob 的路径 | 当前方法名和缓存 key 按 `android-17.0.0_r1` 解读；若要判断某项是否由 Android 17 新增，还需查历史 tag（源码版本标签） |
 | AndroidX emoji2 与 appcompat | 独立于 Android 平台版本发布 | 记录具体依赖版本、字体来源、初始化策略，以及 `setTextFuture()` 是否等待 |
-
-## 常见误区
-
-### 列表滚动时，每个 TextView 都会重走 measure、layout、draw
-
-Traversal 会依据脏标记、`MeasureSpec`（父 View 下发的尺寸约束） 和缓存决定工作量。能复用 DisplayList 的列表项，可能只需改变位置；新 bind、宽度变化或 `requestLayout()` 才可能重建文字 Layout。
-
-### 单行文本一定使用 BoringLayout
-
-单行配置还要经过文本转换、字符与方向检查、段落级 Span 检查，以及宽度和 ellipsize 判断。`isBoring()` 检查的是显示文本；`setSingleLine(true)` 会转换换行符，判断 Layout 类型要看转换后的显示文本。
-
-### 所有 Span 都会让 shaping 成本成倍增加
-
-直接改变对应排版阶段的，是改变 metrics 的 Span、`ReplacementSpan` 或段落级 Span；颜色和点击 Span 的主要成本在绘制或交互，统计时应与 `MetricAffectingSpan` 分开算。
-
-### PrecomputedText 已经算好最终换行
-
-它预计算的是段落测量和 glyph positioning，Params 里没有最终宽度；`StaticLayout` 仍要按当时的宽度、maxLines、ellipsize 和行距计算行布局。
-
-### RenderThread 慢说明 TextView.onMeasure 慢
-
-`onMeasure()` 在主线程执行，RenderThread 处理 DisplayList、Skia 与 GPU 工作以及窗口 buffer。同一次文本变化可能让两边同时变忙，归因时要分别取证。
 
 ## 与其他机制的关系
 

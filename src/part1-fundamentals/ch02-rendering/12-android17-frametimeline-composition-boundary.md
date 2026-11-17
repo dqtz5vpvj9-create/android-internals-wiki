@@ -64,7 +64,7 @@ Producer 生成内容
 
 `queueBuffer()` 返回只代表提交动作完成，不能作为上屏时间。
 
-## 先确认 FrameTimeline 覆盖了哪条出图路径
+## FrameTimeline 对不同出图路径的覆盖范围
 
 FrameTimeline 对标准 App Window 最有解释力。页面包含独立 Surface、外部流或多个 Producer 时，应先画出 layer（图层）与 BufferQueue（buffer 生产者和消费者之间的队列）拓扑，再决定 FrameTimeline 能证明哪一段。下表中的 Expected 表示预测区间，Actual 表示观测到的实际区间。
 
@@ -120,7 +120,7 @@ token 可能无效或过期。`SurfaceFrame::trace()` 会跳过无效 token；�
 
 ### TokenManager 的容量边界
 
-源码注释把预测描述为大约保留 120 ms，但 Android 17 的实现使用 `kMaxTokens = 500` 个环形槽位：达到容量后，后续生成的 token 按编号取模覆盖最旧记录。查询不会取走或删除条目，因而消费是否及时不会改变覆盖规则；生成数量决定旧记录何时被覆盖。分析 `prediction expired` 时，应检查 token 生成、transaction 到达与查询的时间关系，不要把 120 ms 当作精确过期闹钟。[源码：TokenManager](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/services/surfaceflinger/Scheduler/FrameTimeline.cpp)
+源码注释把预测描述为大约保留 120 ms，但 Android 17 的实现使用 `kMaxTokens = 500` 个环形槽位：达到容量后，后续生成的 token 按编号取模覆盖最旧记录。查询不会取走或删除条目，因而消费是否及时不会改变覆盖规则；生成数量决定旧记录何时被覆盖。分析 `prediction expired` 时，应检查 token 生成、transaction 到达与查询的时间关系，不能把 120 ms 当作精确过期阈值。[源码：TokenManager](https://android.googlesource.com/platform/frameworks/native/+/android-17.0.0_r1/services/surfaceflinger/Scheduler/FrameTimeline.cpp)
 
 <!-- gracker-diagram: ch02-12-token-ring-capacity -->
 ![预测按 500 个环形槽位保存，查询不消费条目](../../assets/diagrams/ch02/ch02-12-token-ring-capacity.png)
@@ -194,13 +194,13 @@ DisplayFrame 的 slice 时长包含 Composer、Display HAL 与 present 反馈，
 
 ### 三个字段不能互相替代
 
-| 字段 | 回答的问题 | 常见误读 |
+| 字段 | 回答的问题 | 分析边界 |
 |---|---|---|
 | `on_time_finish` | 该对象是否在预测 end 前 ready | `true` 不保证按时 present |
 | `present_type` | actual present 相对 predicted present 是 on-time、late、early、dropped 还是 unknown（按时、晚、早、丢弃或未知） | early 不自动等于 pacing bug（节奏控制错误） |
 | `prediction_type` | 用于比较的预测是否仍有效 | expired 仍直接比较两个 slice |
 
-## fence 与 BufferQueue：不要把三个方向混在一起
+## fence 与 BufferQueue：三类同步对象的职责区分
 
 | 同步对象 | 生产者与消费者关系 | 能回答的问题 |
 |---|---|---|
@@ -407,7 +407,7 @@ WHERE a.surface_frame_token IS NOT NULL
 ORDER BY a.ts;
 ```
 
-结果中的 `dur` 是应用 ready 区间，`present_type` 是后来根据显示反馈完成的分类。相同 `app_token` 出现多行时，应先查看 process（进程）与 layer，不要立即去重。
+结果中的 `dur` 是应用 ready 区间，`present_type` 是后来根据显示反馈完成的分类。相同 `app_token` 出现多行时，应先查看 process（进程）与 layer，避免直接去重。
 
 ### 按 DisplayFrame 关联 App 与 SurfaceFlinger
 
@@ -478,7 +478,7 @@ SurfaceFrame `gpu_composition = false` 只表示该 layer 没有被 SF 放入 cl
 
 ### SurfaceView 或游戏：画面节奏不稳
 
-不要假定 Native（原生）引擎一定把 `Choreographer.FrameData` 正确传到了目标 Surface。验证 token 存在后，再沿独立 layer 检查：
+排查时不能预设 Native（原生）引擎一定已把 `Choreographer.FrameData` 正确传到了目标 Surface。验证 token 存在后，再沿独立 layer 检查：
 
 ```text
 AChoreographer / engine tick

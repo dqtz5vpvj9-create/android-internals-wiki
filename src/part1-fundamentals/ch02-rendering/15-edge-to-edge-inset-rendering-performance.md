@@ -81,7 +81,7 @@ Android 15（API 35）开始对满足版本条件的 Activity 强制 Edge-to-Edg
 
 普通 View 或 Compose 页面仍沿 `ViewRootImpl → HWUI RenderThread（硬件加速渲染线程）→ App Window BLAST（应用窗口缓冲队列）→ SurfaceFlinger → HWC（Hardware Composer，硬件合成器）` 生成并显示；状态栏、导航栏、桌面 caption（标题栏）和 IME（输入法窗口）则作为系统 UI 或受控 Surface 参与同一 Display 的合成。
 
-我们做性能分析时，先把问题分到三类里：
+性能分析通常按以下三个层面拆解：
 
 1. **窗口几何**：应用窗口是否覆盖系统栏和 cutout（屏幕缺口）区域；
 2. **Insets 数据**：哪些系统区域与当前窗口相交，何时分发给 View 树；
@@ -98,7 +98,7 @@ Android 15（API 35）开始对满足版本条件的 Activity 强制 Edge-to-Edg
 
 ### 1.1 Edge-to-Edge 由运行平台和 target SDK 共同决定
 
-我们先把版本边界划清楚：在 Android 15 及更高版本设备上，target SDK 35 及以上的应用默认使用 Edge-to-Edge。Android 15 为 target 35 留过 `windowOptOutEdgeToEdgeEnforcement` 临时退出项；Android 16 上，target SDK 36 及以上时该退出项被禁用。Android 17 延续这条边界，Edge-to-Edge 模型仍是这一套。
+在 Android 15 及更高版本设备上，target SDK 35 及以上的应用默认使用 Edge-to-Edge。Android 15 为 target 35 留过 `windowOptOutEdgeToEdgeEnforcement` 临时退出项；Android 16 上，target SDK 36 及以上时该退出项被禁用。Android 17 延续这条边界，Edge-to-Edge 模型仍是这一套。
 
 落到源码上，`PhoneWindow` 里对应两项兼容性变更：
 
@@ -128,7 +128,7 @@ Android 15（API 35）开始对满足版本条件的 Activity 强制 Edge-to-Edg
 
 ## 2. Edge-to-Edge 没有改变标准 App Window 出图拓扑
 
-普通硬件加速 Activity 的出图主线维持原样，我们先把它摆出来对照：
+普通硬件加速 Activity 的出图主线维持原样，完整链路如下：
 
 ```text
 Insets / input / animation / invalidate / requestLayout
@@ -143,11 +143,11 @@ HWUI RenderThread → App Window BLASTBufferQueue
 SurfaceFlinger → HWC / RenderEngine → Display present
 ```
 
-我们用这段骨架定位问题落在哪一层。Edge-to-Edge 带来的变化集中在两端：App Window 的内容可能覆盖更大的窗口区域，Insets 变化可能触发 traversal（View 树遍历）；生成与提交这一段照旧——Edge-to-Edge 没有自动另建一个应用 Producer（BufferQueue 生产端），出帧仍走 App Window 的 BLAST 队列。
+以上结构明确了问题的排查层级。Edge-to-Edge 带来的变化集中在两端：App Window 的内容可能覆盖更大的窗口区域，Insets 变化可能触发 traversal（View 树遍历）；生成与提交这一段照旧——Edge-to-Edge 没有自动另建一个应用 Producer（BufferQueue 生产端），出帧仍走 App Window 的 BLAST 队列。
 
 ### 2.1 系统栏背景画在哪里
 
-系统栏透明之后，我们先要弄清这些栏的内容各自画在哪里。系统栏图标、手势 handle（导航手势提示条）、caption 控件等 SystemUI 内容可以有自己的窗口或 layer；应用侧的系统栏背景处理还可能发生在 `DecorView` 内部：
+系统栏透明之后，首先需要明确这些栏的内容各自绘制在哪个图层或窗口中。系统栏图标、手势 handle（导航手势提示条）、caption 控件等 SystemUI 内容可以有自己的窗口或 layer；应用侧的系统栏背景处理还可能发生在 `DecorView` 内部：
 
 - `DecorView.updateColorViews()` 维护状态栏和导航栏的 color view（绘制栏背景的辅助 View）；
 - `calculateNavigationBarColor()` 在 Edge-to-Edge 强制场景中可把三键导航栏颜色转成对比度 scrim（半透明保护层）；
@@ -157,7 +157,7 @@ SurfaceFlinger → HWC / RenderEngine → Display present
 
 ### 2.2 HWC 回退 CLIENT 的判断依据
 
-排查合成问题时，我们关心的是 HWC 在当前这一帧的选择：它按整个 Display 的可见 layer 集合评估 composition strategy（合成策略）。影响因素包括：
+排查合成问题时，核心依据是 HWC 在当前这一帧的选择：它按整个 Display 的可见 layer 集合评估 composition strategy（合成策略）。影响因素包括：
 
 - layer 的 format（像素格式）、dataspace（颜色数据空间）、blend（混合方式）、transform（变换）、crop（裁剪）和 protected usage（受保护内容标志）；
 - 可用 overlay plane（硬件叠加平面）、scaler（缩放器）、带宽与厂商限制；
@@ -181,7 +181,7 @@ SurfaceFlinger → HWC / RenderEngine → Display present
 
 ### 3.1 系统状态到 View 树
 
-排查 Insets 相关开销时，我们先弄清这份状态从哪里来、经谁计算、什么时候到达 View 树。主路径可以概括为：
+排查 Insets 相关开销时，需要明确这份状态从哪里来、经谁计算以及何时到达 View 树。主路径可以概括为：
 
 ```text
 WMS InsetsStateController / InsetsSourceProvider
@@ -239,7 +239,7 @@ val safe = insets.getInsets(
 - 把窗口几何状态混入业务状态，增加生命周期与多窗口同步问题；
 - 让同一组件在 Dialog、分屏或外接 Display 中拿到错误缓存。
 
-我们把消费放在明确负责这块避让区域的容器里，并测试它的后代和兄弟节点仍然正常。
+消费操作应放在明确负责该避让区域的容器内，并测试其后代和兄弟节点行为仍保持正常。
 
 <!-- gracker-diagram: ch02-15-listener-consumption -->
 ![listener 与默认实现二选一；消费先影响当前子树](../../assets/diagrams/ch02/ch02-15-listener-consumption.png)
@@ -267,7 +267,7 @@ INPUT → ANIMATION → INSETS_ANIMATION → TRAVERSAL → COMMIT
 
 `ViewGroup` 根据 callback 的 dispatch mode（分发模式）决定是否把动画继续传给后代。这里分发的是 WindowInsets Animation 的回调树，与每帧调用普通 `onApplyWindowInsets()` 是两条路。
 
-回调在主线程帧阶段执行。我们修改 `translationY`、alpha 这类渲染属性，通常不会引起 measure；修改 padding、margin、约束或列表结构则可能请求 layout。成本跟着回调里做的事走，固定毫秒值从可见 item（列表项）数是推不出来的。
+回调在主线程帧阶段执行。修改 `translationY`、alpha 这类渲染属性，通常不会引起 measure；修改 padding、margin、约束或列表结构则可能请求 layout。成本跟着回调里做的事走，固定毫秒值从可见 item（列表项）数是推不出来的。
 
 ### 4.2 同步 Insets 动画的启用条件
 
@@ -281,7 +281,7 @@ INPUT → ANIMATION → INSETS_ANIMATION → TRAVERSAL → COMMIT
 
 这些条件全部成立时，`dispatchWindowInsetsAnimationProgress()` 会走 `notifyInsetsChanged()`，把动画进度 Insets 放入普通 apply 与 traversal 路径。源码注释说明这条路径资源开销更高，因此低端设备被排除在外。
 
-逐帧 apply 在 Android 17 上是已实现的能力，但某个窗口此刻是否在走这条路径，仅凭 API 37 看不出来；我们还要结合设备 flag、窗口 compat 状态、是否注册 callback，以及 trace 中 `dispatchApplyInsets` 与 traversal 是否随动画逐帧出现来判断。
+逐帧 apply 在 Android 17 上是已实现的能力，但某个窗口此刻是否在走这条路径，仅凭 API 37 看不出来；还需结合设备 flag、窗口 compat 状态、是否注册 callback，以及 trace 中 `dispatchApplyInsets` 与 traversal 是否随动画逐帧出现来判断。
 
 <!-- gracker-diagram: ch02-15-animation-dispatch-branches -->
 ![Insets 动画：回调分发与条件式逐帧 apply](../../assets/diagrams/ch02/ch02-15-animation-dispatch-branches.png)
@@ -343,7 +343,7 @@ private val imeCallback =
 
 Android 17 还改动了应用未自行处理的配置变更行为：例如旋转导致 Activity 重建时，系统不再恢复之前的 IME 可见性；页面要在重建后继续显示键盘，就得设置合适的 `windowSoftInputMode`，或在新 Activity 生命周期中明确请求。
 
-这会直接影响测试序列：旋转后的“IME 没有再次出现”不一定是 Insets 动画丢帧，我们先确认新 Activity 是否请求了 IME，再分析动画和布局性能。
+这会直接影响测试序列：旋转后的“IME 没有再次出现”不一定是 Insets 动画丢帧，需先确认新 Activity 是否请求了 IME，再分析动画和布局性能。
 
 ## 5. 正确处理静态 Insets
 
@@ -379,19 +379,19 @@ ViewCompat.setOnApplyWindowInsetsListener(list) { view, windowInsets ->
 }
 ```
 
-返回原对象，后代就能继续按各自的责任处理。只有当前容器明确拥有整个子树的避让策略时，我们才考虑返回 `CONSUMED`。
+返回原对象，后代就能继续按各自的责任处理。只有当前容器明确拥有整个子树的避让策略时，才考虑返回 `CONSUMED`。
 
 <!-- gracker-diagram: ch02-15-idempotent-padding -->
 ![每次用原始 padding 加当前 Insets，避免累加](../../assets/diagrams/ch02/ch02-15-idempotent-padding.png)
 
-图：初始 padding 在安装监听器时保存一次；每次回调用当前窗口的 Insets 计算目标值，而不是继续加在上一次的结果上。目标值变化时才 setPadding，默认返回原 Insets，让后代继续处理自己的避让责任。
+图：初始 padding 在安装监听器时保存一次；每次回调用当前窗口的 Insets 计算目标值，而非继续叠加在上一次的结果上。目标值变化时才 setPadding，默认返回原 Insets，让后代继续处理自己的避让责任。
 
 ### 5.2 滚动内容与固定控件采用不同策略
 
 - 列表背景和滚动内容可以延伸到系统栏后方，常见做法是设置内边距并关闭 `clipToPadding`（不按 padding 裁剪滚动内容）；
 - FAB（悬浮操作按钮）、输入框、底部操作按钮等交互控件应避开 `systemBars()`；
 - 依赖边缘滑动的 carousel（轮播控件）、bottom sheet（底部抽屉）或游戏控制区还要考虑 `systemGestures()`；
-- 三键导航栏背景保护可参考 `tappableElement()`，不要把手势 handle 高度硬编码成导航栏高度；
+- 三键导航栏背景保护可参考 `tappableElement()`，避免把手势 handle 高度硬编码成导航栏高度；
 - cutout、瀑布屏和圆角屏应按页面内容选择 `displayCutout()`、`waterfall()` 或 `safeDrawing()`，不能用统一的 24 dp 或 48 dp 常量。
 
 ### 5.3 Compose 的边界
@@ -404,7 +404,7 @@ ViewCompat.setOnApplyWindowInsetsListener(list) { view, windowInsets ->
 - Insets modifier 是否让大范围 layout 重算；
 - drawing（绘制）是否只更新需要变化的节点。
 
-“某个 modifier 因内部 `remember` 就不会每帧计算”这类说法，我们不下断言：Compose 是独立发布组件，具体行为要注明 Compose 与 AndroidX 版本，并以 composition trace、layout trace 和目标版本源码或官方文档为准。
+“某个 modifier 因内部 `remember` 就不会每帧计算”这类笼统说法并不准确：Compose 是独立发布组件，具体行为要注明 Compose 与 AndroidX 版本，并以 composition trace、layout trace 和目标版本源码或官方文档为准。
 
 ## 6. 多窗口、桌面窗口化与浮动 IME
 
@@ -417,7 +417,7 @@ ViewCompat.setOnApplyWindowInsetsListener(list) { view, windowInsets ->
 - 自定义 header（标题区域）要结合 `WindowInsets.getBoundingRects()` 返回的系统控件边界，避开关闭、最大化等按钮；
 - resize 期间同时核对 Window bounds、Insets source 与 control、App traversal、Shell transition leash 和 App Window buffer geometry（缓冲区几何）。
 
-浮动 IME 场景里，`ime()` 的值按“相对于当前窗口”计算：IME 未遮挡窗口时可以为 0，与窗口相交、或系统选择 resize（调整窗口大小）或 pan（平移内容）时可以非 0。我们记录当前 windowing mode（窗口模式）、IME window 与 leash 的几何以及实际 Insets 再下判断，“桌面模式”这个标签本身给不出 `ime()` 的值。
+浮动 IME 场景里，`ime()` 的值按“相对于当前窗口”计算：IME 未遮挡窗口时可以为 0，与窗口相交、或系统选择 resize（调整窗口大小）或 pan（平移内容）时可以非 0。分析时需记录当前 windowing mode（窗口模式）、IME window 与 leash 的几何以及实际 Insets 再下判断，“桌面模式”这个标签本身给不出 `ime()` 的值。
 
 ## 7. Predictive Back 与 Insets 的关系
 
@@ -430,13 +430,13 @@ Predictive Back（预测性返回）让用户在完成返回手势前预览目�
 - 应用回调是否触发 composition、layout、draw，取决于具体导航库和页面实现；
 - 没有 Android 17 证据表明 Predictive Back 会自动逐帧调用 `requestApplyInsets()`。
 
-返回手势卡顿时，我们先把系统 transition（转场）与应用自定义动画分开。系统路径检查 WM Shell、SurfaceFlinger 的 layer 与 transaction，以及 DisplayFrame；应用路径检查返回进度回调、Compose 或 Fragment 状态变化、`doFrame` 和 App SurfaceFrame。详见 22.11。
+返回手势卡顿时，应先将系统 transition（转场）与应用自定义动画分开。系统路径检查 WM Shell、SurfaceFlinger 的 layer 与 transaction，以及 DisplayFrame；应用路径检查返回进度回调、Compose 或 Fragment 状态变化、`doFrame` 和 App SurfaceFrame。详见 22.11。
 
 ## 8. Perfetto：按证据定位 Insets 成本
 
 ### 8.1 应用回调的 trace 标注
 
-`ViewRootImpl.dispatchApplyInsets()` 自带名为 `dispatchApplyInsets` 的 trace section（跟踪区段）；业务 listener 和动画 callback 默认没有能区分页面逻辑的名字。调试构建里我们用 `Trace.beginSection()` 包住自己的处理，再与系统 slice（时间片）对齐。
+`ViewRootImpl.dispatchApplyInsets()` 自带名为 `dispatchApplyInsets` 的 trace section（跟踪区段）；业务 listener 和动画 callback 默认没有能区分页面逻辑的名字。调试构建中可用 `Trace.beginSection()` 包裹自定义处理，再与系统 slice（时间片）对齐。
 
 建议同时采集：
 
@@ -470,7 +470,7 @@ AOSP `android-17.0.0_r1` 的 `performTraversals()` 没有同名显式系统 trac
 
 ### 8.3 用 FrameTimeline 判断帧有没有错过显示时机
 
-固定 16.67 ms 阈值只适用于 60 Hz 的简化估算，放到 90 Hz、120 Hz、可变刷新率或不同调度策略下就会误判。FrameTimeline 已提供 expected 与 actual timeline（预期与实际时间线）、present type（显示时机分类）、jank type（卡顿分类）和 token（帧关联标识），我们以目标帧 deadline 为准。
+固定 16.67 ms 阈值只适用于 60 Hz 的简化估算，放到 90 Hz、120 Hz、可变刷新率或不同调度策略下就会误判。FrameTimeline 已提供 expected 与 actual timeline（预期与实际时间线）、present type（显示时机分类）、jank type（卡顿分类）和 token（帧关联标识），分析应以目标帧 deadline 为准。
 
 下面的查询列出目标进程最慢的 App SurfaceFrame。替换包名后，再用 `layer_name` 过滤目标 Window：
 
@@ -506,7 +506,7 @@ LIMIT 40;
 
 仅凭透明栏出现、SF duration 变长或功耗上升中的任何一项，都不足以单独证明 HWC 回退。
 
-## 9. 常见误判
+## 9. 排查证据边界速查
 
 | 现象 | 不能直接得出的结论 | 继续检查 |
 |---|---|---|
@@ -551,4 +551,4 @@ LIMIT 40;
 
 Edge-to-Edge 把“避开系统栏”的责任从窗口默认留白转给了应用布局，标准 App Window 的生产与显示主线保持原样。性能风险主要来自 Insets 变化后的主线程工作、错误的布局更新范围、动画期间逐帧 apply 或 progress，以及实际 Display layer 集合对 HWC 策略的影响。
 
-排查时我们先识别路径：普通状态变化、动画 callback、同步 Insets 动画、桌面窗口 resize 和 Predictive Back 各有不同的调度与 layer 证据。把路径分清，再用 `dispatchApplyInsets`、traversal 子段、FrameTimeline 和 composition type（合成类型）对齐同一帧，才能判断该修 View 层、动画逻辑、窗口策略还是显示合成。
+排查时首先识别具体路径：普通状态变化、动画 callback、同步 Insets 动画、桌面窗口 resize 和 Predictive Back 各有不同的调度与 layer 证据。把路径分清，再用 `dispatchApplyInsets`、traversal 子段、FrameTimeline 和 composition type（合成类型）对齐同一帧，才能判断该修 View 层、动画逻辑、窗口策略还是显示合成。
