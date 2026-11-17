@@ -485,20 +485,20 @@ GPU 专项工具与图层/缓冲区追踪细节将在 10.4 节展开；本节先
 
 #### 7.1 libpsi 与 PSI 事件通道
 
-`libpsi` 位于 `system/memory/lmkd/libpsi`。其头文件将监控资源限定为 `PSI_MEMORY`、`PSI_IO` 和 `PSI_CPU`，并暴露 `PSI_SOME` / `PSI_FULL`、`psi_stats` 以及 monitor/parse 相关函数；库本身并不包含 victim 选择、`oom_score_adj` 扫描或查杀策略（kill policy）。`lmkd` 调用 `init_psi_monitor(..., psi_window_size_ms * US_PER_MS)` 时没有显式传入 `resource`，因此默认使用头文件里的 `PSI_MEMORY`。[已验证: system/memory/lmkd/libpsi/include/psi/psi.h@android-17.0.0_r1#25][已验证: system/memory/lmkd/lmkd.cpp@android-17.0.0_r1#3435][来源: https://juejin.cn/post/7677254638325727242]
+`libpsi` 位于 `system/memory/lmkd/libpsi`。其头文件将监控资源限定为 `PSI_MEMORY`、`PSI_IO` 和 `PSI_CPU`，并暴露 `PSI_SOME` / `PSI_FULL`、`psi_stats` 以及 monitor/parse 相关函数；库本身并不包含 victim 选择、`oom_score_adj` 扫描或查杀策略（kill policy）。`lmkd` 调用 `init_psi_monitor(..., psi_window_size_ms * US_PER_MS)` 时没有显式传入 `resource`，因此默认使用头文件里的 `PSI_MEMORY`。[^source-audit-note-1][^source-audit-note-2][^source-audit-note-3]
 
-`init_psi_monitor()` 会先校验资源类型，再以 `O_WRONLY | O_CLOEXEC` 打开 `/proc/pressure/<resource>`，写入 `"some|full threshold_us window_us"`，成功后直接返回该文件描述符（fd）。内核写入路径会将触发器（trigger）绑定到这个已打开的文件；如果对同一个 fd 再写第二个 trigger，内核会以 `-EBUSY` 拒绝。因此，这个 fd 充当的是“何时产生压力”的事件通道，而无法兼作读取 `avg10/avg60/avg300/total` 的统计通道。[已验证: system/memory/lmkd/libpsi/psi.cpp@android-17.0.0_r1#36][已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#1569][来源: https://juejin.cn/post/7677254638325727242]
+`init_psi_monitor()` 会先校验资源类型，再以 `O_WRONLY | O_CLOEXEC` 打开 `/proc/pressure/<resource>`，写入 `"some|full threshold_us window_us"`，成功后直接返回该文件描述符（fd）。内核写入路径会将触发器（trigger）绑定到这个已打开的文件；如果对同一个 fd 再写第二个 trigger，内核会以 `-EBUSY` 拒绝。因此，这个 fd 充当的是“何时产生压力”的事件通道，而无法兼作读取 `avg10/avg60/avg300/total` 的统计通道。[^source-audit-note-4][^source-audit-note-5][^source-audit-note-3]
 
-`register_psi_monitor()` 只以 `EPOLLPRI` 事件将该 fd 挂入 epoll，并把调用方传入的 `void* data` 放进 `epev.data.ptr`。内核 `psi_trigger_poll()` 会在 trigger 的 `event` 标志从 1 被 `cmpxchg` 消费时附上 `EPOLLPRI`。由于它的基础返回值包含 `DEFAULT_POLLMASK`，`EPOLLIN` 可能一直处于就绪状态，既区分不出新的压力事件，还可能引起轮询空转；因此调用方真正要监听并识别的是 `EPOLLPRI`，同时妥善处理错误和关闭事件。[已验证: system/memory/lmkd/libpsi/psi.cpp@android-17.0.0_r1#86][已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#1489][来源: https://juejin.cn/post/7677254638325727242]
+`register_psi_monitor()` 只以 `EPOLLPRI` 事件将该 fd 挂入 epoll，并把调用方传入的 `void* data` 放进 `epev.data.ptr`。内核 `psi_trigger_poll()` 会在 trigger 的 `event` 标志从 1 被 `cmpxchg` 消费时附上 `EPOLLPRI`。由于它的基础返回值包含 `DEFAULT_POLLMASK`，`EPOLLIN` 可能一直处于就绪状态，既区分不出新的压力事件，还可能引起轮询空转；因此调用方真正要监听并识别的是 `EPOLLPRI`，同时妥善处理错误和关闭事件。[^source-audit-note-6][^source-audit-note-7][^source-audit-note-3]
 
-统计读取则走另一组 fd：`psi_parse_mem()`、`psi_parse_io()` 与 `psi_parse_cpu()` 通过 `reread_file()` 读取 `/proc/pressure/*` 文本，再由 `parse_psi_line()` 解析 `some/full avg10=... total=...`，其中 CPU 只解析 `some` 行。排查 `lmkd` 时，需要将 trigger 唤醒、统计快照与后续的查杀决策（kill decision）拆开来看。[已验证: system/memory/lmkd/lmkd.cpp@android-17.0.0_r1#2093][已验证: system/memory/lmkd/libpsi/psi.cpp@android-17.0.0_r1#109][来源: https://juejin.cn/post/7677254638325727242]
+统计读取则走另一组 fd：`psi_parse_mem()`、`psi_parse_io()` 与 `psi_parse_cpu()` 通过 `reread_file()` 读取 `/proc/pressure/*` 文本，再由 `parse_psi_line()` 解析 `some/full avg10=... total=...`，其中 CPU 只解析 `some` 行。排查 `lmkd` 时，需要将 trigger 唤醒、统计快照与后续的查杀决策（kill decision）拆开来看。[^source-audit-note-8][^source-audit-note-9][^source-audit-note-3]
 
 <!-- gracker-diagram: ed10-01-psi-event-stat-and-poll -->
 ![PSI trigger 唤醒与统计读取分开，后续策略可继续轮询](../../assets/diagrams/ch10/ed10-01-psi-event-stat-and-poll.png)
 
 图：固定r1的libpsi事件fd用O_WRONLY|O_CLOEXEC打开pressure文件并写some/full trigger，一个打开文件只绑定一个，第二次写被EBUSY拒绝。EPOLLPRI指示trigger事件，EPOLLIN可能持续就绪，不能当新事件；void*data交给调用者handler。统计走另一组reread/parse路径读avg10/60/300与total，CPU在此只解析some。事件后lmkd可按状态用10/100ms间隔继续读取并重新评估，默认窗口1000ms，等待死亡可暂停/恢复，超窗结束；内核同trigger至多每窗口通知一次。图下方是后续两个职责，未规定轮询窗口结束后才kill；是否kill、按adj选谁还需水位/回收/swap等策略上下文，libpsi本身不选择victim，参数不是应用SLA。内核参数合法性与权限另见后图。
 
-内核侧的参数边界同样需要按目标内核核对：在 common kernel `android17-6.18-2026-06_r6` 中，内核会拒绝 `window_us == 0` 或超过 10s 的配置，也拒绝 `threshold_us == 0` 或 threshold 大于 window 的配置；源码中的 `privileged` 取决于打开文件的凭据是否具有 `CAP_SYS_RESOURCE`，或者是否编译启用了 `CONFIG_DEFAULT_SECURITY_SELINUX`，只有 `!privileged` 分支才要求 window 为 2s 的倍数。需要注意，这一源码分支判断并不替代 procfs 或 SELinux 对写入操作本身的访问控制。由于同一 trigger 在内核中每个窗口至多通知一次，`lmkd` 默认采用 1000 ms 的 PSI 窗口，并在收到 PSI 事件后以 10 ms 或 100 ms 的间隔持续轮询一个窗口。其他内核分支或资料中提到的窗口下限，不宜直接外推为 Android 17 的通用约束。[已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#1336][已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#509][已验证: system/memory/lmkd/lmkd.cpp@android-17.0.0_r1#118][来源: https://juejin.cn/post/7677254638325727242]
+内核侧的参数边界同样需要按目标内核核对：在 common kernel `android17-6.18-2026-06_r6` 中，内核会拒绝 `window_us == 0` 或超过 10s 的配置，也拒绝 `threshold_us == 0` 或 threshold 大于 window 的配置；源码中的 `privileged` 取决于打开文件的凭据是否具有 `CAP_SYS_RESOURCE`，或者是否编译启用了 `CONFIG_DEFAULT_SECURITY_SELINUX`，只有 `!privileged` 分支才要求 window 为 2s 的倍数。需要注意，这一源码分支判断并不替代 procfs 或 SELinux 对写入操作本身的访问控制。由于同一 trigger 在内核中每个窗口至多通知一次，`lmkd` 默认采用 1000 ms 的 PSI 窗口，并在收到 PSI 事件后以 10 ms 或 100 ms 的间隔持续轮询一个窗口。其他内核分支或资料中提到的窗口下限，不宜直接外推为 Android 17 的通用约束。[^source-audit-note-10][^source-audit-note-11][^source-audit-note-12][^source-audit-note-3]
 
 <!-- gracker-diagram: ch10-01-24-psi-trigger-gates -->
 ![固定内核的 PSI 参数条件](../../assets/diagrams/ch10/ch10-01-24-psi-trigger-gates.png)
@@ -890,3 +890,16 @@ Java 引用泄漏、短命对象洪峰、malloc 堆积、GPU buffer pool、文�
 - [r1：Bitmap.HARDWARE 与图形内存](https://android.googlesource.com/platform/frameworks/base/+/android-17.0.0_r1/graphics/java/android/graphics/Bitmap.java)
 - [NDK：HWASan](https://developer.android.com/ndk/guides/hwasan)
 - [NDK：GWP-ASan](https://developer.android.com/ndk/guides/gwp-asan)
+
+[^source-audit-note-1]: 已验证: system/memory/lmkd/libpsi/include/psi/psi.h@android-17.0.0_r1#25
+[^source-audit-note-2]: 已验证: system/memory/lmkd/lmkd.cpp@android-17.0.0_r1#3435
+[^source-audit-note-3]: 来源: <https://juejin.cn/post/7677254638325727242>
+[^source-audit-note-4]: 已验证: system/memory/lmkd/libpsi/psi.cpp@android-17.0.0_r1#36
+[^source-audit-note-5]: 已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#1569
+[^source-audit-note-6]: 已验证: system/memory/lmkd/libpsi/psi.cpp@android-17.0.0_r1#86
+[^source-audit-note-7]: 已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#1489
+[^source-audit-note-8]: 已验证: system/memory/lmkd/lmkd.cpp@android-17.0.0_r1#2093
+[^source-audit-note-9]: 已验证: system/memory/lmkd/libpsi/psi.cpp@android-17.0.0_r1#109
+[^source-audit-note-10]: 已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#1336
+[^source-audit-note-11]: 已验证: kernel/sched/psi.c@android17-6.18-2026-06_r6#509
+[^source-audit-note-12]: 已验证: system/memory/lmkd/lmkd.cpp@android-17.0.0_r1#118
