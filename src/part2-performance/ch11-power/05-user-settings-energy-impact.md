@@ -85,9 +85,9 @@ related_chapters:
 - 各显示的 screen-on、doze（低功耗显示）与亮度档位时长；
 - UID 的 top activity（最前台 Activity）时长。
 
-HAL 的 `EnergyConsumerResult.energyUWs` 报告开机以来累计的 µWs（即 µJ）。采集器的 `ConsumedEnergyHelper` 先取能量增量，再用本次与上次电压的平均值换算成 µC；`ScreenPowerStatsProcessor` 再把 µC 换算为 mAh。处理器读取的是当前布局中的第 0 个显示 energy consumer，据此还下不了“所有显示计量项已汇总”的结论。描述符中的 consumer 数量为 0 时，处理器才使用 `PowerProfile` 模型；单次 HAL 读数失败，也仍按计量路径走。[来源：采集与换算实现](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/PowerStatsCollector.java)、[显示处理器](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/processor/ScreenPowerStatsProcessor.java)。
+HAL 的 `EnergyConsumerResult.energyUWs` 报告开机以来累计的 µWs（即 µJ）。采集器的 `ConsumedEnergyHelper` 先取能量增量，再用本次与上次电压的平均值换算成 µC；`ScreenPowerStatsProcessor` 再把 µC 换算为 mAh。处理器读取的是当前布局中的第 0 个显示 energy consumer，因此不能由此认为所有显示计量项都已被自动汇总。描述符中的 consumer 数量为 0 时，处理器才使用 `PowerProfile` 模型；单次 HAL 读数失败，也仍按计量路径走。[来源：采集与换算实现](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/PowerStatsCollector.java)、[显示处理器](https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-17.0.0_r1/services/core/java/com/android/server/power/stats/processor/ScreenPowerStatsProcessor.java)。
 
-走到模型这条路径时，估算按显示设备使用 `ambient.on.displayN`、`screen.on.displayN` 和 `screen.full.displayN`（N 为序号）：亮屏估算包含基础亮屏电流×时长，以及各亮度档位的附加电流×时长，doze 成本单独计算。这套档位模型只看档位和时长，页面像素颜色不在输入里，相同亮度下 OLED 页面配色的成本变化也就刻画不了。旧的 `ambient.on`、`screen.on`、`screen.full` 在缺少新显示配置时仍可能被迁移为 display0 参数，离“完全失效”还远。
+走到模型这条路径时，估算按显示设备使用 `ambient.on.displayN`、`screen.on.displayN` 和 `screen.full.displayN`（N 为序号）：亮屏估算包含基础亮屏电流×时长，以及各亮度档位的附加电流×时长，doze 成本单独计算。这套档位模型只看档位和时长，页面像素颜色不在输入里，相同亮度下 OLED 页面配色的成本变化也就刻画不了。旧的 `ambient.on`、`screen.on`、`screen.full` 在缺少新显示配置时仍可能被迁移为 display0 参数，并未完全失效。
 
 
 UID 归因是另一条路径：处理器在亮屏状态中，以各 UID 的 top activity 时长占同组 UID 总时长的比例分配显示成本；总时长为 0 时跳过这项比例归因。它支撑的是系统级归因，再往下落到某个 View、某帧 GPU 工作或某个颜色像素，就超出它能给出的证据了。所以文章或评审报告要证明产品设置带来的整机收益，还要回到设备 rail、长时间燃料计测试或外接仪器上补证。
@@ -99,7 +99,7 @@ UID 归因是另一条路径：处理器在亮屏状态中，以各 UID 的 top 
 
 ## 11.5.2 如何阅读 2026 年单机实验
 
-论文正文给出实验设计，复现仓库提供脚本和 CSV，我们读的时候两条线都看。核验固定在提交 [`f12c27c5487e`](https://github.com/wellington-oj/user_energy/tree/f12c27c5487ec0e9be97ab468c3ab104dacca02b)上，仓库后续的变化就混不进结论；核验做的是重算公开数据和读取代码，真机实验并未重跑。
+论文正文给出实验设计，复现仓库提供脚本和 CSV，分析时两条线都需要对照来看。本节核验锁定在提交 [`f12c27c5487e`](https://github.com/wellington-oj/user_energy/tree/f12c27c5487ec0e9be97ab468c3ab104dacca02b) 上，不受仓库后续变动影响；核验过程重算了公开数据并阅读了分析代码，真机实验并未重跑。
 
 论文给出的实验条件：
 
@@ -111,15 +111,15 @@ UID 归因是另一条路径：处理器在亮屏状态中，以各 UID 的 top 
 
 论文的数据清洗与统计口径：
 
-- ⚠️ 矛盾：论文写初始 13,184 条；固定版本 CSV 实际为 **13,185 条=879×15**。按 notebook 顺序，先排除 155 条 `is_outlier=True`，再检查正时长（此步未额外排除），最后排除 381 条 `Smart_Metric_W ≤ 0.05`，共移除 536 条，保留 12,649 条。这 536 条分属不同环节，各自对应哪条规则要分开记；
+- 初始记录数存在一处差异：论文写初始 13,184 条，而固定版本 CSV 实际为 **13,185 条 = 879×15**。按 notebook 顺序，先排除 155 条 `is_outlier=True`，再检查正时长（此步未额外排除），最后排除 381 条 `Smart_Metric_W ≤ 0.05`，共移除 536 条，保留 12,649 条；这 536 条分属不同过滤规则，各自对应哪一环节需要分开记录；
 
 - 通过 `dumpsys batterystats` 提取软件计量/估算值，再以 `估算能量 J = mAh × 电压 V × 3.6` 换算。通用设置和分辨率比较平均功率 `W=J/实际秒数`；时长与消息长度比较累计能量。`mAh` 只是电量，乘上电压才是能量；
 - 使用双侧 Mann-Whitney U 检验，以 `p < 0.05` 作为单项结果的筛选条件。notebook 对部分 Overall 汇总仍保留未显著结果，图上有柱子时，显著性要回到检验值确认。
 
 还有三项复现限制必须保留：
 
-1. **标签不自洽**：在 12,960 条非手电筒记录中，`Config_Theme` 与 `Experiment_ID` 路径的 theme 标签有 10,800 条不一致，refresh 有 1,440 条不一致，airplane 有 2,160 条不一致；brightness 与 saving 的相应标签一致。这是字段冲突，哪一侧对应设备真实设置，光靠数据判断不了；仓库又没有发布原始设备日志和设置实现，真值只能等原始日志或新实验。[来源：固定版本 CSV](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/master_energy_data.csv)。
-2. **归因范围混合**：notebook 对 IG/WPP/LIGHT 使用 `t_total`，对 YT/TT 使用组件合计减 `r_total`，各应用的整机测量口径并不统一。Overall 先求各应用的均值，再等权汇总；读它时按“各应用均值的等权平均”理解，与全部记录直接加总、跨设备的平均续航收益是两回事。[来源：notebook](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/script.ipynb)。
+1. **标签不自洽**：在 12,960 条非手电筒记录中，`Config_Theme` 与 `Experiment_ID` 路径的 theme 标签有 10,800 条不一致，refresh 有 1,440 条不一致，airplane 有 2,160 条不一致；brightness 与 saving 的相应标签一致。由于仓库未发布原始设备日志和设置实现，仅凭现有数据无法判断哪一侧对应设备真实设置，真值仍有待原始日志或新实验确认。[来源：固定版本 CSV](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/master_energy_data.csv)。
+2. **归因范围混合**：notebook 对 IG/WPP/LIGHT 使用 `t_total`，对 YT/TT 使用组件合计减 `r_total`，各应用的整机测量口径并不统一。Overall 先求各应用的均值，再等权汇总；因此 Overall 数值应按“各应用均值的等权平均”来理解，不能等同于全部记录直接加总的结果或跨设备的平均续航收益。[来源：notebook](https://github.com/wellington-oj/user_energy/blob/f12c27c5487ec0e9be97ab468c3ab104dacca02b/script_data/script.ipynb)。
 3. **绝对单位错误**：时长/消息分支用已经是 W 的 `Smart_Metric_W` 除以 1000 后再乘秒数，却把结果命名为 `Energy_Joules`，这些数值实际是 kJ。共同缩放动不了百分比和秩检验，但引用绝对能量前必须校正单位。后文只保留明确标注来源的相对结果。
 
 <!-- gracker-diagram: ch11-05-06-label-conflict -->
@@ -127,9 +127,9 @@ UID 归因是另一条路径：处理器在亮屏状态中，以各 UID 的 top 
 
 图：看到分组字段冲突时，先保留原始证据，再限制能够得出的结论。 同一批 12,960 条非手电筒记录中统计字段冲突；数量不是设备设置失败次数。不能自行认定列或路径哪一方是真值。
 
-这项工作拿来建立实验变量表很合适，公开分组也能重算部分论文百分比；但“分组差异确由相应真实设置导致”这句话，要等原始日志或新实验补证，标签冲突就卡在这里。它的结论也止步于这台单机、这些短场景：跨面板、跨 SoC、跨 OEM（设备厂商）的判断，以及长时间稳态下的判断，都需要新的证据；软件归因、短采样窗口和单机设计都会限制外推。
+这项工作很适合用于建立实验变量表，公开分组也能重算部分论文百分比；但由于存在上述标签冲突，“分组差异确由相应真实设置导致”这一因果判断仍需等待原始日志或新实验补证。它的结论也止步于这台单机、这些短场景：跨面板、跨 SoC、跨 OEM（设备厂商）的判断，以及长时间稳态下的判断，都需要新的证据；软件归因、短采样窗口和单机设计都会限制外推。
 
-后文引用这些数字时，我们都按“论文报告的单机、短场景、软件归因结果”来读，并同时保留上述数据冲突与单位限制；产品文案、系统默认值和 KPI（关键绩效指标）要用的话，需要自己再测。
+后文引用这些数字时，我们都按“论文报告的单机、短场景、软件归因结果”来读，并同时保留上述数据冲突与单位限制；如果用于产品文案、系统默认值和 KPI（关键绩效指标）设定，仍需要在目标设备上实测。
 
 <!-- gracker-diagram: ch11-05-07-power-energy-overall -->
 ![平均功率、累计能量与 Overall 汇总](../../assets/diagrams/ch11/ch11-05-07-power-energy-overall.png)
@@ -233,7 +233,7 @@ UID 归因是另一条路径：处理器在亮屏状态中，以各 UID 的 top 
 
 图：把显示策略约束与内容帧率提示汇入最终决策，而非让单个 App 直接控制面板。 概念链路省略 Binder/服务间转发；Layer 提示不等于直接进入 DMD 的同类窗口模式 vote，调用成功也不证明硬件生效。
 
-`DisplayModeDirector` 按优先级组合 vote 并过滤可用模式；若交集为空，会逐步舍弃最低优先级约束，必要时退回默认模式。画架构图时，把 vote 画成“按优先级取舍的输入”更贴近实际，硬凑成“同时满足的硬条件”会画错。SurfaceFlinger 的 `RefreshRateSelector` 在显示策略允许的范围内，另外结合可见 Layer 的内容帧率提示、启发式与交互信号排序候选值。窗口/应用的模式请求与 Surface/View 提示属于不同入口，最终结果还需经显示调度与 HWC 生效。
+`DisplayModeDirector` 按优先级组合 vote 并过滤可用模式；若交集为空，会逐步舍弃最低优先级约束，必要时退回默认模式。因此，这些 vote 属于按优先级取舍的输入，而非必须同时满足的硬条件。SurfaceFlinger 的 `RefreshRateSelector` 在显示策略允许的范围内，另外结合可见 Layer 的内容帧率提示、启发式与交互信号排序候选值。窗口/应用的模式请求与 Surface/View 提示属于不同入口，最终结果还需经显示调度与 HWC 生效。
 
 <!-- gracker-diagram: ch11-05-15-priority-vote-loop -->
 ![DisplayModeDirector 的冲突处理](../../assets/diagrams/ch11/ch11-05-15-priority-vote-loop.png)
@@ -274,7 +274,7 @@ Android 16 / API 36 增加 `Display.hasArrSupport()`。到了 Android 17 / API 3
 | 游戏 | 结合帧率、热预算和用户画质选择 | sustained fps（可持续帧率）、GPU、温度、功率 |
 
 
-固定的 `android-17.0.0_r1` 中，`DisplayModeDirector` 在省电开启时投出 0～60 fps 的 **render frame-rate** 范围 vote，并结合设备配置的低功耗支持模式；这条源码事实说的是 vote 的范围；各设备的面板物理刷新是否恒定在 60 Hz，以及 ARR、帧率覆盖、其他约束与 OEM 实现，都要分别验证。
+在 `android-17.0.0_r1` 中，`DisplayModeDirector` 在省电开启时投出 0～60 fps 的 **render frame-rate** 范围 vote，并结合设备配置的低功耗支持模式。这条源码机制描述的是系统内部 vote 的范围；各设备的面板物理刷新率是否恒定在 60 Hz，以及 ARR、帧率覆盖、其他约束与 OEM 实现，都要分别验证。
 
 ## 11.5.6 深色模式：屏幕技术与内容共同决定收益
 
@@ -288,7 +288,7 @@ Android 官方文档把暗色主题的收益放在屏幕技术条件下描述，
 | WhatsApp | -3.8% | 文本页面占比与配色会影响结果 |
 | 应用均值等权汇总 | -1.4% | 平均功率 W；不能推广为 AMOLED 的固定收益 |
 
-这些相对值是论文对平均功率的报告。公开数据还拆不出内容、亮度或时长各自的份额；同理，“深色主题没有价值”这样的结论，这些数据也支撑不了。
+这些相对值是论文对平均功率的报告。公开数据还拆不出内容、亮度或时长各自的份额；同理，这些数据也支撑不了“深色主题没有价值”的结论。
 
 对 OLED / AMOLED，大面积低亮度像素通常有利；但图片、视频、地图与相机预览中的媒体像素保持原样，应用的背景、导航栏等界面元素变暗，改不到这些像素上。对 LCD，背光仍持续工作，页面配色通常难以形成同等级别的面板收益。
 
@@ -330,7 +330,7 @@ Android 为应用提供 `PowerManager.isPowerSaveMode()` 等状态接口，系�
 
 ### 视频分辨率
 
-论文中，YouTube 1440p 相对 240p 的平均功率增幅为 5.5%，720p 与 1440p 之间没有检出统计显著差异。“没有检出”说的是本实验的窗口，离“分辨率对功耗没有影响”这个结论还差得远。短窗口内可能同时存在：
+论文中，YouTube 1440p 相对 240p 的平均功率增幅为 5.5%，720p 与 1440p 之间没有检出统计显著差异。“没有检出”仅针对该实验的短测试窗口，并不能据此得出“分辨率对功耗没有影响”的结论。短窗口内可能同时存在：
 
 - 网络下载与缓存；
 - 解码器固定成本、codec 与硬件/软件解码路径；
@@ -347,7 +347,7 @@ Android 为应用提供 `PowerManager.isPowerSaveMode()` 等状态接口，系�
 
 ### 消息长度
 
-论文的 WhatsApp 脚本中，消息从 100 字符增至 200 字符后，总能耗增加 115.6%。这个百分比描述的是整次脚本，单字符能量是另一个量。文本注入或输入法处理、布局、加密、网络与回执等是可能的解释路径；公开脚本与统计未对这些阶段逐项测量，+115.6% 应记在整次任务头上，分摊到某个环节的依据还不存在。
+论文的 WhatsApp 脚本中，消息从 100 字符增至 200 字符后，总能耗增加 115.6%。这个百分比描述的是整次脚本，单字符能量是另一个量。文本注入或输入法处理、布局、加密、网络与回执等是可能的解释路径；由于公开脚本与统计未对这些阶段逐项测量，+115.6% 应归属整次任务，尚无依据将其分摊到某个具体环节。
 
 复现实验应分别记录输入时长、按键或注入方式、布局次数、上下行字节、CPU 时间和后台任务。若动作持续时间也随字符数增加，报告还要区分“单位时间功率”与“完成一次任务的总能量”。
 
@@ -358,7 +358,7 @@ Android 为应用提供 `PowerManager.isPowerSaveMode()` 等状态接口，系�
 
 ### 网络状态
 
-论文未报告飞行模式分组的显著差异；又赶上 airplane 标签公开冲突，这一项连“一次核实过实际无线状态的 A/B 测试”都替代不了。飞行模式下 Wi-Fi 也可能仍然开着，各无线接口的真实状态必须逐项记录。线上弱网、蜂窝寻网、重传、DNS/TLS 重试，以及请求结束后基带仍保持活跃的 radio tail（基带尾时长），都可能改变结论。
+论文未报告飞行模式分组的显著差异；加上公开数据中 airplane 标签存在冲突，这一项无法替代“核实过实际无线状态的 A/B 测试”。飞行模式下 Wi-Fi 也可能仍然开着，各无线接口的真实状态必须逐项记录。线上弱网、蜂窝寻网、重传、DNS/TLS 重试，以及请求结束后基带仍保持活跃的 radio tail（基带尾时长），都可能改变结论。
 
 网络实验应记录 Wi-Fi / 蜂窝制式、信号强度、传输字节、缓存、请求重试与服务器响应。飞行模式会同时改变多项能力，精确模拟弱网要另找手段。
 
@@ -425,7 +425,7 @@ printf '%s\n' "$out_dir"
 
 ### 重复、统计与失败样本
 
-功耗数据常呈偏态分布，并有少量远高于多数样本的长尾值。报告应给出重复次数、中位数、离散程度、异常值规则与场景成功率。用 Mann-Whitney U 检验时，样本独立性仍是前提，数据偏态免不了这条要求；它比较的是独立样本的分布，显著结果要落到“中位数不同”的表述，还需分布形态支撑。同一设备上的顺序重复可能受温度、缓存和时间漂移影响，应随机化/分块、按设计选择独立或配对分析，并说明多重比较处理。除 p 值外还应报告效果量、区间估计与业务成功率——统计显著离产品价值还有距离。
+功耗数据常呈偏态分布，并有少量远高于多数样本的长尾值。报告应给出重复次数、中位数、离散程度、异常值规则与场景成功率。用 Mann-Whitney U 检验时，样本独立性仍是前提，数据偏态免不了这条要求；它比较的是独立样本的分布，显著结果要落到“中位数不同”的表述，还需分布形态支撑。同一设备上的顺序重复可能受温度、缓存和时间漂移影响，应随机化/分块、按设计选择独立或配对分析，并说明多重比较处理。除 p 值外还应报告效果量、区间估计与业务成功率——统计显著并不直接等同于产品价值。
 
 删除异常样本必须有预先定义的规则，并保留失败原因。脚本超时、广告出现、网络失败、温度越界或业务动作未完成，应作为场景质量问题记录；数值偏大本身构不成删除理由。
 
@@ -455,7 +455,7 @@ printf '%s\n' "$out_dir"
 
 ### 深色模式
 
-可说明部分 OLED 设备、深色页面和合适亮度下存在省电机会；媒体内容占主导的页面尤其要谨慎，写成所有设备通用的续航功能就过头了。
+可说明部分 OLED 设备、深色页面和合适亮度下存在省电机会；媒体内容占主导的页面尤其要谨慎，不宜宣传成适用于所有设备的通用续航功能。
 
 ### 分辨率与网络
 

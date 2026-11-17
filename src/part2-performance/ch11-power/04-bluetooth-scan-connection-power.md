@@ -109,7 +109,7 @@ BatteryStats 根据 WorkSource（工作归属信息）、扫描类型和 control
 | `SCAN_MODE_LOW_LATENCY` | 100 ms / 100 ms | 100% | 用户正等待配对的短窗口 |
 | `SCAN_MODE_OPPORTUNISTIC` | 不单独启动扫描 | 取决于其他 scanner | 只消费现有扫描结果 |
 
-这些数字是常规扫描的 AOSP 17 默认值，SDK 并未把它们写成公开行为保证，batch 路径另有参数，拿来当量级参考就好。`configureRegularScanParams()` 还会分别为 1M 与 Coded PHY 选择当前更激进的 client，所以一个 App 请求的 mode 与硬件实际运行的 duty cycle 是两回事；`Settings.Global`、DeviceConfig、feature flag（功能开关）、controller 能力和 OEM（设备厂商）配置都可能改变运行参数。应用依赖 mode 的语义即可，具体毫秒数交给系统。
+这些数字是常规扫描在 AOSP 17 中的默认值，SDK 并未将其作为公开行为保证，batch 路径也另有独立参数，因此仅适合作为量级参考。`configureRegularScanParams()` 还会分别为 1M 与 Coded PHY 选择当前更激进的 client，所以单个 App 请求的 mode 与硬件实际运行的 duty cycle 未必一致；`Settings.Global`、DeviceConfig、feature flag（功能开关）、controller 能力和 OEM（设备厂商）配置都可能改变运行参数。应用只需依赖 mode 的语义，具体毫秒数交给系统决定即可。
 
 <!-- gracker-diagram: ch11-04-03-scan-window-duty -->
 ![常规扫描的接收窗口与间隔](../../assets/diagrams/ch11/ch11-04-03-scan-window-duty.png)
@@ -129,7 +129,7 @@ Bluetooth 栈还使用内部的 screen-off scan mode（熄屏扫描模式）：�
 
 图：两个控制维度与结果数据流合图：scanmode/window/interval和业务总时长影响RF接收机会，filter按稳定广播字段筛结果，不自动缩短接收窗口。支持且资源足可controlleroffload，普通ALL_MATCHES部分路径可host匹配，tracking/batch不足也可能直接注册失败，不能一概当软件回退。Bluetooth进程结果组装/统计及App回调/分配/业务/网络可与RF并行产生成本；controller时长、UID归因与硬件能量不同不可盲加。FIRSTMATCH/MATCHLOST还需非空filter/跟踪资源，lost不证明物理离开瞬间。
 
-`FIRST_MATCH` / `MATCH_LOST` 适合“目标出现或离开”的事件模型，前提是非空 filter（过滤条件）、controller 跟踪资源和平台支持都到位。`MATCH_LOST` 报告的是平台的跟踪与超时判断，至于设备是否刚离开物理范围，要另外核实。
+`FIRST_MATCH` / `MATCH_LOST` 适合“目标出现或离开”的事件模型，前提是非空 filter（过滤条件）、controller 跟踪资源和平台支持都到位。`MATCH_LOST` 报告的是平台的跟踪与超时判断结果，无法直接等同于设备离开物理范围的瞬间，需要另外核实。
 
 `OPPORTUNISTIC` 回答的是“要不要自己驱动扫描”，与链路层 active/passive scan type 分属两个维度；主动请求 scan response 还是被动接收，由 API 36.1 的 `setScanType()` 控制，默认 active。普通配网（为外围设备配置网络）页面仍可使用 `ALL_MATCHES`，前提是扫描窗口短、找到目标后立即停止。
 
@@ -142,7 +142,7 @@ Bluetooth 栈还使用内部的 screen-off scan mode（熄屏扫描模式）：�
 
 `ScanSettings.Builder.setReportDelay()` 请求延迟、批量上送，主要减少 host 与应用唤醒，零延迟就是逐条报告。硬件 batch storage（批量结果存储）的容量和能力取决于设备，这个延迟值只描述投递节奏；AOSP 17 的批量投递还可能叠加报告间隔下限与退避，精确的回调周期要按目标设备实测。
 
-Android 14 / API 34 新增 `CALLBACK_TYPE_ALL_MATCHES_AUTO_BATCH`：屏幕关闭时累计结果并按延迟投递 batch（批量），亮屏时恢复逐条回调，亮屏或停止扫描时也会触发已有批次的交付。`reportDelayMillis` 至少为 `AUTO_BATCH_MIN_REPORT_DELAY_MILLIS`，即 10 分钟。这类模式适合能容忍延迟的观察任务；用户正在等待的配网，还是用即时回调。
+Android 14 / API 34 新增 `CALLBACK_TYPE_ALL_MATCHES_AUTO_BATCH`：屏幕关闭时累计结果并按延迟投递 batch（批量），亮屏时恢复逐条回调，亮屏或停止扫描时也会触发已有批次的交付。`reportDelayMillis` 至少为 `AUTO_BATCH_MIN_REPORT_DELAY_MILLIS`，即 10 分钟。这类模式适合能容忍延迟的后台观察任务；用户正在界面等待的配网场景，仍应使用即时回调。
 
 <!-- gracker-diagram: ch11-04-06-auto-batch-transitions -->
 ![自动批量扫描随屏幕切换交付模式](../../assets/diagrams/ch11/ch11-04-06-auto-batch-transitions.png)
@@ -236,7 +236,7 @@ class PairingScanner(
 
 图：当前示例在主线程管理每次独立Session/callback/timeout，已有session不重复start。正常提交不等注册成功；回调post后核对对象身份，只有当前会话可交付结果，当前公开失败先stop再onFailure，旧事件不能推进或结束新会话。找到目标由调用方stop，生命周期/超时/权限/蓝牙变化也收尾：先sessionnull与撤定时任务，再try远端stop，异常留日志。非比例双轨仅示已排队旧事件可能迟到，removeCallbacks不撤回全部事件。Handler超时可延后，本地隔离不证明远端已取消；固定r1注册中stop竞态与设备dump/时序仍独立核对。
 
-平台上还有一个注册竞争要核对：固定 r1 的 `stopScan(callback)` 会先移除客户端映射，`stopLeScan()` 在尚未收到注册结果、`mScannerId <= 0` 时直接返回，后续成功注册回调也缺少对应的取消检查。所以这个示例保证的只是应用侧会话与定时任务的收尾；该版本注册中的远端请求是否同步取消，要结合目标系统修订、Bluetooth dump 和注册时序验证，设备端是否已经停止同样要靠这些输出确认，主机示例测试给不出答案。
+平台上还有一个注册竞争边界需要核对：在 `android-17.0.0_r1` 中，`stopScan(callback)` 会先移除客户端映射，而 `stopLeScan()` 在尚未收到注册结果、`mScannerId <= 0` 时直接返回，后续的注册成功回调里也缺少对应的取消检查。因此，上面的示例保证的是应用侧会话状态与定时任务的收尾；如果 `stop` 恰好发生在注册进行中，远端请求与设备端扫描是否同步结束，还需要结合目标系统修订版本、Bluetooth dump 和实际注册时序来确认。
 
 <!-- gracker-diagram: ch11-04-09-registration-stop-race -->
 ![固定 r1 注册中的 stop 存在取消边界](../../assets/diagrams/ch11/ch11-04-09-registration-stop-race.png)
@@ -262,7 +262,7 @@ class PairingScanner(
 
 这三个权限属于 Nearby devices（附近设备）运行时权限组。兼容 Android 11 及以下时，旧 `BLUETOOTH` / `BLUETOOTH_ADMIN` 通常设 `maxSdkVersion="30"`；位置权限只有在 Android 12+ 已无需位置并作出相应声明时才同样截到 30，若应用仍推导物理位置或另有定位功能，位置权限要保持原样。Android 10/11 的后台发现还可能需要 `ACCESS_BACKGROUND_LOCATION`。
 
-`neverForLocation` 是数据用途声明：应用确认扫描结果不会用于推导物理位置时，可为 `BLUETOOTH_SCAN` 设置该 flag（标志），代价是平台可能过滤部分 BLE beacon（信标）结果。它只管数据用途，扫描 duty cycle 不因它改变，把它当省电参数是误用。
+`neverForLocation` 是数据用途声明：应用确认扫描结果不会用于推导物理位置时，可为 `BLUETOOTH_SCAN` 设置该 flag（标志），代价是平台可能过滤部分 BLE beacon（信标）结果。它只管数据用途，并不会改变扫描的 duty cycle，不能当作省电参数使用。
 
 
 ### PendingIntent 扫描
@@ -321,9 +321,9 @@ fun stopPresenceScan(
 }
 ```
 
-Bluetooth 栈要向 Intent 填充扫描 extras（附加数据），所以 Android 12+ 显式使用 mutable flag，显式 Receiver 则负责限制投递目标。这个例子要求 API 26+ 和已声明的 `BleScanReceiver`，并由单一 owner 管理这个固定身份的 PendingIntent：每次调用复用同一身份，要修改 filter/settings 时先停止旧扫描，因为 r1 对已注册的同一个 PI 再次 start 会直接忽略。
+Bluetooth 栈要向 Intent 填充扫描 extras（附加数据），所以 Android 12+ 显式使用 mutable flag，显式 Receiver 则负责限制投递目标。这个例子要求 API 26+ 和已声明的 `BleScanReceiver`，并由单一 owner 管理这个固定身份的 PendingIntent：每次调用复用同一身份，要修改 filter/settings 时先停止旧扫描，因为 `android-17.0.0_r1` 对已注册的同一个 PendingIntent 再次调用 start 会直接忽略。
 
-返回 0 也只是请求提交成功，异步注册可能还在路上：Receiver 先检查 `EXTRA_ERROR_CODE`，成功时再读取 `EXTRA_LIST_SCAN_RESULT` / `EXTRA_CALLBACK_TYPE`，并校验业务是否仍有效、安排短任务。stop 抛出的权限或状态异常由调用者处理，取消 token 之后设备是否静止同样要另行确认。Android 12+ 的后台 FGS（Foreground Service，前台服务）启动限制仍然生效，`PendingIntent` 扫描换不来无限后台执行权。
+返回 0 也只是请求提交成功，异步注册可能还在路上：Receiver 先检查 `EXTRA_ERROR_CODE`，成功时再读取 `EXTRA_LIST_SCAN_RESULT` / `EXTRA_CALLBACK_TYPE`，并校验业务是否仍有效、安排短任务。stop 抛出的权限或状态异常由调用者处理，取消 PendingIntent token 之后底层无线电是否已经静止同样要另行确认。Android 12+ 的后台 FGS（Foreground Service，前台服务）启动限制仍然生效，`PendingIntent` 扫描不会带来无限的后台执行权。
 
 <!-- gracker-diagram: ed11-04-pi-identity-and-delivery -->
 ![同一 PendingIntent 的注册身份、异步投递与停止由一个 owner 管理](../../assets/diagrams/ch11/ed11-04-pi-identity-and-delivery.png)
@@ -375,7 +375,7 @@ sequenceDiagram
 
 ### 注册频率限制
 
-`AppScanStats.isScanningTooFrequently()` 读取可由 DeviceConfig 调整的 quota（配额）。AOSP 17 默认保留最近 5 次已结束扫描，若其中最早一次的开始时间仍处于 30 秒窗口内，`ScanController.registerAndStartScan()` 会拒绝后续非特权回调扫描注册，并在内部的 `onScannerRegistered` 返回 `SCAN_FAILED_SCANNING_TOO_FREQUENTLY`。这个错误要靠日志发现：r1 的 `BluetoothLeScanner.BleScanCallbackWrapper` 对此状态只记日志，应用侧的 `onScanFailed()` 收不到它。同一版本的 `registerPiAndStartScan()` 跳过了这项检查，5 次 / 30 秒只描述非特权回调入口，其余入口另有规则。
+`AppScanStats.isScanningTooFrequently()` 读取可由 DeviceConfig 调整的 quota（配额）。AOSP 17 默认保留最近 5 次已结束扫描，若其中最早一次的开始时间仍处于 30 秒窗口内，`ScanController.registerAndStartScan()` 会拒绝后续非特权回调扫描注册，并在内部的 `onScannerRegistered` 返回 `SCAN_FAILED_SCANNING_TOO_FREQUENTLY`。这个错误要靠日志发现：在 `android-17.0.0_r1` 的 `BluetoothLeScanner.BleScanCallbackWrapper` 中，收到该状态只记日志，应用侧的 `onScanFailed()` 收不到它。同一版本的 `registerPiAndStartScan()` 跳过了这项检查，因此 5 次 / 30 秒只约束非特权回调入口，其余入口另有规则。
 
 这两个数（5 次和 30 秒）来自 DeviceConfig 默认值，OEM 和不同设备上的实际窗口可能不同。靠连续 start/stop 抬高发现概率，更容易触发拒绝，也增加 Binder 与 controller 配置开销。遇到公开失败回调或疑似静默限流，动作是停止循环、等待业务事件或退避计时器；应用自己的扫描超时则用来解除“仍在扫描”的本地状态。
 
@@ -405,7 +405,7 @@ AOSP 17 的 legacy scan timeout（旧扫描超时）默认为 10 分钟，可由
 - 无 filter：改成 opportunistic，不再单独驱动 controller 扫描。
 - 有 filter：把当前 mode 的上限限制到内部 `SCAN_MODE_FORCE_DOWNGRADED`，它是 `SCAN_MODE_LOW_POWER` 的别名；实际还受其他限制影响，固定射频占空比要以实测确认。
 
-Android 17 还包含由 feature flag 控制的 scan allowance throttling（扫描额度限速）。该模式启用时，系统跳过 legacy timeout 路径，改由 `ScanThrottler` 按 UID 记录加权扫描额度：默认额度 6 分钟、补充窗口 1 小时，按 mode 权重折算，各 mode 实际可运行的时长有差异；当前前台 UI 与特权 client 可绕过额度分支。适用 client 的额度耗尽后降到内部 screen-off mode。这套机制属于平台实现与可配置策略，6 分钟读作额度数字就好，应用的任务时限建立在自己的业务超时上更稳妥。
+Android 17 还包含由 feature flag 控制的 scan allowance throttling（扫描额度限速）。该模式启用时，系统跳过 legacy timeout 路径，改由 `ScanThrottler` 按 UID 记录加权扫描额度：默认额度 6 分钟、补充窗口 1 小时，按 mode 权重折算，各 mode 实际可运行的时长有差异；当前前台 UI 与特权 client 可绕过额度分支。适用 client 的额度耗尽后降到内部 screen-off mode。这套机制属于平台内部实现与可配置策略，6 分钟仅作额度参考，应用的任务时限仍应建立在自己的业务超时控制之上。
 
 <!-- gracker-diagram: ed11-04-legacy-timeout-or-weighted-allowance -->
 ![长扫描先看开关：旧 timeout 与 UID 计权额度走不同分支](../../assets/diagrams/ch11/ed11-04-legacy-timeout-or-weighted-allowance.png)
@@ -425,14 +425,14 @@ Android 17 还包含由 feature flag 控制的 scan allowance throttling（扫�
 
 图：这三个条件服务于系统记账分类，RF 活动或某个 App 的能量要另外求证；WorkSource 上报是受权限保护的系统入口。
 
-Bluetooth 进程通过 `BatteryStatsManager.reportBleScanStarted()` 和 `reportBleScanStopped()` 记录 WorkSource。在这个固定版本里，`addResults()` 发现累计结果跨过一个新的百位桶时调用一次 `reportScanResults(100)`，stop 时上报 `results % 100`；单次批量跨过多个百位桶时，这段代码也只上报一次 100，所以这个计数看趋势可以，当无损的逐包账本会漏。这是系统归因模型，改写这类统计的入口需要 `UPDATE_DEVICE_STATS` 权限，应用侧调不进去。
+Bluetooth 进程通过 `BatteryStatsManager.reportBleScanStarted()` 和 `reportBleScanStopped()` 记录 WorkSource。在 `android-17.0.0_r1` 中，`addResults()` 发现累计结果跨过一个新的百位桶时调用一次 `reportScanResults(100)`，stop 时上报 `results % 100`；即使单次批量跨过多个百位桶，这段代码也只上报一次 100，因此该计数适合观察趋势，不能当作无损的逐包账本。这是系统归因模型，改写这类统计的入口需要 `UPDATE_DEVICE_STATS` 权限，应用侧无法调用。
 
 <!-- gracker-diagram: ch11-04-22-scan-result-accounting -->
 ![扫描结果计数是归因接口而非无损抓包](../../assets/diagrams/ch11/ch11-04-22-scan-result-accounting.png)
 
 图：这是该源码实现的记账规则，对每包投递没有保证；结果计数、扫描时间和 controller Tx/Rx 之间没有直接的能量换算关系。
 
-BatteryStats 的 BLE scan 时间、controller 的 Tx/Rx/idle 时间和电量估算各管一段，互相替代会丢信息。旧版 `source.android.com` 功耗说明描述过 batch scan（批量扫描）成本归到 Bluetooth 应用的归账方式，它对应当年的实现，当前 r1 的全部路径要多看一步：`dispatchPendingIntentStartScan()` / `ScanMetricsReporter` 仍能为逻辑请求记录 UID/WorkSource，具体电量拆分要看目标版本的 collector/processor 与硬件数据。所以看到 UID 时间较短时，我们继续检查 Bluetooth 组件与 controller activity。
+BatteryStats 的 BLE scan 时间、controller 的 Tx/Rx/idle 时间和电量估算各管一段，互相替代会丢信息。旧版 `source.android.com` 功耗说明描述过 batch scan（批量扫描）成本归到 Bluetooth 应用的归账方式，那对应早年的实现；在 `android-17.0.0_r1` 的全部路径中还需要多看一步：`dispatchPendingIntentStartScan()` / `ScanMetricsReporter` 仍能为逻辑请求记录 UID/WorkSource，具体电量拆分要看目标版本的 collector/processor 与硬件数据。所以看到 UID 时间较短时，还要继续检查 Bluetooth 组件与 controller activity。
 
 ## 11.4.6 GATT 连接的功耗控制
 
@@ -555,7 +555,7 @@ adb bugreport bluetooth-power.zip
 
 图：当前 dump、历史归因、协议日志和能量仪表各自有覆盖范围；单个 UID 的扫描时长或某条缺失 rail 不足以支撑结论，要放回覆盖范围里一起读。
 
-BatteryStats 的 controller 数据依赖 Bluetooth controller activity reporting（活动上报）与设备 `power_profile`（功耗估算参数），历史功耗说明使用 `bluetooth.controller.idle/rx/tx/voltage` 等值。r1 的 `BluetoothPowerStatsProcessor` 先按 idle/rx/tx 电流与时间估算；若有能量消费者硬件读数，还可按实测总电荷调整组件总量，再按 scan time 或收发字节等分摊 UID。所以组件总量可以受硬件读数校准，UID mAh 仍出自模型归因，把它当该 App 的独立电源表就高估了。硬件支持 ODPM 时，Perfetto 的 `android.power` 可采集 power rails，rail 名称和归属由设备厂商定义。
+BatteryStats 的 controller 数据依赖 Bluetooth controller activity reporting（活动上报）与设备 `power_profile`（功耗估算参数），历史功耗说明使用 `bluetooth.controller.idle/rx/tx/voltage` 等值。`android-17.0.0_r1` 的 `BluetoothPowerStatsProcessor` 先按 idle/rx/tx 电流与时间估算；若有能量消费者硬件读数，还可按实测总电荷校准组件总量，再按 scan time 或收发字节等分摊 UID。因此组件总量可以受硬件读数校准，但拆分到每个 UID 的 mAh 仍出自模型归因，不能把它当作该 App 的独立硬件电表。硬件支持 ODPM 时，Perfetto 的 `android.power` 可采集 power rails，rail 名称和归属由设备厂商定义。
 
 <!-- gracker-diagram: ch11-04-31-component-vs-uid-model -->
 ![组件电荷校准不等于逐 App 独立计量](../../assets/diagrams/ch11/ch11-04-31-component-vs-uid-model.png)
@@ -603,7 +603,7 @@ LE Audio 播放时，Bluetooth 只占媒体功耗的一部分，其余成本分�
 - 头动追踪传感器的采样、SensorService（传感器系统服务）投递与渲染更新；
 - 屏幕、网络流媒体缓存和应用 CPU 工作。
 
-Bluetooth rail、audio DSP rail 与 HCI/线程证据放在一起可以缩小范围，某条 rail 的单独变化还称不上必要条件或因果证明。头动追踪还可能走软件传感器链或硬件隧道，SensorService/应用线程是否承担每帧处理，要按设备确认。设备没有独立 rail 时，用 A/B 场景控制变量：保持音量、Codec、媒体内容、屏幕状态和网络缓存相同，只改变耳机链路或头动追踪开关。媒体处理链细节见 8.2，整机功耗模型见 11.1。
+将 Bluetooth rail、audio DSP rail 与 HCI 及线程证据放在一起可以缩小排查范围，单条 rail 的变化本身还不足以构成必要条件或因果证明。头动追踪还可能走软件传感器链或硬件隧道，SensorService/应用线程是否承担每帧处理，要按设备确认。设备没有独立 rail 时，用 A/B 场景控制变量：保持音量、Codec、媒体内容、屏幕状态和网络缓存相同，只改变耳机链路或头动追踪开关。媒体处理链细节见 8.2，整机功耗模型见 11.1。
 
 <!-- gracker-diagram: ch11-04-35-headtracking-paths -->
 ![头动追踪可以经过软件也可以直连硬件](../../assets/diagrams/ch11/ch11-04-35-headtracking-paths.png)

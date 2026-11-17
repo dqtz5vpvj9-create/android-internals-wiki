@@ -132,7 +132,7 @@ Foreground Service（前台服务，FGS）会提高进程重要性并展示通�
 
 ### 引用计数
 
-`WakeLock` 默认启用引用计数：不含自动超时释放的普通配对里，两次 `acquire()` 要由两次 `release()` 平衡，释放次数一多就会产生 under-lock（释放次数超过申请次数）异常。固定 r1 还另外维护 internal/external 两个计数，超时释放只影响内部计数，调用方自己的释放配对仍要做完。共享代码里要写清每个 owner（所有者）；下面的独立单次操作用的是非引用计数锁，一把锁只服务一次任务，重叠任务要各拿各的锁。
+`WakeLock` 默认启用引用计数：不含自动超时释放的普通配对里，两次 `acquire()` 要由两次 `release()` 平衡，释放次数一多就会产生 under-lock（释放次数超过申请次数）异常。AOSP `android-17.0.0_r1` 还另外维护 internal/external 两个计数，超时释放只影响内部计数，调用方自己的释放配对仍要做完。共享代码里要写清每个 owner（所有者）；下面的独立单次操作用的是非引用计数锁，一把锁只服务一次任务，重叠任务要各拿各的锁。
 
 
 我们先看同步工作的示例。它限定在工作线程调用，`exportCurrentItem()` 代表应用自己的同步导出操作，必须等到该项工作结束才返回。10 分钟是这个示例业务的保护值，不是平台建议，也不是调度额度；实际应用要另设可响应取消的业务截止时间。锁是每次调用的局部对象，用稳定 tag，在 `finally` 中释放。
@@ -169,7 +169,7 @@ public final class CpuBoundExport {
 }
 ```
 
-`acquire(timeout)` 的释放由客户端 Handler 安排，只算兜底保护，当不成严格实时的截止器：Handler 阻塞或设备状态都可能让回调延后，锁到期时，仍在执行的导出照跑。所以正常路径仍要尽早 release；接近保护上限的任务应分段、保存进度，或改用调度 API。`@WorkerThread` 来自 AndroidX annotations，只表达线程契约。多个线程共享非引用计数锁时，任意一次 release 都会解除此前的 acquire，所以本例只对自己的独立锁做 `isHeld()` 保护，这套写法别照搬到共享锁上。
+`acquire(timeout)` 的释放由客户端 Handler 安排，只算兜底保护，并不能当作严格实时的截止器：Handler 阻塞或设备状态都可能让回调延后，锁到期时，仍在执行的导出任务依然会继续运行。因此正常路径仍要尽早 release；接近保护上限的任务应分段、保存进度，或改用调度 API。`@WorkerThread` 来自 AndroidX annotations，只表达线程契约。多个线程共享非引用计数锁时，任意一次 release 都会解除此前的 acquire，所以本例只对自己的独立锁做 `isHeld()` 保护，这套写法不要照搬到共享锁上。
 
 <!-- gracker-diagram: ed11-03-reference-count-and-shared-nonref -->
 ![引用计数配对与共享 non-ref 提前解除，是两种不同的所有权问题](../../assets/diagrams/ch11/ed11-03-reference-count-and-shared-nonref.png)
@@ -208,7 +208,7 @@ if (Build.VERSION.SDK_INT >= 33) {
 }
 ```
 
-`isHeld()` 读的是客户端当前状态。`enabled=false` 的来源有很多：可能是正常释放，也可能是 cached（缓存进程）/frozen（冻结进程）、Doze、LPS 或其他策略让服务端忽略了这把锁，别把它读成统一的“持锁配额已耗尽”信号。回调异步执行，事件携带的 enabled 与回调里现读的 held 也未必是同一瞬间的快照。监听只用于观察，释放照常由应用完成；移除监听用 `setStateListener(executor, null)`，已排队事件仍要按实际所有者失效处理。策略重新允许时，未释放的锁还可能再次生效。
+`isHeld()` 读的是客户端当前状态。`enabled=false` 的来源有很多：可能是正常释放，也可能是 cached（缓存进程）/frozen（冻结进程）、Doze、LPS 或其他策略让服务端忽略了这把锁，不要把它解读成统一的“持锁配额已耗尽”信号。回调异步执行，事件携带的 enabled 与回调里现读的 held 也未必是同一瞬间的快照。监听只用于观察，释放照常由应用完成；移除监听用 `setStateListener(executor, null)`，已排队事件仍要按实际所有者失效处理。策略重新允许时，未释放的锁还可能再次生效。
 
 
 ## 11.3.4 Android 17 Framework 调用链
@@ -281,7 +281,7 @@ PowerManagerService.updateSuspendBlockerLocked()
   → SystemSuspend 默认 counter 路径中 suspend counter 增加
 ```
 
-固定 r1 的 libpower 走 AIDL `ISystemSuspend`，入口落在 `SystemSuspendAidl.cpp`；计数、挂起循环和统计由 `SystemSuspend.cpp` 负责。官方 SystemSuspend 介绍里出现的 HIDL 代码是历史迁移的解释材料，当前接口实现要看 AIDL 这一套。libpower 按名称缓存 native `IWakeLock`，于是服务统计到的调用 PID 是 system_server，每个原始 App 并不直接出现在这一层。
+在 `android-17.0.0_r1` 中，libpower 走 AIDL `ISystemSuspend`，入口落在 `SystemSuspendAidl.cpp`；计数、挂起循环和统计由 `SystemSuspend.cpp` 负责。官方 SystemSuspend 介绍里出现的 HIDL 代码属于历史迁移解释材料，当前接口实现应看 AIDL 这一套。libpower 按名称缓存 native `IWakeLock`，于是服务统计到的调用 PID 是 system_server，每个原始 App 并不直接出现在这一层。
 
 <!-- gracker-diagram: ed11-03-app-summary-native-counter-and-kernel -->
 ![多把 App 锁汇总后走 AIDL，内核源按独立来源解释](../../assets/diagrams/ch11/ed11-03-app-summary-native-counter-and-kernel.png)
@@ -360,7 +360,7 @@ Android 17 kernel 表头包括：
 
 图：两条箭头表示同次上报的不同统计环节，属于并列关系。wakeup_count 也可包含导致挂起中止的事件，别当成功恢复次数读。
 
-读这些数字有几个前提：时间已换算成毫秒，底层是 `ktime_get()` 的单调时钟，`last_change` 跟墙钟时间无关。比较快照时先确认同一来源与统计基线，再取累计项的增量；`active_since` 是当前活动段的年龄，这段结束后会归零。多个 source 可以同时活跃，时长直接相加会重复计算；`prevent_suspend_time` 也只覆盖 autosleep 开启期间的那部分，当不了“所有挂起被阻止”的完整真值。
+读这些数字有几个前提：时间已换算成毫秒，底层是 `ktime_get()` 的单调时钟，`last_change` 跟墙钟时间无关。比较快照时先确认同一来源与统计基线，再取累计项的增量；`active_since` 是当前活动段的年龄，这段结束后会归零。多个 source 可以同时活跃，时长直接相加会重复计算；`prevent_suspend_time` 也只统计 autosleep 开启期间的那部分，不能当作“所有挂起被阻止”的完整真值。
 
 <!-- gracker-diagram: ch11-03-21-stats-window-overlap -->
 ![累计差值、当前段年龄与重叠区间分开读](../../assets/diagrams/ch11/ch11-03-21-stats-window-overlap.png)
@@ -375,11 +375,11 @@ Android 17 kernel 表头包括：
 
 Doze（设备空闲省电模式）在维护窗口之外限制网络、Job、Sync、普通 Alarm，并忽略非豁免应用的 wake lock——多持一把锁换不来豁免。维护窗口时序由系统状态和设备实现决定，写死的十分钟、三十分钟序列靠不住。
 
-allow-while-idle Alarm（可在设备空闲时交付的闹钟）和符合条件的 FCM 提供受控的交付机会，同时带着频率、时长或使用政策。旧 FCM `AndroidConfig` 的 high priority 对应时间敏感的可见结果；当前 `AndroidConfigV2` 预览按 RemoteNotification / BackgroundSync 意图区分，默认通知可由 Play services 直接展示，而不必启动 App 代码——把每次推送都画成“应用拿到 CPU 执行窗口”，就跟实际交付路径对不上了。
+allow-while-idle Alarm（可在设备空闲时交付的闹钟）和符合条件的 FCM 提供受控的交付机会，同时带着频率、时长或使用政策。旧 FCM `AndroidConfig` 的 high priority 对应时间敏感的可见结果；当前 `AndroidConfigV2` 预览按 RemoteNotification / BackgroundSync 意图区分，默认通知可由 Play services 直接展示，而不必启动 App 代码——如果把每次推送都直接理解成“应用拿到了 CPU 执行窗口”，就会与实际交付路径产生偏差。
 
 ### Low Power Standby
 
-Low Power Standby（低功耗待机，LPS）要先分清 enabled（启用）与 active（生效）两个状态。默认判断涉及非交互、timeout、Doze 后的维护窗口及 `activeDuringMaintenance` 配置；force-active 是另一路强制条件。实际生效后，受影响 UID 的网络和 wake lock 受限，FGS 也不自动豁免。Android 14+ 的 `isExemptFromLowPowerStandby()` 和按 reason/feature 查询的 `isAllowedInLowPowerStandby(...)` 反映相应的豁免或能力；LPS 已禁用时它们同样可能返回 true，拿这个返回值去推“当前 active”或“某把锁必然有效”，是靠不住的。
+Low Power Standby（低功耗待机，LPS）要先分清 enabled（启用）与 active（生效）两个状态。默认判断涉及非交互、timeout、Doze 后的维护窗口及 `activeDuringMaintenance` 配置；force-active 是另一路强制条件。实际生效后，受影响 UID 的网络和 wake lock 受限，FGS 也不自动豁免。Android 14+ 的 `isExemptFromLowPowerStandby()` 和按 reason/feature 查询的 `isAllowedInLowPowerStandby(...)` 反映相应的豁免或能力；当 LPS 本身处于禁用状态时，这些查询同样可能返回 true，因此不能根据该返回值反推出“LPS 当前处于 active 状态”或“某把锁必然有效”。
 
 ### App Standby
 
@@ -404,7 +404,7 @@ WorkManager 管理锁的生命周期，Worker 的执行仍受配额约束，库�
 
 ### Alarm Receiver
 
-AlarmManager 在投递期间维护共享的 `*alarm*` 锁和 in-flight 引用计数，等最后一项交付完成才释放。普通 Receiver 在 `onReceive()` 返回时即算完成；用了 `goAsync()` 的，要由 `PendingResult.finish()` 标记完成，广播超时要求照样存在——先返回、再把任意异步工作都当作被锁覆盖，是靠不住的。Receiver 只做轻量交接，持久工作交给 Worker；direct listener 另有完成通知与超时跟踪路径。
+AlarmManager 在投递期间维护共享的 `*alarm*` 锁和 in-flight 引用计数，等最后一项交付完成才释放。普通 Receiver 在 `onReceive()` 返回时即算完成；用了 `goAsync()` 的，要由 `PendingResult.finish()` 标记完成，广播超时要求照样存在——如果先从 `onReceive()` 返回，却指望后面的任意异步工作仍被这把共享锁保护，是不可靠的。Receiver 只做轻量交接，持久工作交给 Worker；direct listener 另有完成通知与超时跟踪路径。
 
 <!-- gracker-diagram: ch11-03-24-alarm-inflight-refcount -->
 ![Alarm 投递共享锁等最后一项完成](../../assets/diagrams/ch11/ch11-03-24-alarm-inflight-refcount.png)
@@ -437,7 +437,7 @@ API 37 新增公开重载：
 | SystemSuspend | `dumpsys suspend_control_internal` | Native/Kernel 分类、blocker、suspend/wakeup 统计 |
 | Kernel/硬件 | wakeup sources、Perfetto、PowerMonitor、电源轨 | 哪个 source 活跃，整机能量是否变化 |
 
-API 35+ 起可以通过 `SystemHealthManager` 枚举 `PowerMonitor` 描述、读取 `PowerMonitorReadings` 累计能量。monitor 可能对应 measurement rail，也可能对应 consumer 子系统，笼统都叫“独立电源轨”并不准确；结果还受设备支持、缓存、粒度与返回处理影响。比较时检查有效能量、同一 monitor 和推进的时间戳，更细的限定见 [11.1 系统功耗模型](01-android-power-model-system-optimization.md)。共享 rail 同样当不了某个 App 的独立电表。ADPF 能效提示只表达运行偏好，锁仍要应用自己释放。
+API 35+ 起可以通过 `SystemHealthManager` 枚举 `PowerMonitor` 描述、读取 `PowerMonitorReadings` 累计能量。monitor 可能对应 measurement rail，也可能对应 consumer 子系统，笼统地将它们都称为“独立电源轨”并不准确；结果还受设备支持、缓存、粒度与返回处理影响。比较时检查有效能量、同一 monitor 和推进的时间戳，更细的限定见 [11.1 系统功耗模型](01-android-power-model-system-optimization.md)。共享 rail 同样不能当作某个 App 的独立电表。ADPF 能效提示只表达运行偏好，锁仍要应用自己释放。
 
 
 ### 第一步：确认 Framework 记录
@@ -502,14 +502,14 @@ data_sources: {
 duration_ms: 60000
 ```
 
-固定 r1 的 Perfetto `FtraceParser` 会把 wakeup-source activate/deactivate 按名称解析为 `Wakelock(...)` slice（区间）：该名称活动计数从 0 变 1 时开始，从 1 变 0 时结束。这条解析行为对应的是固定版本，其他版本的 raw ftrace 表现要另行确认。捕获前已经 active、捕获结束仍未停用、事件丢失或同名来源都会影响配对，要保留“不完整区间”的判断；source 名称与 App UID 之间同样没有直接等号。
+在 `android-17.0.0_r1` 的 Perfetto `FtraceParser` 中，解析器会把 wakeup-source activate/deactivate 按名称配对解析为 `Wakelock(...)` slice（区间）：该名称活动计数从 0 变 1 时开始，从 1 变 0 时结束。这一解析规则对应于该特定版本，其他版本的 raw ftrace 表现需要另行确认。捕获前已经 active、捕获结束仍未停用、事件丢失或同名来源都会影响配对，要保留“不完整区间”的判断；source 名称与 App UID 之间同样没有直接等号。
 
 <!-- gracker-diagram: ch11-03-28-perfetto-config-parser -->
 ![采集配置、解析结果和测量范围逐层验收](../../assets/diagrams/ch11/ch11-03-28-perfetto-config-parser.png)
 
 图：图只对应该固定解析器，其他版本的 raw/track 表现要另行确认。轨道缺失时，锁可能仍在，能耗也未必为零；charge 为 µAh，capacity 为百分比，rail energy 为 µWs。
 
-`power/suspend_resume` 描述内核挂起/恢复的各个阶段；挂起是否真正成功、睡眠驻留有多久，要结合 suspend 统计与时间线确认，阶段 slice 的时长也就当不了全部睡眠时间。电池 charge 单位是 µAh、capacity 是百分比、rail 的累计 energy 是 µWs；1000 ms 是请求的轮询间隔，硬件读数未必每秒更新。rail 依赖 PowerStats HAL 和设备支持，轨道缺失只说明没采到，功耗未必为零；user build 还可能限制相应 ftrace 事件。
+`power/suspend_resume` 描述内核挂起/恢复的各个阶段；挂起是否真正成功、睡眠驻留有多久，要结合 suspend 统计与时间线确认，因此单个阶段 slice 的时长也不能当作整段睡眠时间。电池 charge 单位是 µAh、capacity 是百分比、rail 的累计 energy 是 µWs；1000 ms 是请求的轮询间隔，硬件读数未必每秒更新。rail 依赖 PowerStats HAL 和设备支持，轨道缺失只说明没采到，功耗未必为零；user build 还可能限制相应 ftrace 事件。
 
 ## 11.3.9 常见故障模式
 
@@ -537,7 +537,7 @@ Android vitals 归因到应用的锁可能来自 SDK、WorkManager、JobSchedule
 
 ### 只看持锁时长
 
-我们看持锁时长时，先区分客户端 held 与系统实际生效区间；就算确实占用了 suspend 机会，也到不了能量那一步。修复评估还要看：
+我们看持锁时长时，先区分客户端 held 与系统实际生效区间；即便确实占用了 suspend 机会，距离直接换算成能量消耗也还隔着几层。修复评估还要看：
 
 
 - 锁内 CPU running time（CPU 实际运行时间）与线程活动；
@@ -557,7 +557,7 @@ Android vitals 在以下条件下把一次应用会话计入 excessive partial w
 
 若 28 天内超过 5% 的应用会话命中，可能影响 Google Play 可见性。2026-03-04 官方实施说明确认，3 月 1 日起已逐步推出相应质量处理；持续超阈值的应用可能减少推荐等发现入口，或在商店详情页显示耗电警告。
 
-这两个数最容易读错。5% 是命中该问题的会话比例门槛，说的可不是“每个用户可以持锁 5% 的时间”；两小时是 Android vitals 汇总多把非豁免锁后的质量指标，应用的 system API quota（系统接口配额）里并没有这一项。Play Console 的 wake-lock name（锁名称）、affected sessions（受影响会话）和 P90/P99 时长（90/99 分位数）可以用来定位来源，修复仍要回到具体业务与系统时间线。
+这两个数字容易被误读：5% 是命中该问题的会话比例门槛，并不意味着“每个用户可以持锁 5% 的时间”；两小时则是 Android vitals 汇总多把非豁免锁后的线上质量指标，应用本地的 system API quota（系统接口配额）中并没有这一项限制。Play Console 的 wake-lock name（锁名称）、affected sessions（受影响会话）和 P90/P99 时长（90/99 分位数）可以用来定位来源，修复仍要回到具体业务与系统时间线。
 
 <!-- gracker-diagram: ed11-03-vitals-scope-and-denominators -->
 ![先核对质量指标范围，再分别解释 24 小时与 28 天分母](../../assets/diagrams/ch11/ed11-03-vitals-scope-and-denominators.png)

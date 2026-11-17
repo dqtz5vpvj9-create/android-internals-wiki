@@ -97,14 +97,14 @@ consolidated_from:
 
 ### 从系统行为理解 App 耗电
 
-我们从一个基本事实开始：App 并不直接决定电池消耗多少。它提交工作、请求硬件资源、保持设备唤醒，剩下的交给系统：调度器、HAL（硬件抽象层） 和驱动负责完成这些请求。所以拿到一个耗电问题时，我们先检查四件事：
+我们从一个基本事实开始：App 并不直接决定电池消耗多少，而是提交工作、请求硬件资源并保持设备唤醒，具体执行则交由系统的调度器、HAL（硬件抽象层）和驱动完成。因此排查一个耗电问题时，通常先检查四件事：
 
 - **设备被唤醒多久**：WakeLock、Alarm、Job、FGS（Foreground Service，前台服务）有没有延长 CPU 活跃时间。
 - **哪些硬件保持工作**：GNSS（全球导航卫星系统）、蜂窝网络、Camera、麦克风、编解码器有没有超出业务生命周期。
 - **单位工作量有多大**：采样频率、分辨率、上传字节数、重试次数是否与用户功能匹配。
 - **工作能否延后或合并**：可延迟任务交给系统批处理，用户正在等待的任务保留及时性。
 
-这些检查都要落到具体设备上。电流值脱离设备、网络、屏幕、温度和测量窗口就没有可比性：同一段代码跑在两款手机上，底层可能是不同的 modem（蜂窝基带）、GNSS、codec（编解码器） 和调度策略。所以工程判断要看目标设备的时间线和能量数据，某款设备上的一次测试结果只对那台设备成立。
+这些检查都要落到具体设备上。电流值脱离设备、网络、屏幕、温度和测量窗口就没有可比性：同一段代码跑在两款手机上，底层可能是不同的 modem（蜂窝基带）、GNSS、codec（编解码器）和调度策略。因此工程判断要以目标设备的时间线和能量数据为准，在一款设备上测出的结果只对那台设备成立。
 
 
 #### 先选合适的执行机制
@@ -122,7 +122,7 @@ consolidated_from:
 
 #### Doze 与前台服务
 
-Doze 会延后普通网络访问、Job 和 Alarm，攒到 maintenance window（维护窗口）里批量执行。有些实现以为前台服务一开，网络和 Job 就能一直畅通，但 FGS 免不了同进程 Job 的配额，也拿不到设备级的 Doze 豁免；抱着这种假设的应用，在熄屏静置测试里很容易暴露问题。
+Doze 会延后普通网络访问、Job 和 Alarm，攒到 maintenance window（维护窗口）里批量执行。开启前台服务并不等同于拿到设备级 Doze 豁免，也免不了同进程 Job 的配额限制；在熄屏静置测试里，前台服务同样会受到这些系统策略的约束。
 
 
 ### WakeLock 的适用窗口
@@ -140,7 +140,7 @@ Doze 会延后普通网络访问、Job 和 Alarm，攒到 maintenance window（�
 
 ### WorkManager 与 JobScheduler：把延迟空间交给系统
 
-WorkManager 适合需要可靠完成、允许延迟、进程重启后还要继续的工作；JobScheduler 是平台原生调度器，系统组件、不引入 Jetpack 的项目或需要平台能力的代码可以直接用。本文 WorkManager 契约核对到 2.12.0（2026-09-23 发布，最低 API 24）；文章覆盖 API 21–37 是全书的版本范围，当前库未必仍支持所有旧平台。内部调度器随库版本与设备变化，应用依赖的是公开契约；持久化任务也仍要写成可重入、能响应取消，至于任何环境下都准时完成，它给不了这个保证。
+WorkManager 适合需要可靠完成、允许延迟、进程重启后还要继续的工作；JobScheduler 是平台原生调度器，系统组件、不引入 Jetpack 的项目或需要平台能力的代码可以直接使用。本文核对的 WorkManager 2.12.0（2026-09-23 发布）最低支持 API 24；全书覆盖范围包含 API 21–37，若仍需支持 API 21–23，需选用对应的旧版库。由于内部调度器随库版本与设备实现变化，应用依赖的是公开契约，持久化任务仍要写成可重入、能响应取消的实现，系统并不保证在任何环境下都能准时完成。
 
 #### 约束表达的是业务条件
 
@@ -191,7 +191,8 @@ WorkManager.getInstance(context).enqueueUniqueWork(
 ![周期窗口给系统选择执行时机](../../assets/diagrams/ch11/ch11-02-07-period-flex.png)
 
 图：两条是不同周期的局部示意，不共用绝对时间轴。没有画出固定相位或保证每个窗口都执行；业务时刻敏感时，别把最小周期当 SLA。
-`PerformanceHintManager.Session.setPreferPowerEfficiency(true)` 是 Android 15+ 对正在运行线程的能效提示，属于 ADPF（Android Dynamic Performance Framework）能力。它不参与 WorkManager 排队，也不保证绑定到某类 CPU；设备是否采纳提示由系统和 Power HAL 决定。计算密集型代码想用它，先在实机上做 A/B 验证。
+
+`PerformanceHintManager.Session.setPreferPowerEfficiency(true)` 是 Android 15+ 对正在运行线程的能效提示，属于 ADPF（Android Dynamic Performance Framework）能力。它不参与 WorkManager 排队，也不保证绑定到某类 CPU；设备是否采纳提示由系统和 Power HAL 决定。计算密集型代码如果要使用它，应先在实机上做 A/B 验证。
 
 
 #### Android 16 的 Job runtime quota
@@ -226,7 +227,7 @@ Android 12（API 31）引入 “Alarms & reminders” special app access（特�
 
 Android 14 对 target 33+ 的多数新安装应用不再预授予 `SCHEDULE_EXACT_ALARM`；备份恢复到 Android 14 设备时也按拒绝处理。已有授权随系统升级通常会保留。
 
-`AlarmManager.OnAlarmListener` 形式的 `setExact()` 是个例外：它不要求 `SCHEDULE_EXACT_ALARM`。代价是回调活在进程里——进程退出后，系统不会为此重新创建 App。需要跨进程生命周期的可靠触发，通常用 `PendingIntent`（可由系统代应用执行的预封装操作），并遵守精确闹钟权限规则。这个例外服务于进程内存活期的精确回调，后台保活不在其列。
+`AlarmManager.OnAlarmListener` 形式的 `setExact()` 是个例外：它不要求 `SCHEDULE_EXACT_ALARM`。代价是回调只存活在当前进程里——进程退出后，系统不会为此重新创建 App。需要跨进程生命周期的可靠触发，应使用 `PendingIntent`（可由系统代应用执行的预封装操作）并遵守精确闹钟权限规则。这个例外只服务于进程存活期内的精确回调，不能用于后台保活。
 
 <!-- gracker-diagram: ch11-02-10-alarm-process-lifetime -->
 ![精确 Alarm 的形式决定交付寿命](../../assets/diagrams/ch11/ch11-02-10-alarm-process-lifetime.png)
@@ -290,7 +291,7 @@ Android 17（API 37）把后台播放、音频焦点请求和音量修改纳入�
 ![Android 17 后台音频先过基础门槛，再查 WIU](../../assets/diagrams/ch11/ch11-02-14-audio-two-gates.png)
 
 图：图是普通 App 的公开默认规则。音频焦点、播放与音量修改的源码入口并不完全相同；闹钟音频例外不能跳过前面的基础资格。
-条件不满足时，播放和音量 API 可能静默失败，音频焦点请求返回 `AUDIOFOCUS_REQUEST_FAILED`。我们用 `adb dumpsys audio`，或在 logcat 里搜 `AudioHardening`：`level: partial` 表示没有运行 FGS，`level: full` 表示 FGS 缺少 WIU 能力。系统实现可对照 `AudioService.java` 与 `HardeningEnforcer.java`。以上是普通应用的公开默认规则；系统特权、部分操作的豁免、功能开关与调试 override 还要按具体方法核对——这两级检查只覆盖公开默认路径，算不上源码所有分支的全集。
+条件不满足时，播放和音量 API 可能静默失败，音频焦点请求返回 `AUDIOFOCUS_REQUEST_FAILED`。排查时可以用 `adb dumpsys audio`，或在 logcat 里搜 `AudioHardening`：`level: partial` 表示没有运行 FGS，`level: full` 表示 FGS 缺少 WIU 能力。系统实现可对照 `AudioService.java` 与 `HardeningEnforcer.java`。以上描述的是普通应用的公开默认规则；涉及系统特权、特定操作豁免、功能开关或调试 override 时，还需要按具体方法在源码中单独核对分支。
 
 媒体播放服务仍需声明 `mediaPlayback` 类型及对应权限。播放永久结束、收到不可恢复的焦点丢失或用户明确停止后，应关闭播放器、media session 和 FGS。
 
@@ -369,6 +370,7 @@ Geofencing（地理围栏）适合“进入或离开区域时通知”这类事�
 ![重试先分类，再控制恢复成本](../../assets/diagrams/ch11/ch11-02-20-retry-classification.png)
 
 图：重试不是可靠性的唯一来源，服务端确认与业务幂等同样必要。具体错误分类按协议决定，鉴权恢复后可按业务重新发起。
+
 批量的收益来自减少 App 唤醒与连接建立次数；如果每次传输大到容易超时或触发内存压力，就要缩小批次，并在目标网络环境重新测量。
 
 <!-- gracker-diagram: ch11-02-19-network-batching -->
@@ -380,7 +382,7 @@ Geofencing（地理围栏）适合“进入或离开区域时通知”这类事�
 
 只有服务端状态变化才需要触发客户端的业务，适合用 FCM 或同类推送。旧 `AndroidConfig` 的 normal priority 适合可延后同步；high priority 用于时间敏感、用户可见内容，长期没有可见结果可能被降级或代理。
 
-截至本轮核对，Firebase 的 `AndroidConfigV2` 仍是预览方案（客户端示例 26.1.0-eap01）：`RemoteNotification` 面向紧急可见通知，`BackgroundSync` 可合批或延后。默认不可变通知可由 Play services 展示而不启动应用代码；采用 v2 时要按消息意图与通知回调重新设计，旧优先级规则照搬不过来。详见 [官方 v2 迁移说明](https://firebase.google.com/docs/cloud-messaging/send/v2-api)。拿到推送回调，也还不算拿到持续后台执行的许可。
+截至本轮核对，Firebase 的 `AndroidConfigV2` 仍是预览方案（客户端示例 26.1.0-eap01）：`RemoteNotification` 面向紧急可见通知，`BackgroundSync` 可合批或延后。默认不可变通知可由 Play services 展示而不启动应用代码；采用 v2 时要按消息意图与通知回调重新设计，旧优先级规则无法直接照搬。详见 [官方 v2 迁移说明](https://firebase.google.com/docs/cloud-messaging/send/v2-api)。收到推送回调只获得短暂的处理机会，并不等同于获得持续后台执行的许可。
 
 
 推送只解决“及时唤醒”，数据一致性仍要自己设计：消息可能重复、延迟或丢失，客户端要用版本号或游标拉取缺失数据；低频兜底同步可以交给 WorkManager。
@@ -565,7 +567,7 @@ public final class MessageSync {
 
 #### 调度限制与应用契约
 
-固定的 `android-17.0.0_r1` 中，`JobScheduler` 位于 `frameworks/base/apex/jobscheduler/`。应用无需为正在执行的 Job 再持有 CPU WakeLock，系统会在 Job 的整个执行期内代为持有。下面几条限制，比内部可调常量更适合作为应用契约：
+在 `android-17.0.0_r1` 中，`JobScheduler` 位于 `frameworks/base/apex/jobscheduler/`。应用无需为正在执行的 Job 再持有 CPU WakeLock，系统会在 Job 的整个执行期内代为持有。下面几条限制，比内部可调常量更适合作为应用契约：
 
 - Android 12 起，每个应用最多保有 150 个已调度 Job，expedited job 也计入。
 - 高频调用 `schedule()`、`enqueue()` 等调度入口可能被节流，别依靠重复提交促使任务立刻运行。
@@ -882,7 +884,7 @@ public final class NetworkScreen extends Activity {
 3. 回调带来可量化的 CPU、binder、网络、定位或存储工作；
 4. 修复后 retained object（仍被引用的对象） 数量、回调量和对应资源使用时间同时下降。
 
-GC（垃圾回收） 次数增加可能带来 CPU 成本，内存压力也可能触发 reclaim（内存回收）、内存压缩或 swap（交换空间）；具体路径取决于设备内核与内存配置。`android17-6.18-2026-06_r6` 中页面回收的通用入口可从 `mm/vmscan.c` 追踪，但应用侧把 RSS（Resident Set Size，进程驻留内存）的变化直接换算成能耗是行不通的。
+GC（垃圾回收）次数增加可能带来 CPU 成本，内存压力也可能触发 reclaim（内存回收）、内存压缩或 swap（交换空间），具体路径取决于设备内核与内存配置。`android17-6.18-2026-06_r6` 中页面回收的通用入口可从 `mm/vmscan.c` 追踪，但直接把应用侧 RSS（Resident Set Size，进程驻留内存）的变化换算成能耗并不成立。
 
 Android 17 的 `ProfilingTrigger.TRIGGER_TYPE_ANOMALY` 在系统检测到异常时可提供线索；产物类型随异常而变，需核对设备功能开关、注册条件和结果 tag，共享 UID 还可能影响产物交付。它不保证为每次泄漏自动生成 heap dump。这个接口能辅助取证，复现脚本、对象引用链和功耗测量仍然是主力。
 
@@ -947,7 +949,7 @@ public final class VisibleSessionDeadline {
 }
 ```
 
-本例的构造、`schedule()`、`cancel()` 与回调均按主线程使用；代次用于拒绝已经入队但所属会话已取消的回调。系统可在调用进程不再有 Activity、Service 或 ContentProvider 时取消 listener Alarm，组件结束时我们也应调用 `cancel(listener)`。要在进程终止后仍可靠送达的用户提醒，用合适的 `PendingIntent` 方案，并遵守 exact Alarm 权限和政策。
+本例的构造、`schedule()`、`cancel()` 与回调均按主线程使用；代次用于拒绝已经入队但所属会话已取消的回调。系统可在调用进程不再有 Activity、Service 或 ContentProvider 时取消 listener Alarm，组件结束时我们也应主动调用 `cancel(listener)`。如果需要在进程终止后仍可靠送达用户提醒，应改用合适的 `PendingIntent` 方案，并遵守 exact Alarm 权限和政策。
 
 <!-- gracker-diagram: ed11-02-generation-guards-across-callback-apis -->
 ![定位、网络与 listener Alarm 共用代次保护，各自保留 API 条件](../../assets/diagrams/ch11/ed11-02-generation-guards-across-callback-apis.png)
@@ -991,7 +993,7 @@ adb shell dumpsys deviceidle unforce
 
 #### 同约束工作使用一个 JobInfo
 
-Android 14 起，`JobWorkItem`（Job 队列中的工作项）可以随 persisted Job（跨重启保留的任务） 一起持久化。下面的 API 34+ 示例让一组“需要不计费网络且允许延迟”的工作共享内容稳定的 `JobInfo`，每个条目使用可持久化 extras——Intent 随 Job 持久化不了，这里才换成 extras。
+Android 14 起，`JobWorkItem`（Job 队列中的工作项）可以随 persisted Job（跨重启保留的任务）一起持久化。下面的 API 34+ 示例让一组“需要不计费网络且允许延迟”的工作共享内容稳定的 `JobInfo`，由于 Intent 无法随 Job 持久化，这里改用可持久化的 extras。
 
 ```java
 public final class DeferredWorkQueue {
