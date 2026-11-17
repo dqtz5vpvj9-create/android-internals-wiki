@@ -84,7 +84,7 @@ last_idle_audit_at: '2026-08-29T18:35:04+08:00'
 
 前台服务还有一条相邻的超时：调用 `startForegroundService()` 之后，服务要是在期限内没有完成 `Service.startForeground()`，AMS（ActivityManagerService）的 `serviceForegroundTimeout()` 会为该服务构造 timeout record（超时记录）、停止仍在等待的服务，并延迟派发 `SERVICE_FOREGROUND_TIMEOUT_ANR_MSG`；`serviceForegroundCrash()` 则用 `ForegroundServiceDidNotStartInTimeException` 报告崩溃路径。
 
-复杂通知经常吃掉这段时间预算，所以诊断报告仍会把它和通知性能放在一起讨论；归类时按前台服务转换超时单独记。
+构造复杂通知经常直接耗尽这段时间预算，因此通知性能与该超时的排查往往同步展开；归类时仍按前台服务转换超时单独记录。
 
 ## 通知发布流程与 ANR 触发点
 
@@ -382,7 +382,7 @@ public class MyNotificationListener extends NotificationListenerService {
 
 ### 回调完成回执与进程冻结
 
-对带 `IBinderSession` 的绑定，系统还跟踪 dispatch token。NLS 的 MyHandler 在公开回调正常返回后发送完成回执；NMS 收到回执，再按可配置的 `mNlsCompletionDurationMs` 延迟关闭 session 中该次调用，默认延迟 10 秒。这 10 秒是回调完成之后的状态记账宽限；把它读成“回调允许执行 10 秒”的 NLS ANR timer 是误读。
+对带 `IBinderSession` 的绑定，系统还跟踪 dispatch token。NLS 的 MyHandler 在公开回调正常返回后发送完成回执；NMS 收到回执，再按可配置的 `mNlsCompletionDurationMs` 延迟关闭 session 中该次调用，默认延迟 10 秒。这 10 秒是回调完成之后的状态记账宽限，并不能理解成“回调允许执行 10 秒”的 NLS ANR timer。
 
 
 这个 session 与允许冻结的绑定及进程状态更新相关，系统直接注册的 listener 可能就没有它。把工作交给自己的 executor 之后，公开回调已经返回，框架的完成回执也只覆盖到回调返回这一刻，后台持久化或网络请求的完成情况都在回执范围之外。需要持久执行保证的业务，必须使用相应的任务与生命周期协议。
@@ -687,7 +687,7 @@ adb logcat -b system -d | grep -E \
 
 ### 「Icon 构造方式对性能没影响」
 
-resource、URI 和 bitmap 的成本分别落在资源解析、延迟读取与解码、共享内存复制上。bitmap 预先缩放；URI 的授权要覆盖通知存活期；resource 要保证接收端能解析对应包和资源。三者怎么选，看图片来源、更新频率和目标尺寸；适用于所有来源的统一性能排序，这里是给不出来的。
+resource、URI 和 bitmap 的成本分别落在资源解析、延迟读取与解码、共享内存复制上。bitmap 预先缩放；URI 的授权要覆盖通知存活期；resource 要保证接收端能解析对应包和资源。三者怎么选，取决于图片来源、更新频率和目标尺寸，并没有适用于所有场景的统一性能排序。
 
 
 ## 参考资料

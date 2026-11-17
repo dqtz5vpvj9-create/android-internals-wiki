@@ -107,7 +107,7 @@ public static final int HW_TIMEOUT_MULTIPLIER =
         SystemProperties.getInt("ro.hw_timeout_multiplier", 1);
 ```
 
-它是整数，默认值为 1。源码注释写明，它是给速度远低于真机的软件模拟器准备的，真机和硬件加速虚拟设备保持默认即可。这段 r1 实现没有按 Android Performance Class（设备性能等级）自动换算，也没有定义统一的 1.5 倍档位。
+它是整数，默认值为 1。源码注释写明，它是给速度远低于真机的软件模拟器准备的，真机和硬件加速虚拟设备保持默认即可。AOSP `android-17.0.0_r1` 的这段实现没有按 Android Performance Class（设备性能等级）自动换算，也没有定义统一的 1.5 倍档位。
 
 我们可以在测试设备上直接读这个属性：
 
@@ -208,7 +208,7 @@ initializationFailures.forEach { exit ->
 
 ## 4. Ready timeout：获取失败，不是 Provider ANR
 
-当调用方请求一个尚未发布的远程 Provider 时，AMS 可以先返回 `provider == null` 的 `ContentProviderHolder`。`ActivityThread.acquireProvider()` 在 holder 非空、provider 为空且走远程路径时，进入 `ProviderKey.mLock`；发布回报尚未收到，就用 `CONTENT_PROVIDER_READY_TIMEOUT_MILLIS` 做一次 `wait()`，随后重新检查 holder。已经存在的 Provider 和本地路径会跳过这次等待；进入等待分支要求 AMS 返回的 holder 非空、其中 provider 为空，且尚未收到发布回报。20 秒乘 HW 是这一次 wait 的参数，回报也可能先到或提前唤醒，不能画成固定等待时长。
+当调用方请求一个尚未发布的远程 Provider 时，AMS 可以先返回 `provider == null` 的 `ContentProviderHolder`。`ActivityThread.acquireProvider()` 在远程路径拿到非空 holder 且 `provider` 为空时，进入 `ProviderKey.mLock`；若此时尚未收到发布回报，就用 `CONTENT_PROVIDER_READY_TIMEOUT_MILLIS` 做一次 `wait()`，随后重新检查 holder。已经存在的 Provider 和本地路径会跳过这次等待；这里的 20 秒乘 HW 只是这一次 `wait()` 的参数，发布回报也可能先到或线程提前唤醒，实际等待不能画成固定时长。
 
 
 system_server 同时为该 `ContentProviderRecord` 安排 `WAIT_FOR_CONTENT_PROVIDER_TIMEOUT_MSG`：
@@ -469,7 +469,7 @@ ORDER BY client_dur DESC;
 - 为独立进程 Provider 单独测量 attach→publish；把 Provider 放到独立进程可隔离主进程的这部分初始化成本，但远程 Provider 自己的 publish guard 仍会计时；其他跨进程依赖成本需另外测量。
 
 
-Jetpack App Startup 通过一个 `InitializationProvider` 发现多个 initializer（初始化器）。在 applicationContext 可用的常见路径，它的 `onCreate()` 调用 `discoverAndInitialize()`，依赖先递归初始化，再同步执行各 initializer 的 `create()`；applicationContext 为空的特定情况会延后初始化。该常见路径中的依赖发现和 create 仍在 publish 路径上同步执行，合并组件数量并不会自动把它们移到后台；耗时过长的 initializer、错误依赖图和同步 I/O 仍会阻塞整批 publish。“每合并一个 Provider 固定节省若干毫秒”这类跨设备承诺，我们不给。
+Jetpack App Startup 通过一个 `InitializationProvider` 发现多个 initializer（初始化器）。在 applicationContext 可用的常见路径，它的 `onCreate()` 调用 `discoverAndInitialize()`，依赖先递归初始化，再同步执行各 initializer 的 `create()`；applicationContext 为空的特定情况会延后初始化。该常见路径中的依赖发现和 `create()` 仍在 publish 路径上同步执行，合并组件数量并不会自动把它们移到后台；耗时过长的 initializer、错误依赖图和同步 I/O 仍会阻塞整批 publish，也无法据此得出“每合并一个 Provider 固定节省若干毫秒”这类跨设备通用的耗时收益。
 
 
 ### 9.2 Provider call hang（远程调用卡死）

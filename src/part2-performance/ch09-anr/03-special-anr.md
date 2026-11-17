@@ -85,7 +85,7 @@ last_rework_at: '2026-08-16T17:35:57+08:00'
 
 # 特殊与跨边界 ANR
 
-[§9.1 ANR 类型与触发条件](01-anr-mechanism-types-triggers.md) 和 [§9.2 ANR 分析方法](02-anr-kernel-trace-diagnosis.md) 说明了 detector（负责启动计时并判定超时的系统检测器）、时间点和证据等级，下面沿用这些定义，把它们用到几类容易被误判的场景上。
+[§9.1 ANR 类型与触发条件](01-anr-mechanism-types-triggers.md) 和 [§9.2 ANR 分析方法](02-anr-kernel-trace-diagnosis.md) 说明了 detector（负责启动计时并判定超时的系统检测器）、时间点和证据等级；下面沿用这些定义，分析几类常见的跨边界场景。
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。设备可能使用其他内核分支或带厂商改动，以目标设备源码、DeviceConfig 与 trace 为准。
 
@@ -107,7 +107,7 @@ ANR 仍由 Input、Broadcast、Service、ContentProvider、Job 等 detector 按�
 
 ## CPU 饥饿、I/O 等待与 freezer
 
-这一节处理三种容易混淆的状态：CPU 饥饿、不可中断等待、freezer 冻结。不可中断等待可能涉及 I/O、回收、驱动或内核锁；三者的证据与判定条件需要分别核对。
+这一节拆开三种常见停顿状态：CPU 饥饿、不可中断等待与 freezer 冻结。不可中断等待可能涉及 I/O、回收、驱动或内核锁，三者的证据与判定条件需要分别核对。
 
 ### 判断 CPU 饥饿，先看主线程是否长期 Runnable
 
@@ -244,7 +244,7 @@ Provider 的 `attachInfo()` 会进入其 `onCreate()`，所以清单注册的 Pr
 
 系统只在存在等待发布的 launching provider 时，才从 attach 阶段安排 Provider publish guard，默认 10 秒再乘硬件超时倍率，声明了 Provider 的进程并不会每次启动都挂上这只 timer。到期仍未完成发布时，系统以 `REASON_INITIALIZATION_FAILURE`（初始化失败）移除进程，这条处理路径不生成 Provider ANR。
 
-远程调用是否受这类探测，取决于客户端是否配置 `ContentProviderClient.setDetectNotResponding()`。它是带 `@SystemApi` 和 `REMOVE_TASKS` 权限要求的特权接口，普通第三方应用无法把它当作公开 SDK 的 CRUD 超时保证；客户端探测到期后才报告远端 Provider 无响应。三条路径的 reason（系统记录的原因字段）和被归责进程各不相同，详见 [§9.1 的 Provider 边界](01-anr-mechanism-types-triggers.md#contentprovider发布保护与调用-anr-要分开)。
+远程调用是否会触发这类探测，取决于客户端是否配置了 `ContentProviderClient.setDetectNotResponding()`。它是带 `@SystemApi` 和 `REMOVE_TASKS` 权限要求的特权接口，普通第三方应用无法把它当作公开 SDK 的 CRUD 超时保证；客户端探测到期后才报告远端 Provider 无响应。三条路径的 reason（系统记录的原因字段）和被归责进程各不相同，详见 [§9.1 的 Provider 边界](01-anr-mechanism-types-triggers.md#contentprovider发布保护与调用-anr-要分开)。
 
 
 ### 诊断 Provider 冷启动
@@ -263,7 +263,7 @@ Provider 的 `attachInfo()` 会进入其 `onCreate()`，所以清单注册的 Pr
 
 ### App Startup 能解决哪部分
 
-Jetpack App Startup 让多个初始化组件共享一个 `InitializationProvider`，并用 `Initializer.dependencies()` 声明依赖顺序。通过 manifest 注册的 initializer（初始化器）仍在 Provider 初始化阶段执行；共享 Provider 可以减少多个 Provider 实例化与初始化发现相关开销，但收益要测量；各 Initializer 的实际初始化工作不会因合并自动消失。
+Jetpack App Startup 让多个初始化组件共享一个 `InitializationProvider`，并用 `Initializer.dependencies()` 声明依赖顺序。通过 manifest 注册的 initializer（初始化器）仍在 Provider 初始化阶段执行；共享 Provider 可以减少多个 Provider 实例化与初始化发现的相关开销，但实际收益仍需实测，各 Initializer 自身的初始化工作也不会因合并而自动消失。
 
 收益来自两点：
 

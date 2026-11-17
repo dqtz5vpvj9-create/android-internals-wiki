@@ -101,12 +101,12 @@ last_idle_audit_at: 2026-08-30T18:41:21+08:00
  at android.os.MessageQueue.nativePollOnce(Native method)
 ```
 
-Java 栈顶显示 `nativePollOnce`，native 栈却还位于 VSync（垂直同步信号） 回调的返回路径，并在 ART 条件变量上等待。两组栈放在一起，“主线程空闲”这个读法就太粗了：`WaitHoldingLocks` 只说明线程此刻在等条件变量，要判断有没有发生 GC，还得看 GC cause（触发原因）、暂停日志，或 Perfetto 中对应 ART slice（带起止时间的事件片段） 的起止时间。
+Java 栈顶显示 `nativePollOnce`，native 栈却还位于 VSync（垂直同步信号）回调的返回路径，并在 ART 条件变量上等待。两组栈放在一起，“主线程空闲”这个读法就太粗了：`WaitHoldingLocks` 只说明线程此刻在等条件变量，要判断有没有发生 GC，还得看 GC cause（触发原因）、暂停日志，或 Perfetto 中对应 ART slice（带起止时间的事件片段）的起止时间。
 
 
 ### 压力证据
 
-主线程在等什么有了线索，系统当时承受的压力是另一条线。ANR 报告里的 PSI 和 load（系统平均负载） 数据如下：
+主线程在等什么有了线索，系统当时承受的压力是另一条线。ANR 报告里的 PSI 和 load（系统平均负载）数据如下：
 
 ```text
 Load: 56.48 / 30.74 / 22.68
@@ -134,7 +134,7 @@ full avg10=38.46 avg60=20.76 avg300=7.13
 99% TOTAL: 14% user + 36% kernel + 43% iowait + 3% irq + 1.8% softirq
 ```
 
-`kswapd0`（内核后台内存回收线程）活跃、major fault（需要从存储载入页面的缺页） 频出，再加上 memory PSI、I/O PSI 和 `43% iowait`，几组数据同时出现，足以确认设备正承受严重的内存与存储压力。
+`kswapd0`（内核后台内存回收线程）活跃、major fault（需要从存储载入页面的缺页）频出，再加上 memory PSI、I/O PSI 和 `43% iowait`，几组数据同时出现，足以确认设备正承受严重的内存与存储压力。
 
 上面是省略日志前缀及 faults 字段的摘录，TOTAL 和各项按来源的显示精度保留，没有强行补齐成精确的 100%。读 `iowait` 时要清楚它是什么：CPU 时间记账中的 I/O 等待相关项。CPU 正在执行 I/O 指令的比例、某个线程的 I/O 耗时，都要从别的数据来；内核文档还说明多核下这一统计有局限。load 统计的是可运行和不可中断等待的任务，CPU 使用率请直接读各项占比，“load 除以 CPU 核数”算出来的数没有这个含义。
 
@@ -214,7 +214,7 @@ ANR 报告覆盖 `15:01:27.683` 至 `15:01:37.233` 的 CPU 窗口，`system_serv
 下一轮取证，我们要完成四项对齐：
 
 
-1. 从 `dumpsys input` 找到该 InputChannel 对应的 connection（连接对象）、窗口句柄、PID 和 monitor（输入事件观察者） 类型。
+1. 从 `dumpsys input` 找到该 InputChannel 对应的 connection（连接对象）、窗口句柄、PID 和 monitor（输入事件观察者）类型。
 2. 抓取 ANR 5 秒窗口内该 PID 的 Java/native trace，以及所有 `system_server` 线程的 Perfetto slice。
 3. 检查 WaitQueue（已经派发、尚未收到完成通知的输入事件队列）中最老事件的序号、派发时间、超时时间和完成回调。
 4. 把高 CPU 占用细分到线程，确认消耗来自 `system_server` 主线程、Binder 线程、GC 线程还是其他 native 线程。
@@ -344,7 +344,7 @@ Cached Apps Freezer 是 Android 冻结缓存进程、减少其资源消耗的机
 
 这一结论只覆盖该系统分支；换到别的 Android/OEM 系统，新样本仍要检查完整冻结/解冻区间、connection 与 PID 生命周期、未完成事件及对照实验。
 
-在 Android 17 源码里，event log tag 仍明确记录 `am_freeze` 和 `am_unfreeze`，字段是 PID 与进程名。复核新平台时，还应同时记录 freeze/unfreeze reason（冻结或解冻原因）、目标 cgroup（控制组） 状态、输入连接身份和 event ID，防止 PID 复用或旧事件干扰判断。
+在 Android 17 源码里，event log tag 仍明确记录 `am_freeze` 和 `am_unfreeze`，字段是 PID 与进程名。复核新平台时，还应同时记录 freeze/unfreeze reason（冻结或解冻原因）、目标 cgroup（控制组）状态、输入连接身份和 event ID，防止 PID 复用或旧事件干扰判断。
 
 ### 修复方案
 
@@ -417,7 +417,7 @@ Dialer attach 失败时，我们要检查 attach 之前的这些环节：
 - zygote fork（由 Zygote 创建应用进程）的返回结果；
 - 进程是否进入 `D` 状态，以及调度延迟；
 - native runtime 启动、seccomp/SELinux 安全策略拒绝和崩溃信号；
-- Binder attach（向系统注册并建立连接） 事务。
+- Binder attach（向系统注册并建立连接）事务。
 
 `RuntimeInit`、`ActivityThread.main()` 都在正常 attach 之前，所以 start timeout 说明不了进程从未运行 Java；它指向的是 AMS 未完成有效 attach/启动握手。至于随后 `handleBindApplication()` 中的 `Application.onCreate()` 有没有问题，要归因到它还得单独取证。
 
@@ -544,7 +544,7 @@ public Cursor query(String table, String selection) {
 3. B worker 同步调用 A，调用由 A 的另一个 Binder 线程处理，该线程等待锁 L；
 4. A 主线程等 B、B 事务线程等 worker、worker 等 A 回调、回调线程等 L，闭合等待环。
 
-这里特意加入独立 worker。直接同一同步事务链的 A→B→A 嵌套调用，可由 Binder 驱动定向回到原 A 调用线程；Java monitor 允许同线程重入，“回调 A”落回原线程时锁可以直接重入；要断言它落到另一个 A 线程并死锁，还得先看清线程分配。
+这里特意加入独立 worker。同一条同步事务链上的直接 A→B→A 嵌套调用，可由 Binder 驱动定向回到原 A 调用线程；Java monitor 允许同线程重入，“回调 A”落回原线程时锁可以直接重入；要断言它落到另一个 A 线程并死锁，还得先看清线程分配。
 
 <!-- gracker-diagram: ch09-04-25-binder-reentry -->
 ![直接嵌套回调与跨线程成环分开](../../assets/diagrams/ch09/ch09-04-25-binder-reentry.png)
@@ -553,7 +553,7 @@ public Cursor query(String table, String selection) {
 
 即便还有空闲 Binder 线程，这个锁等待循环也不会自行解除。另一种形态是所有处理线程都被嵌套事务或外部等待占用，新回调分配不到执行线程。
 
-`ProcessState.cpp` 定义 `DEFAULT_MAX_BINDER_THREADS = 15`，并把它作为 Binder driver（内核驱动） 可以请求的默认最大线程数。线程要不要主动加入线程池、已经启动了多少线程、Binder 实现细节，都会影响我们在进程里观察到的线程总数。
+`ProcessState.cpp` 定义 `DEFAULT_MAX_BINDER_THREADS = 15`，并把它作为 Binder driver（内核驱动）可以请求的默认最大线程数。线程要不要主动加入线程池、已经启动了多少线程、Binder 实现细节，都会影响我们在进程里观察到的线程总数。
 
 
 `15` 是可请求的默认上限，实际线程数会随上面这些因素浮动；“再留一个线程”也换不来免死锁的保证。诊断时我们要画出事务方向、同步或异步属性、线程状态、锁持有关系，以及 executor 或线程池的容量。
@@ -590,7 +590,7 @@ AOSP Gerrit 给出了更强的源码证据：
 
 ## 如何用 InputDispatcher WaitQueue 分析以上案例
 
-前面几个案例反复回到同一个问题：连接上还有哪些事件没有完成。InputDispatcher 为每个 connection（输入连接） 维护 `waitQueue`，其中保存已经派发、尚未收到完成通知的事件，源码为此提供两组观测入口：
+前面几个案例反复回到同一个问题：连接上还有哪些事件没有完成。InputDispatcher 为每个 connection（输入连接）维护 `waitQueue`，其中保存已经派发、尚未收到完成通知的事件，源码为此提供两组观测入口：
 
 <!-- gracker-diagram: ch09-04-30-input-queue-protocol -->
 ![入站、待派发与等待完成三个队列](../../assets/diagrams/ch09/ch09-04-30-input-queue-protocol.png)
@@ -598,9 +598,9 @@ AOSP Gerrit 给出了更强的源码证据：
 图：连接条目与消费者处理回调要分开看；事件合并和不同期限都会影响观察，队列长度只能说明积压，判根因还要看条目内容。
 
 - `dumpsys input` 输出 connection 的 `status`、`responsive`、`isFocusMonitor`、`WaitQueue: length=` 以及队列条目；
-- atrace counter（时间线计数器） `iq` 表示 inbound queue（入站队列），`oq:<channel>` 表示每个连接的 outbound queue（待派发队列），`wq:<channel>` 表示每个连接的 wait queue。
+- atrace counter（时间线计数器）`iq` 表示 inbound queue（入站队列），`oq:<channel>` 表示每个连接的 outbound queue（待派发队列），`wq:<channel>` 表示每个连接的 wait queue。
 
-`isConnectionResponsive()` 会遍历 `waitQueue`，检查事件的 `timeoutTime`（超时时刻） 是否已经过去。生成连接 ANR reason 时，`onAnrLocked()` 会读取队首条目用于诊断；源码注释也提醒，超时预算发生变化后，队首条目未必是触发当前超时判断的那一个。
+`isConnectionResponsive()` 会遍历 `waitQueue`，检查事件的 `timeoutTime`（超时时刻）是否已经过去。生成连接 ANR reason 时，`onAnrLocked()` 会读取队首条目用于诊断；源码注释也提醒，超时预算发生变化后，队首条目未必是触发当前超时判断的那一个。
 
 <!-- gracker-diagram: ch09-04-31-deadline-not-head -->
 ![触发到期条目未必是报告中的队首](../../assets/diagrams/ch09/ch09-04-31-deadline-not-head.png)
@@ -708,12 +708,12 @@ ANR 瞬时 trace 采到的状态可能是 `nativePollOnce`、锁等待，也可�
 
 ### 聚合键
 
-只按 Handler 类名与 message code（消息编号） 聚合，容易把不同原因混在一起。归一化是把容易随样本变化的部分转换为稳定特征，我们可以采用以下维度：
+只按 Handler 类名与 message code（消息编号）聚合，容易把不同原因混在一起。归一化是把容易随样本变化的部分转换为稳定特征，我们可以采用以下维度：
 
 - ANR detector 与 reason 模板；
 - 首个应用栈帧、等待锁类型或 Binder 接口；
 - 主线程前一条超长消息；
-- 应用版本、Android 版本、设备/SoC（片上系统） 和进程状态；
+- 应用版本、Android 版本、设备/SoC（片上系统）和进程状态；
 - CPU/PSI 压力桶（按压力数值划分的区间）、采样相对 ANR 的时间偏移；
 - focused-window、process-start、freeze 等特征。
 
