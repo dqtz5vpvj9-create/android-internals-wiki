@@ -771,7 +771,7 @@ Android 的 Java TLS 路径由 Conscrypt 等安全 provider 实现，底层使�
 
 当前官方文档公开的 `<domainEncryption>` 模式仅列出 `enabled` 与 `disabled`，并把 Android 17 上 `targetSdk >= 37` 的默认值写成 `enabled`。但在固定 `r1` 源码快照中，默认策略存在如下差异：
 
-在固定 `r1` 源码中，`NetworkSecurityConfig.defaultDomainEncryptionMode()` 仅在对应兼容性变更与 feature flag 同时开启时才返回内部状态 `OPPORTUNISTIC`，否则返回 `DISABLED`；而 `SSLParametersImpl` 对 `OPPORTUNISTIC` 模式会设置 `enableGrease=false`。只有当应用在 XML 中显式声明 `mode="enabled"` 时，才会映射为内部 `ENABLED` 模式，从而在缺乏 ECHConfig 时发送 GREASE 占位扩展。因此，仅凭“Android 17 且 targetSdk 37”尚不能保证设备默认一定会发送 GREASE，实际行为需结合 Conscrypt 模块版本、生效策略与连接日志核实；同时也要区分这些内部枚举值与 XML 公开属性值的对应关系。[来源：固定 r1 默认策略](https://android.googlesource.com/platform/external/conscrypt/+/refs/tags/android-17.0.0_r1/nsc/src/android/security/net/config/NetworkSecurityConfig.java)、[当前配置文档](https://developer.android.com/privacy-and-security/security-config)。
+在固定 `r1` 源码中，`NetworkSecurityConfig.defaultDomainEncryptionMode()` 仅在对应兼容性变更与 feature flag 同时开启时才返回内部状态 `OPPORTUNISTIC`，否则返回 `DISABLED`；而 `SSLParametersImpl` 对 `OPPORTUNISTIC` 模式会设置 `enableGrease=false`。只有当应用在 XML 中显式声明 `mode="enabled"` 时，才会映射为内部 `ENABLED` 模式，从而在缺乏 ECHConfig 时发送 GREASE 占位扩展。因此，仅凭“Android 17 且 targetSdk 37”尚不能保证设备默认一定会发送 GREASE，实际行为需结合 Conscrypt 模块版本、生效策略与连接日志核实；同时也要区分这些内部枚举值与 XML 公开属性值的对应关系。[^source-audit-note-1]、[当前配置文档](https://developer.android.com/privacy-and-security/security-config)。
 
 <!-- gracker-diagram: ch12-01-42-ech-default-version-difference -->
 ![ECH 当前文档与固定 r1 默认策略差异](../../assets/diagrams/ch12/ch12-01-42-ech-default-version-difference.png)
@@ -988,3 +988,5 @@ OkHttp `EventListener` 可记录 `dnsStart`/`dnsEnd`、`connectStart`、`secureC
 - [固定5.3.0 RealCall](https://github.com/lysine-dev/okhttp/blob/0960b47ec28a02e893499d2a7e53bf462a62875e/okhttp/src/commonJvmAndroid/kotlin/okhttp3/internal/connection/RealCall.kt)、[Dispatcher](https://github.com/lysine-dev/okhttp/blob/0960b47ec28a02e893499d2a7e53bf462a62875e/okhttp/src/commonJvmAndroid/kotlin/okhttp3/Dispatcher.kt)、[Cache](https://github.com/lysine-dev/okhttp/blob/0960b47ec28a02e893499d2a7e53bf462a62875e/okhttp/src/commonJvmAndroid/kotlin/okhttp3/Cache.kt)：[来源] 异步超时起点、排队与缓存目录所有权。
 - [固定r1 NetworkSecurityConfig](https://android.googlesource.com/platform/external/conscrypt/+/refs/tags/android-17.0.0_r1/nsc/src/android/security/net/config/NetworkSecurityConfig.java)、[XmlConfigSource](https://android.googlesource.com/platform/external/conscrypt/+/refs/tags/android-17.0.0_r1/nsc/src/android/security/net/config/XmlConfigSource.java)：[来源] ECH默认值差异和CT配置优先级。
 - [RFC 9204：QPACK](https://www.rfc-editor.org/rfc/rfc9204)、[RFC 9111：HTTP缓存](https://www.rfc-editor.org/rfc/rfc9111)：[来源] 跨流头部阻塞与缓存验证规则。
+
+[^source-audit-note-1]: [来源：固定 r1 默认策略](https://android.googlesource.com/platform/external/conscrypt/+/refs/tags/android-17.0.0_r1/nsc/src/android/security/net/config/NetworkSecurityConfig.java)
