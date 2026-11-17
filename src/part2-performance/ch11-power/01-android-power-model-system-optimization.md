@@ -424,7 +424,7 @@ Fuel Gauge 通常结合 Coulomb counting（库仑计量）、电压、温度、�
 | 哪个 UID 被归因了多少 mAh | BatteryUsageStats / UidBatteryConsumer |
 | 某代码改动是否降低整机平均功率 | 外接仪表或稳定 rail delta，加受控 A/B |
 
-Framework 不会简单地把 Coulomb Counter 总差值按应用比例切分。BatteryUsageStats 的组件算法会结合 measured energy、controller 数据或 profile，再依据 UID 活动进行分配；而电池总差值还包含系统、屏幕、基带、供电转换损耗和未归因部分。因此核对整机总趋势时可以把两类结果放在一起看，如果要拆解到具体应用，仍需回到归因结果。
+Framework 不会简单地把 Coulomb Counter 总差值按应用比例切分。BatteryUsageStats 的组件算法可能使用 measured energy、controller 数据或 profile，再依据 UID 活动进行分配；而电池总差值还包含系统、屏幕、基带、供电转换损耗和未归因部分。因此核对整机总趋势时可以把两类结果放在一起看，如果要拆解到具体应用，仍需回到归因结果。
 
 <!-- gracker-diagram: ch11-01-13-battery-vs-uid -->
 ![电池总变化与 Framework 归因分别取证](../../assets/diagrams/ch11/ch11-01-13-battery-vs-uid.png)
