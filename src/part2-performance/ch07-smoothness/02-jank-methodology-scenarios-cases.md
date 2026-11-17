@@ -694,7 +694,7 @@ Dialog 和 PopupWindow 都会向 WindowManager 添加新窗口对象，各自拥
 
 ### Notification 展开与折叠：责任进程在 SystemUI
 
-通知面板的展开、折叠、分组与 Quick Settings（快捷设置）动画，主要由 SystemUI 负责出图。普通应用在发布或更新通知时通过 Binder 提交 Notification；如果在面板动画期间通知内容并未更新，应用进程通常完全不在关键路径上，排查焦点应落在 SystemUI 这一侧。
+通知面板的展开、折叠、分组与 Quick Settings（快捷设置）动画，主要由 SystemUI 负责出图。普通应用在发布或更新通知时通过 Binder 提交 Notification；如果在面板动画期间通知内容并未更新，应用进程可能完全不在关键路径上，关键路径基本落在 SystemUI 一侧。
 
 排查时按阶段拆开核对：
 
@@ -720,7 +720,7 @@ Dialog 和 PopupWindow 都会向 WindowManager 添加新窗口对象，各自拥
 
 #### Launcher 桌面
 
-AOSP 的 Launcher3 提供了 Workspace、CellLayout、Widget 与 Quickstep（手势导航和最近任务组件）的参考实现，但量产设备往往会替换为定制 Launcher 或调整动画逻辑。桌面滑动场景通常包含图标、文件夹、AppWidget、壁纸以及搜索/推荐区域，其中 Widget 更新、动态壁纸与 Launcher 帧可能分属不同的内容生产者。
+AOSP 的 Launcher3 提供了 Workspace、CellLayout、Widget 与 Quickstep（手势导航和最近任务组件）的参考实现，但量产设备可能替换 Launcher 或调整动画逻辑。桌面滑动场景通常包含图标、文件夹、AppWidget、壁纸以及搜索/推荐区域，其中 Widget 更新、动态壁纸与 Launcher 帧可能分属不同的内容生产者。
 
 排查时可按以下对象依次检查：
 

@@ -377,7 +377,7 @@ TextureView 会将视频纹理预先采样进宿主窗口。因此即便宿主 A
 
 ### 画中画、多窗口与外接屏
 
-画中画与自由窗口会改变 crop、scale、圆角、系统装饰与 z-order，外接屏还会同时引入不同的分辨率、色彩空间、刷新率与 bandwidth（带宽）条件。同一个 Layer 在内屏全屏状态下走 `DEVICE`，切到外屏或 PIP（画中画）后改为 `CLIENT`，往往是合理的逐屏协商结果。
+画中画与自由窗口会改变 crop、scale、圆角、系统装饰与 z-order，外接屏还会同时引入不同的分辨率、色彩空间、刷新率与 bandwidth（带宽）条件。同一个 Layer 在内屏全屏状态下走 `DEVICE`，切到外屏或 PIP（画中画）后改为 `CLIENT`，可能是合理的逐屏协商结果。
 
 取证时应记下 display id（显示屏标识）、active mode、窗口 bounds（边界）、transform 与 Layer stack（图层堆栈）。多显示器场景还需按 physical display id 逐屏核对 HWC 提交、配置与 present fence。在 r1 中，`SurfaceFlinger::onCompositionPresented()` 将 pacesetter display 的 present/GPU fence 传入 FrameTimeline 的 `setSfPresent()`，这意味着单一 SF DisplayFrame 轨道呈现的是 pacesetter 视角，各块物理屏的覆盖情况与 `display_frame_token` 的对应关系都必须单独核对。
 
