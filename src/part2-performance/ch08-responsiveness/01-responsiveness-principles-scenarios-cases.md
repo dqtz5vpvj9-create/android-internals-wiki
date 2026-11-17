@@ -417,33 +417,33 @@ Google Play 的 Android Vitals 提供多类真实用户设备指标，不过公�
 
 Android Vitals 将冷启动达到 5 秒、温启动达到 2 秒、热启动达到 1.5 秒视为 excessive startup（启动时间过长），并使用 TTID 统计告警。TTFD 包含 TTID 以及首帧后的异步内容加载时间，需要应用在内容可用时主动报告。这两个指标描述的是启动的不同阶段：TTID 短只代表首帧快，内容何时完整可用，还要看 TTFD 里首帧之后那段异步加载。
 
-没有调用 `reportFullyDrawn()` 时，系统不会报告 TTFD；如果在系统检测到 TTID 前就调用，系统会把两者都记为 TTID。因此，TTFD 与 TTID 相等并不能单独证明首帧内容已完整可用。排查时应对齐调用标记、目标内容就绪与反馈帧，确认没有过早上报。[来源: Android Developers《App startup time》的 Retrieve TTFD 小节]
+没有调用 `reportFullyDrawn()` 时，系统不会报告 TTFD；如果在系统检测到 TTID 前就调用，系统会把两者都记为 TTID。因此，TTFD 与 TTID 相等并不能单独证明首帧内容已完整可用。排查时应对齐调用标记、目标内容就绪与反馈帧，确认没有过早上报。[^source-audit-note-1]
 
 ANR 同样要按类型分别看。AOSP / Pixel 的 input dispatch 默认超时为 5 秒；`Service`、`BroadcastReceiver`、`ContentProvider`、`JobService` 和前台服务还有各自的规则。Android 14 及更高版本会根据进程是否 CPU-starved（长时间得不到足够 CPU）在一定区间内调整广播超时，OEM 也可能修改默认值。分析响应问题时，应先确认 ANR 类型，再检查对应的计时起点、截止条件和责任线程。
 
 ### ANR 栈停在 `nativePollOnce`，先查系统在等什么
 
-ANR 的触发时间和线程栈的采样时间要分开记录。转储较晚时，主线程可能已经回到 poll；但 Java 栈里只有 `nativePollOnce`，也不足以认定采样时线程空闲。r1 的 `NativeMessageQueue::pollOnce()` 会进入 native Looper，`Looper::pollInner()` 既会等待 `epoll_wait()`，也会执行文件描述符回调。应结合 native 栈区分“正在等事件”和“正在处理回调”，再判断这个样本是否覆盖了超时形成的区间。[已验证: Android Developers《Diagnose and fix ANRs》的 nativePollOnce 小节；AOSP `android-17.0.0_r1`，`frameworks/base/core/jni/android_os_MessageQueue.cpp`、`system/core/libutils/Looper.cpp`]
+ANR 的触发时间和线程栈的采样时间要分开记录。转储较晚时，主线程可能已经回到 poll；但 Java 栈里只有 `nativePollOnce`，也不足以认定采样时线程空闲。r1 的 `NativeMessageQueue::pollOnce()` 会进入 native Looper，`Looper::pollInner()` 既会等待 `epoll_wait()`，也会执行文件描述符回调。应结合 native 栈区分“正在等事件”和“正在处理回调”，再判断这个样本是否覆盖了超时形成的区间。[^source-audit-note-2]
 
-官方对普通 input dispatch timeout 中的 `nativePollOnce` / main thread idle 聚类，通常建议转查其他包含有效现场的聚类；无焦点窗口、广播和服务类 ANR 仍有应用侧可查的路径。遇到后几类，应检查应用是否从后台线程修改 View。Android 16 及以下的相关实现中，并发安排 traversal 可能插入多个同步屏障，却只保存一个 token；遍历结束只移除保存的屏障，遗留屏障会挡住后续同步消息，主线程可能在 `nativePollOnce` 中等待。单份 poll 栈仍不能证明发生了这类泄漏，需要回查跨线程 View 调用和消息队列的屏障状态。[来源: Android Developers《Diagnose and fix ANRs》的 Input dispatch timeout / nativePollOnce / View Threading Violation / Sync Barrier Leak 小节]
+官方对普通 input dispatch timeout 中的 `nativePollOnce` / main thread idle 聚类，通常建议转查其他包含有效现场的聚类；无焦点窗口、广播和服务类 ANR 仍有应用侧可查的路径。遇到后几类，应检查应用是否从后台线程修改 View。Android 16 及以下的相关实现中，并发安排 traversal 可能插入多个同步屏障，却只保存一个 token；遍历结束只移除保存的屏障，遗留屏障会挡住后续同步消息，主线程可能在 `nativePollOnce` 中等待。单份 poll 栈仍不能证明发生了这类泄漏，需要回查跨线程 View 调用和消息队列的屏障状态。[^source-audit-note-3]
 
 官方文档将这类同步屏障泄漏的修复归于 Android 17；r1 的 `ViewRootImpl` 在 `atomicTraversalBarrier` flag 启用时，原子替换屏障 token 并移除旧屏障。分析具体系统构建时要核对该分支是否启用，跨线程修改 View 的其他风险仍然存在。
 
-Android 17 的 debuggable 应用可用 `adb shell am compat enable ENFORCE_THREAD_CHECKS_ON_VIEW_ROOT_IMPL_APIS com.example.app` 开启相应兼容检查，定位后用同名 `disable` 命令恢复。API 37 的 `View.registerCalledFromWrongThreadListener()` 只覆盖部分 API 的兼容检查路径；直接抛出线程异常的其他 API 不保证通知，未收到回调也不能证明没有违规访问。r1 在违规调用线程上同步执行 listener，回调中应采集栈而避免阻塞，并在不再需要时调用 `View.unregisterCalledFromWrongThreadListener()`。[来源: Android Developers 同节及 View API；AOSP `android-17.0.0_r1`，`ViewRootImpl.postTraversalBarrier()`、`removeTraversalBarrier()`、`checkThreadCompat()` 与 `View` 的 listener 说明]
+Android 17 的 debuggable 应用可用 `adb shell am compat enable ENFORCE_THREAD_CHECKS_ON_VIEW_ROOT_IMPL_APIS com.example.app` 开启相应兼容检查，定位后用同名 `disable` 命令恢复。API 37 的 `View.registerCalledFromWrongThreadListener()` 只覆盖部分 API 的兼容检查路径；直接抛出线程异常的其他 API 不保证通知，未收到回调也不能证明没有违规访问。r1 在违规调用线程上同步执行 listener，回调中应采集栈而避免阻塞，并在不再需要时调用 `View.unregisterCalledFromWrongThreadListener()`。[^source-audit-note-4]
 
-如果完整 Reason 含有 `does not have a focused window`，调查方向就落到了焦点窗口。r1 的 `findFocusedWindowTargetLocked()` 在需要分发依赖焦点的事件、对应 display 已有 focused application 却没有 focused window 时开始等待；超时后，`processNoFocusedWindowAnrLocked()` 还会复查应用焦点是否改变、窗口是否已经出现，再报告 ANR。这与事件已经发到窗口、等待应用 ACK 超时是两条路径。按键等事件需要焦点目标，普通触摸主要按命中测试选窗口，不能把无焦点窗口解释成“所有触摸都堵在主线程点击回调”。[已验证: AOSP `android-17.0.0_r1`，`frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp` 的 `findFocusedWindowTargetLocked()`、`processNoFocusedWindowAnrLocked()`、两种 `onAnrLocked()`；Android Developers《Diagnose and fix ANRs》的 No focused window 小节]
+如果完整 Reason 含有 `does not have a focused window`，调查方向就落到了焦点窗口。r1 的 `findFocusedWindowTargetLocked()` 在需要分发依赖焦点的事件、对应 display 已有 focused application 却没有 focused window 时开始等待；超时后，`processNoFocusedWindowAnrLocked()` 还会复查应用焦点是否改变、窗口是否已经出现，再报告 ANR。这与事件已经发到窗口、等待应用 ACK 超时是两条路径。按键等事件需要焦点目标，普通触摸主要按命中测试选窗口，不能把无焦点窗口解释成“所有触摸都堵在主线程点击回调”。[^source-audit-note-5]
 
-公开文章《主线程明明是空闲的，为什么仍然 ANR？》记录了三组典型日志片段。由于原始材料未附完整 trace 与可核对的系统版本，这三组片段适合用来比较“不同日志能支撑到哪一步判断”，而不应直接视作 Android 17 上的复现实验：[来源: 技术文章/source/juejin-android/2026-11-13-76741036-主线程明明是空闲的，为什么仍然 ANR？.md]
+公开文章《主线程明明是空闲的，为什么仍然 ANR？》记录了三组典型日志片段。由于原始材料未附完整 trace 与可核对的系统版本，这三组片段适合用来比较“不同日志能支撑到哪一步判断”，而不应直接视作 Android 17 上的复现实验：[^source-audit-note-6]
 
 | 日志片段 | 能支持的判断 | 还需要什么 |
 | --- | --- | --- |
-| Reason 明确为无焦点窗口，Java 栈停在 `nativePollOnce` | 直接触发是没有及时等到焦点窗口；同期高 Load 仍只是环境线索 | 同一时间窗的窗口建立、焦点切换和线程调度记录。[来源: 上述材料，案例一] |
-| 主线程在 native poll，但 ANR Reason 丢失 | 只能描述采样时状态；无法据此确定 ANR 类型或断言主线程已经恢复 | 完整 Reason、触发与转储时间，以及该类 ANR 负责线程的活动记录。[来源: 上述材料，案例二] |
-| 主线程栈顶出现 Matrix `LooperMonitor.dispatch()` | 只看到监控入口，不能据此把 Matrix 定为根因 | 监控回调自身的耗时、连续采样或具体锁依赖，再核对是否覆盖超时区间。[来源: 上述材料，案例三] |
+| Reason 明确为无焦点窗口，Java 栈停在 `nativePollOnce` | 直接触发是没有及时等到焦点窗口；同期高 Load 仍只是环境线索 | 同一时间窗的窗口建立、焦点切换和线程调度记录。[^source-audit-note-7] |
+| 主线程在 native poll，但 ANR Reason 丢失 | 只能描述采样时状态；无法据此确定 ANR 类型或断言主线程已经恢复 | 完整 Reason、触发与转储时间，以及该类 ANR 负责线程的活动记录。[^source-audit-note-8] |
+| 主线程栈顶出现 Matrix `LooperMonitor.dispatch()` | 只看到监控入口，不能据此把 Matrix 定为根因 | 监控回调自身的耗时、连续采样或具体锁依赖，再核对是否覆盖超时区间。[^source-audit-note-9] |
 
-监控入口容易被误认成耗时位置。r1 的 `Looper.loopOnce()` 在 `Handler.dispatchMessage()` 前后调用配置的 Printer；入口帧本身没有持续时间信息。要判断监控是否拖慢消息，需把监控回调自身耗时与业务消息耗时分开，不把包裹业务的公共帧当成业务耗时证据。[已验证: AOSP `android-17.0.0_r1`，`frameworks/base/core/java/android/os/Looper.java` 的 `loopOnce()`；来源: 上述材料，案例三]
+监控入口容易被误认成耗时位置。r1 的 `Looper.loopOnce()` 在 `Handler.dispatchMessage()` 前后调用配置的 Printer；入口帧本身没有持续时间信息。要判断监控是否拖慢消息，需把监控回调自身耗时与业务消息耗时分开，不把包裹业务的公共帧当成业务耗时证据。[^source-audit-note-10]
 
-补采时先保存完整 Reason、事件对应的进程与组件、系统版本，以及触发、转储和上报各自的时间。时钟域按前文规则对齐，再沿 Reason 选择观察对象：无焦点窗口就追窗口 attach、可见状态、焦点和首帧；已分发事件等待 ACK 就追接收线程及其 Binder、锁或调度依赖。可复现时用 bugreport 或 Perfetto 保留超时前后的窗口、输入和线程轨迹。Reason 缺失时先记录“证据不足”，不要把主线程历史慢消息或后台线程死锁补成既定原因。[来源: 上述材料，案例一、二的补采项；已验证: Android Developers《Diagnose and fix ANRs》的 Input dispatch timeout、No focused window、nativePollOnce 小节]
+补采时先保存完整 Reason、事件对应的进程与组件、系统版本，以及触发、转储和上报各自的时间。时钟域按前文规则对齐，再沿 Reason 选择观察对象：无焦点窗口就追窗口 attach、可见状态、焦点和首帧；已分发事件等待 ACK 就追接收线程及其 Binder、锁或调度依赖。可复现时用 bugreport 或 Perfetto 保留超时前后的窗口、输入和线程轨迹。Reason 缺失时先记录“证据不足”，不要把主线程历史慢消息或后台线程死锁补成既定原因。[^source-audit-note-11]
 
 ### 从 Web INP 借鉴交互口径
 
@@ -502,7 +502,7 @@ binding.submitButton.setOnClickListener {
 
 #### 触摸预测
 
-Android 14（API 34）开始提供公开的 `MotionPredictor` API，用来根据已收到的运动样本预测后续位置。固定到 `android-17.0.0_r1`，`isPredictionAvailable()` 只接受 stylus（触控笔）输入源，`record()` 还要求单 pointer 和触控笔 tool；普通手指触摸与多 pointer 事件不在这条实现的预测范围内。应用应先用 `isPredictionAvailable(deviceId, source)` 检查支持情况，再把该设备的完整事件序列交给 `record(MotionEvent)`，包括结束手势的 `ACTION_UP` / `ACTION_CANCEL`。同一实例同一时刻只接收一台设备的手势；前一手势未结束就混入另一设备，会因事件流不一致抛出 `IllegalArgumentException`，多设备输入需要隔离事件流。[来源: MotionPredictor 官方 API；AOSP `android-17.0.0_r1`，`MotionPredictor.cpp` 的 `record()` / `isPredictionAvailable()` 及 JNI 异常转换]
+Android 14（API 34）开始提供公开的 `MotionPredictor` API，用来根据已收到的运动样本预测后续位置。固定到 `android-17.0.0_r1`，`isPredictionAvailable()` 只接受 stylus（触控笔）输入源，`record()` 还要求单 pointer 和触控笔 tool；普通手指触摸与多 pointer 事件不在这条实现的预测范围内。应用应先用 `isPredictionAvailable(deviceId, source)` 检查支持情况，再把该设备的完整事件序列交给 `record(MotionEvent)`，包括结束手势的 `ACTION_UP` / `ACTION_CANCEL`。同一实例同一时刻只接收一台设备的手势；前一手势未结束就混入另一设备，会因事件流不一致抛出 `IllegalArgumentException`，多设备输入需要隔离事件流。[^source-audit-note-12]
 
 处理 `predict(long)` 返回的事件时要保留 historical samples。预测目标参数使用 uptime 基准的纳秒时间，墙钟或未经换算的 boottime 都要先换算再传。预测用估算位置补偿采样到显示之间的空间滞后，不会改变原始事件的分发时间。预测可能返回 `null`，也可能达不到请求的时间点；手势结束、方向突然变化或设备不支持时，应用必须回退到真实样本。Android 不会自动为所有 View 或 Compose 手势启用这项能力。
 
@@ -989,7 +989,7 @@ Android 17 会为 targetSdk 37 的应用默认启用 lock-free（无锁） `Mess
 
 [官方迁移指南](https://developer.android.com/about/versions/17/changes/messagequeue) 还要求更新依赖旧队列实现的测试工具：Espresso 使用 3.7.0 或更新版本，Robolectric 使用 4.17 或更新版本，并将 `@LooperMode(LEGACY)` 迁到 `@LooperMode(PAUSED)`。在 Android 17 的 debuggable 应用上，可用 `adb shell am compat enable USE_NEW_MESSAGEQUEUE com.example.app` 提前启用新实现，再用同名 `disable` 命令做旧实现对照。这组开关用于定位兼容性问题，不替代依赖迁移和当前平台上的性能复测。
 
-[Android 16 QPR2 Beta 发布说明](https://developer.android.com/about/versions/16/qpr2/release-notes) 列出了 generational Concurrent Mark-Compact GC；该资料对应预发布版本，仍包含稳定性与兼容性提醒。具体设备使用的 collector 需核对 ART/Mainline 版本与开关，不能仅凭系统大版本判定。分析点击或切换附近的 GC slice 时，应结合对象分配速率、堆状态和 collector 事件，实测停顿时长与 CPU 时间分布，不要仅凭系统版本号预设固定收益。[来源: Android 16 QPR2 Beta 发布说明，More efficient garbage collection；本文既有的设备版本与测量边界]
+[Android 16 QPR2 Beta 发布说明](https://developer.android.com/about/versions/16/qpr2/release-notes) 列出了 generational Concurrent Mark-Compact GC；该资料对应预发布版本，仍包含稳定性与兼容性提醒。具体设备使用的 collector 需核对 ART/Mainline 版本与开关，不能仅凭系统大版本判定。分析点击或切换附近的 GC slice 时，应结合对象分配速率、堆状态和 collector 事件，实测停顿时长与 CPU 时间分布，不要仅凭系统版本号预设固定收益。[^source-audit-note-13]
 
 线程长时间处于 runnable（可运行但未获得 CPU）、频繁被抢占、CPU frequency 不足、input driver 延迟或 I/O wait 等现象，是继续进入 `android17-6.18-2026-06_r6` 分析调度和驱动的线索。Activity、View、InputDispatcher、MessageQueue 和配置变更的判断，仍以篇首的平台源码基线为准。
 
@@ -1097,7 +1097,7 @@ Baseline Profile 让 ART 在安装或后台优化阶段优先编译已标记的�
 
 #### 投入产出比
 
-所引 2024 年一手文章披露了冷启动与页面切换分位数下降，以及 Profile 随版本重复生成的做法，但没有给出具体人天、服务器费用和每项工具的独立收益。本地评估时，应把 Profile 生成、基准设备维护、失败用例修复和发布观察都计入投入，实施周期按自己的工程量估算。[来源: Reddit 与 Android Developers 的 2024 年案例，见本节“优化后数据”链接]
+所引 2024 年一手文章披露了冷启动与页面切换分位数下降，以及 Profile 随版本重复生成的做法，但没有给出具体人天、服务器费用和每项工具的独立收益。本地评估时，应把 Profile 生成、基准设备维护、失败用例修复和发布观察都计入投入，实施周期按自己的工程量估算。[^source-audit-note-14]
 
 #### 可迁移的做法
 
@@ -1448,3 +1448,18 @@ minify 开关、默认规则文件、full mode 属性和 keep rules 会共同影
 - [R8 full mode 官方说明](https://developer.android.com/topic/performance/app-optimization/full-mode?hl=en)
 - [启用 App 优化的官方指南](https://developer.android.com/topic/performance/app-optimization/enable-app-optimization)
 - [Android App 性能度量概览](https://developer.android.com/topic/performance/measuring-performance)
+
+[^source-audit-note-1]: 来源: Android Developers《App startup time》的 Retrieve TTFD 小节
+[^source-audit-note-2]: 已验证: Android Developers《Diagnose and fix ANRs》的 nativePollOnce 小节；AOSP `android-17.0.0_r1`，`frameworks/base/core/jni/android_os_MessageQueue.cpp`、`system/core/libutils/Looper.cpp`
+[^source-audit-note-3]: 来源: Android Developers《Diagnose and fix ANRs》的 Input dispatch timeout / nativePollOnce / View Threading Violation / Sync Barrier Leak 小节
+[^source-audit-note-4]: 来源: Android Developers 同节及 View API；AOSP `android-17.0.0_r1`，`ViewRootImpl.postTraversalBarrier()`、`removeTraversalBarrier()`、`checkThreadCompat()` 与 `View` 的 listener 说明
+[^source-audit-note-5]: 已验证: AOSP `android-17.0.0_r1`，`frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp` 的 `findFocusedWindowTargetLocked()`、`processNoFocusedWindowAnrLocked()`、两种 `onAnrLocked()`；Android Developers《Diagnose and fix ANRs》的 No focused window 小节
+[^source-audit-note-6]: 来源: 技术文章/source/juejin-android/2026-11-13-76741036-主线程明明是空闲的，为什么仍然 ANR？.md
+[^source-audit-note-7]: 来源: 上述材料，案例一
+[^source-audit-note-8]: 来源: 上述材料，案例二
+[^source-audit-note-9]: 来源: 上述材料，案例三
+[^source-audit-note-10]: 已验证: AOSP `android-17.0.0_r1`，`frameworks/base/core/java/android/os/Looper.java` 的 `loopOnce()`；来源: 上述材料，案例三
+[^source-audit-note-11]: 来源: 上述材料，案例一、二的补采项；已验证: Android Developers《Diagnose and fix ANRs》的 Input dispatch timeout、No focused window、nativePollOnce 小节
+[^source-audit-note-12]: 来源: MotionPredictor 官方 API；AOSP `android-17.0.0_r1`，`MotionPredictor.cpp` 的 `record()` / `isPredictionAvailable()` 及 JNI 异常转换
+[^source-audit-note-13]: 来源: Android 16 QPR2 Beta 发布说明，More efficient garbage collection；本文既有的设备版本与测量边界
+[^source-audit-note-14]: 来源: Reddit 与 Android Developers 的 2024 年案例，见本节“优化后数据”链接

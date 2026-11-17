@@ -105,14 +105,14 @@ CPU 任务数量超过并行度后，新增任务排队属于预期行为。把�
 
 `Dispatchers.IO` 默认允许并行执行的阻塞任务数，是 64 与处理器数量二者中的较大值，可以通过 `kotlinx.coroutines.io.parallelism` 调整。这个数管的是默认 IO 视图中同时执行的阻塞任务；进程里能同时存在多少协程或线程，是另一回事。
 
-`Dispatchers.IO` 之所以容易出现更多 worker，有两层原因。一层是默认 IO 并行度较大；另一层在 1.11.0 的实现里：`DefaultScheduler.dispatch()` 默认用 `NonBlockingContext`，`Dispatchers.IO` 则通过 `UnlimitedIoScheduler` 把 `Runnable` 以 `BlockingContext` 交给同一个 `CoroutineScheduler`。`TaskContext` 只是一个 blocking / non-blocking 标记，至于 `Runnable` 是不是真的在等 I/O，调度器并不查看；同一段代码放到 Default 或 IO，在它眼里就是两种任务类型。[来源：固定版本的调度器与任务标记源码][coro-scheduler]。
+`Dispatchers.IO` 之所以容易出现更多 worker，有两层原因。一层是默认 IO 并行度较大；另一层在 1.11.0 的实现里：`DefaultScheduler.dispatch()` 默认用 `NonBlockingContext`，`Dispatchers.IO` 则通过 `UnlimitedIoScheduler` 把 `Runnable` 以 `BlockingContext` 交给同一个 `CoroutineScheduler`。`TaskContext` 只是一个 blocking / non-blocking 标记，至于 `Runnable` 是不是真的在等 I/O，调度器并不查看；同一段代码放到 Default 或 IO，在它眼里就是两种任务类型。[^source-audit-note-1][coro-scheduler]。
 
 <!-- gracker-diagram: ch08-04-08-io-compensation -->
 ![IO 的 blocking 标记与补偿条件](../../assets/diagrams/ch08/ch08-04-08-io-compensation.png)
 
 图：TaskContext 是库方标记；释放 CPU permit 与条件性唤醒 / 建 worker 解释线程增加，不能凭线程数认定真实 I/O。
 
-调度器处理 blocking task 时，会先增加 blocking 计数；worker 执行 blocking task 前会进入 `BLOCKING` 状态并释放 CPU permit，随后 `signalCpuWork()` 可以唤醒或创建 worker 来保留 CPU 任务并行度。`tryCreateWorker()` 估算 `created - blocking` 后，如果可处理 CPU work 的 worker 少于 `corePoolSize`，且尚未达到 `maxPoolSize`，才会创建新 worker。这就解释了 IO 场景 worker 数可能超过 Default 并行度的原因。我们排查时除了数线程，还要同时看 IO 并行度、各个 `limitedParallelism` 视图、blocking 调用数量，以及 worker 是否真的处在 Sleep / I/O wait。[来源：固定版本的调度器与任务标记源码][coro-scheduler]。
+调度器处理 blocking task 时，会先增加 blocking 计数；worker 执行 blocking task 前会进入 `BLOCKING` 状态并释放 CPU permit，随后 `signalCpuWork()` 可以唤醒或创建 worker 来保留 CPU 任务并行度。`tryCreateWorker()` 估算 `created - blocking` 后，如果可处理 CPU work 的 worker 少于 `corePoolSize`，且尚未达到 `maxPoolSize`，才会创建新 worker。这就解释了 IO 场景 worker 数可能超过 Default 并行度的原因。我们排查时除了数线程，还要同时看 IO 并行度、各个 `limitedParallelism` 视图、blocking 调用数量，以及 worker 是否真的处在 Sleep / I/O wait。[^source-audit-note-1][coro-scheduler]。
 
 `Dispatchers.IO.limitedParallelism(n)` 创建的是弹性视图：每个视图不受默认 IO 并行度上限约束，但仍共享底层线程和资源。如果同时创建并行度为 100 和 60 的两个视图，峰值阻塞并行度就可能叠加。它适合表达两个外部系统各自的并发预算，但我们要同时算清进程总并发量。
 
@@ -422,7 +422,7 @@ private suspend inline fun <T> traceAsync(
 
 这里的 `Trace` 可以使用 `androidx.tracing.Trace`。async section 表示业务操作从开始到结束的墙钟区间，其中的等待时间不会混进任何线程的 CPU 时间；不会挂起的短函数再用同步 section。这样 Perfetto 才能同时显示整条操作经过了多久，以及各线程实际执行了多久。
 
-AndroidX Tracing 2.0.0 已于 2026-08-12 稳定发布；截至 2026-10-23 核对时，官方最新稳定版为 2.0.5（2026-10-21）。新进程内 API 支持协程上下文传播，写入进程管理的 Perfetto 数据；应用配置 tracing-wire 时还要核对自动初始化、文件位置、flush / close 与容量策略。它不自动等同于 Studio 系统 trace 中已有同名事件，需要导出并按支持流程合并。既有同步 / 异步系统 trace API 仍可用于低频标记。[来源：版本发布与进程内追踪说明][coro-tracing]。
+AndroidX Tracing 2.0.0 已于 2026-08-12 稳定发布；截至 2026-10-23 核对时，官方最新稳定版为 2.0.5（2026-10-21）。新进程内 API 支持协程上下文传播，写入进程管理的 Perfetto 数据；应用配置 tracing-wire 时还要核对自动初始化、文件位置、flush / close 与容量策略。它不自动等同于 Studio 系统 trace 中已有同名事件，需要导出并按支持流程合并。既有同步 / 异步系统 trace API 仍可用于低频标记。[^source-audit-note-2][coro-tracing]。
 
 
 ### 用 sched 表量化 worker 运行片段
@@ -649,3 +649,6 @@ ADPF（Android Dynamic Performance Framework）session 绑定一组长期存在�
 - [ThreadLocal.asContextElement 的传播范围](https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines/as-context-element.html)
 - [Perfetto sched 与线程运行数据](https://perfetto.dev/docs/data-sources/cpu-scheduling)
 - [HandlerThread.quitSafely 的消息退出条件](https://developer.android.com/reference/android/os/HandlerThread#quitSafely())
+
+[^source-audit-note-1]: 来源：固定版本的调度器与任务标记源码
+[^source-audit-note-2]: 来源：版本发布与进程内追踪说明
