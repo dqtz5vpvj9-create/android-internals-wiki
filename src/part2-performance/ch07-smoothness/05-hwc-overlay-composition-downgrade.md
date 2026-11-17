@@ -63,7 +63,7 @@ Composer HAL（显示合成器硬件抽象层）、显示驱动与 plane 分配�
 
 一次可见画面更新通常会在 FrameTimeline 中留下两类帧记录：
 
-- **SurfaceFrame**：某个 App 或系统 Layer 生产并提交的一帧，关联 `surface_frame_token`（Surface 帧标识）。
+- **SurfaceFrame**：某个 App 或系统 Layer 生产并提交的一帧，通常关联 `surface_frame_token`（Surface 帧标识）。
 - **DisplayFrame**：SurfaceFlinger 汇集本轮可见 Layer、完成合成并提交显示的一帧，关联 `display_frame_token`（显示帧标识）。
 
 App 侧的 `Choreographer#doFrame` 和 RenderThread（渲染线程）slice 按时结束，并不代表 SurfaceFrame 已经按时 ready：buffer 提交、GPU 执行完成或 acquire fence，以及 FrameTimeline 对应截止时间都要逐项核实。即便生产者按时 ready，后续流程依然可能拖慢上屏——buffer 还要经过 BufferQueue（图形缓冲队列）、SurfaceFlinger latch（获取并采用缓冲区）与 composition strategy（合成策略），再由 RenderEngine（GPU 合成引擎）或 Composer HAL 完成合成，最后经 display driver（显示驱动）送往 panel scanout（面板逐行扫描显示）。后半程同样受时间预算约束，DisplayFrame 一旦在这里错过目标 VSync（垂直同步），用户感知到的依然是掉帧或延迟。因此排查应按前后两段展开：先确认生产者路径的时序，再下钻合成与显示提交，并持续把 App 自身与输入 buffer 的依赖留在检查清单中。
