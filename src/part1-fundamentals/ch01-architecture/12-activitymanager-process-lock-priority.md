@@ -1299,7 +1299,7 @@ OomAdjuster 把 `curAdj` 应用到 `ProcessList.setOomAdj()`。该方法通过 l
 
 lmkd 使用内存 PSI 事件、swap、thrashing 和设备属性判断何时需要回收。
 
-PSI 框架本身可衡量任务因 CPU、内存或 I/O 资源不足而停顿的时间；在 `lmkd` 的回收触发路径中，内存压力事件由 `lmkd` 直接订阅，不会先回调 AMS 修改 cached 进程老化速度。API 37 的 `OomAdjuster` 中也没有通过 `PSI_SOME` / `PSI_FULL` 分支修改 cached `adj`。
+PSI 框架本身可衡量任务因 CPU、内存或 I/O 资源不足而停顿的时间；在 `lmkd` 的回收触发路径中，内存压力事件由 `lmkd` 直接订阅，通常不会先回调 AMS 修改 cached 进程老化速度。API 37 的 `OomAdjuster` 中也没有通过 `PSI_SOME` / `PSI_FULL` 分支修改 cached `adj`。
 
 这两个环节要分开理解：
 
