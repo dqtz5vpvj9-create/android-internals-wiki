@@ -632,7 +632,7 @@ SDK 和设备基线至少记录 Android SDK 路径、`platforms/android-37` pack
 
 ### `run`、`layout`、`screen` 在复现流程中的边界
 
-当前 [`android run`](https://developer.android.com/tools/agents/android-cli/commands/run) 有两条路径：传入 `--apks` 或预构建 APK 路径时，部署已有文件；传入 build reference（如 `:app`）时，可以先构建再部署，并通过 `--` 把后续参数传给构建系统。本文性能示例显式使用预构建 APK，以便保存构建身份；多 APK 用逗号分隔的 `--apks`。不能再把“run 不执行构建”当成该命令的通用限制。
+当前 [`android run`](https://developer.android.com/tools/agents/android-cli/commands/run) 支持两条路径：传入 `--apks` 或预构建 APK 路径时部署已有文件；传入 build reference（如 `:app`）时先构建再部署，并通过 `--` 把后续参数传给构建系统。因此该命令并非只能部署既有产物，只是本文性能示例为固定构建身份而显式使用预构建 APK；多 APK 可用逗号分隔传入 `--apks`。
 
 下面的命令演示安装单 APK、指定设备和显式启动 Activity；它们都假设 APK 已经构建完成。
 
@@ -684,11 +684,11 @@ Journey 擅长准备登录态、导航到目标页面、确认异常是否出现
 
 指标应来自 Macrobenchmark、Perfetto Trace、APA 或线上 APM（Application Performance Monitoring，应用性能监控）。冷启动耗时、帧时间分布、CPU 调度、GPU counter、GC（garbage collection，垃圾回收）暂停和 Binder 等待时间，从 Journey 的成功或失败里推不出来。
 
-官方 Journey 页面没有发布固定的 `android journey ...` 子命令格式，本文也不编造这类命令。文件格式、运行步骤和 CI 接入方式，以当前 Android CLI、Journeys skill 及项目实际生成的文件为准。报告还要记录 CLI、agent、模型、skill 的版本或内容快照，避免直接比较不同执行环境得出的结果。
+官方 Journey 页面未定义固定的 `android journey ...` 子命令格式，文件格式、运行步骤和 CI 接入方式应以当前 Android CLI、Journeys skill 及项目实际生成的文件为准。报告还要记录 CLI、agent、模型、skill 的版本或内容快照，避免直接比较不同执行环境得出的结果。
 
 ### Android Studio 语义命令与性能排查协作
 
-当前 [`android studio`](https://developer.android.com/tools/agents/android-cli/commands/studio) 参考要求项目已在 **Android Studio Quail 2 或更高版本** 中打开；该页没有再把 Canary 1、Gemini 启用和登录列为这组命令的统一前提。先执行 `android studio check` 验证连接，多实例时明确 `--pid` 与 `--project`。agent 随后连接实际 IDE 执行声明、引用等语义查询；所用版本的额外要求要写入实验记录，不能沿用旧预览条件。
+当前 [`android studio`](https://developer.android.com/tools/agents/android-cli/commands/studio) 参考要求项目已在 **Android Studio Quail 2 或更高版本** 中打开；该页没有再把 Canary 1、Gemini 启用和登录列为这组命令的统一前提。先执行 `android studio check` 验证连接，多实例时明确 `--pid` 与 `--project`。agent 随后连接实际 IDE 执行声明、引用等语义查询；实验记录应写明实际所用版本的额外前提，避免沿用旧预览版条件。
 
 | 命令 | 输出 | 性能排查里的用法 |
 |---|---|---|
@@ -702,7 +702,7 @@ Journey 擅长准备登录态、导航到目标页面、确认异常是否出现
 
 这组命令适合源码定位和人工复核。举例：trace 显示某段 Compose 页面在滑动时发生大量重组，即 Compose 多次重新执行相关 UI 代码。我们先用 `find-declaration` 找到相关函数，用 `analyze-file` 检查修改后的文件，再通过 `render-compose-preview --print-semantics` 为目标预览函数生成预览图和语义树；预览函数必须带 `@Preview`，通常也带 `@Composable`。release trace 里的符号已混淆或只剩地址时，还要 mapping（混淆前后名称映射）、native symbol（本地代码地址与函数名的映射）或对应源码版本协助定位。帧时间是否改善，最终仍由 trace 或 benchmark 验证。
 
-`version-lookup` 返回仓库或工具渠道中的可用新版本，适合与否由项目自己判断，Stable、Beta、Canary 之间的选择也轮不到它替团队做——三者大致对应稳定发布、较成熟预览和早期预览。升级时仍要检查版本目录、依赖锁、AGP/Gradle 兼容表和回归测试。
+`version-lookup` 返回仓库或工具渠道中的可用新版本，是否适合升级以及在 Stable、Beta、Canary 之间如何取舍，仍需项目团队自行判断——这三者大致对应稳定发布、较成熟预览和早期预览。升级时仍要检查版本目录、依赖锁、AGP/Gradle 兼容表和回归测试。
 
 
 ### Android skills 与性能专项能力

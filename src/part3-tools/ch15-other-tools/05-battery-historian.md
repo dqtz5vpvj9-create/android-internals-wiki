@@ -63,7 +63,7 @@ Battery Historian 把 bugreport 中的 BatteryStats 历史渲染成时间线，�
 - 后台定位、wakeup alarm（可唤醒设备的定时器）或网络活动是否集中在合理窗口；
 - 两份 bugreport 的统计差异落在哪些 UID 和事件类型。
 
-至于“这段代码耗了多少毫瓦”式的短时函数级测量，时间线给不了答案——那是 Perfetto rail 和 Power Profiler 的领域，我们后面几节会讲到。
+至于“这段代码耗了多少毫瓦”这类短时测量，Battery Historian 时间线给不了答案——这需要借助下文介绍的 Perfetto rail 和 Power Profiler。
 
 ### 采集一份可比较的 bugreport
 
@@ -126,7 +126,7 @@ Partial WakeLock 在屏幕关闭时仍可阻止 CPU suspend；至于 CPU 醒着�
 
 ### `top_app` 与电池下降曲线
 
-`top_app` 回答的是“谁在前台”，把它读成“耗电最多的应用”就错了。电池百分比由 fuel gauge（电量计量芯片及其估算算法）计算后取整，短测试里可能长时间不变，也可能一次跳变。所以短时优化我们比较 rail 能量、外部仪表或可重复的系统级指标；长时待机测试再把百分比斜率作为辅助证据。
+`top_app` 仅表示当时处于前台的应用，并不能等价为耗电最多的应用。电池百分比由 fuel gauge（电量计量芯片及其估算算法）计算后取整，短测试里可能长时间不变，也可能一次跳变。所以短时优化我们比较 rail 能量、外部仪表或可重复的系统级指标；长时待机测试再把百分比斜率作为辅助证据。
 
 ## 直接使用 `dumpsys batterystats`
 
@@ -399,7 +399,7 @@ high = currentEnergyUws
 
 `10_000_000 uWs` 等于 10 J。Beta 分布是一种概率分布，取值范围限定在一个区间内；这里的参数 `alpha=50` 会让样本更靠近 high。生成器用 `UID % 17` 选择一个缓存槽，在 `refresh()` 之间复用该槽的分布抽样因子，同槽的不同 UID 也会复用因子。槽由多个 UID 共享，且服务任何一次刷新尝试都会清空抽样缓存；因子只活到下一次刷新，把它读成某个调用方永久固定的测量偏移，会误判数据。
 
-“对称的 ±10%”“固定 10 mWs 误差”这两种流行说法都描述错了这个算法：上下界由前值和当前值决定。普通或 fine 缓存都走上述同一套条件判断；fine 权限改变的只是缓存选择和刷新阈值，随机化照常生效。首次读数直接返回的分支当不了长期无噪声接口。
+由上述公式可见，随机化区间既非对称百分比，也非固定能量偏移，其上下界完全由前一次与当前能量读数动态决定。普通与 fine 缓存均走同一套条件判断；fine 权限仅改变缓存选择和刷新阈值，随机化照常生效，首次有效读数直接返回的分支也只是一次性边界。
 
 <!-- gracker-diagram: ch15-05-13-conditional-randomization -->
 ![PowerMonitor 随机化的条件与共享抽样槽](../../assets/diagrams/ch15/ch15-05-13-conditional-randomization.png)
@@ -430,7 +430,7 @@ Binder 是 Android 的跨进程调用机制。Historian 和这条 Binder API 共
 
 ### API 37 查询项的变化
 
-旧资料常把 `BatteryUsageStatsQuery` 写成“五个 flag”，flag 指控制查询行为的配置位，其中曾包括 `INCLUDE_POWER_MODELS`。Android 17 源码已经不符合这种说法：
+早期资料常把 `BatteryUsageStatsQuery` 概括为“五个 flag”（flag 指控制查询行为的配置位，其中曾包括 `INCLUDE_POWER_MODELS`），但在 Android 17 源码中这一接口已发生变化：
 
 - `includePowerModels()` 标记为 deprecated，方法体直接返回 builder，不再设置 flag；
 - `powerProfileModeledOnly()` 也已 deprecated，但 Android 17 实现仍会设置 `FLAG_BATTERY_USAGE_STATS_POWER_PROFILE_MODEL`；

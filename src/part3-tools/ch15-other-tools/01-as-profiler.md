@@ -51,7 +51,7 @@ related_chapters:
 
 # Android Studio Profiler（性能分析器）
 
-Android Studio Profiler 适合从应用视角快速关联 CPU、内存、网络和能耗信号，只是不同采集模式的开销和时间精度差别很大。我们用之前先按问题选对任务入口，也想清楚什么时候该转向系统级的 Perfetto。
+Android Studio Profiler 适合从应用视角快速关联 CPU、内存、网络和能耗信号，只是不同采集模式的开销和时间精度差别很大。使用前先按问题选对任务入口，同时明确什么时候需要转向系统级的 Perfetto。
 
 ## Profiler 解决什么问题
 
@@ -100,14 +100,14 @@ Android 10（API 29）及以上的系统追踪文件采用 Perfetto 格式，更
 
 TrackEvent 这一路要额外准备：目标进程接入 SDK、选择合适后端，并在采集配置中启用对应数据源。只在 IDE 中启动 System Trace 时，这些条件未必已经满足，事件有没有采到，要按接入条件确认。设备支持时，记录还可包含 FrameTimeline、进程内存和 power rail 数据。
 
-FrameTimeline 提供 App 与 SurfaceFlinger 帧的预测、实际区间和分类，按 token 等标识关联；每个 GPU 内部阶段它独自补齐不了，从输入到面板发光的完整测量也要另外的手段。所以把 System Trace 概括成“只通过 atrace 抓点”，会漏掉大量调度方面的信息。
+FrameTimeline 提供 App 与 SurfaceFlinger 帧的预测、实际区间和分类，按 token 等标识关联；但它无法独立覆盖每个 GPU 内部阶段，从输入到面板发光的完整测量也需要借助其他手段。因此，System Trace 涵盖内核调度、应用与框架打点、帧时间线和功耗轨等多类系统上下文，远不止 atrace 抓点。
 
 <!-- gracker-diagram: ch15-01-02-system-source-coverage -->
 ![System Trace 的数据源与覆盖边界](../../assets/diagrams/ch15/ch15-01-02-system-source-coverage.png)
 
 图：内核、应用标记与平台数据源共同形成 system trace。 TrackEvent 需要 SDK/后端和数据源配置；FrameTimeline 不能替代完整输入到光学测量。
 
-System Trace 通常比全量方法插桩轻，开销却随配置浮动：启用的数据源、事件频率、缓冲区大小、自定义标记密度和设备实现共同决定成本，跨设备和配置通用的“每个事件固定耗时”并不存在。在高频循环里写入成千上万个 tracepoint，同样可能扰动调度和缓存。我们可以在相同设备、相同构建和相同操作脚本下分别运行未录制基线与录制版本，检查指标是否出现一致偏移。
+System Trace 通常比全量方法插桩轻，开销却随配置浮动：启用的数据源、事件频率、缓冲区大小、自定义标记密度和设备实现共同决定成本，不存在跨设备和配置通用的“每个事件固定耗时”。在高频循环里写入成千上万个 tracepoint，同样可能扰动调度和缓存。我们可以在相同设备、相同构建和相同操作脚本下分别运行未录制基线与录制版本，检查指标是否出现一致偏移。
 
 它擅长回答线程状态和系统上下文。Running 表示线程正在 CPU 上执行；Runnable 表示已经具备运行条件，只是还在排队等 CPU；Sleeping（S）表示可中断睡眠，常见于等待条件、锁或事件；Uninterruptible Sleep（D）表示不可中断睡眠。状态描述的是线程当下的处境，线程是否“主动”让出 CPU、D 状态具体在等什么，要靠阻塞调用栈、唤醒与依赖事件确认，磁盘 I/O 之类的判断也一样。
 
@@ -124,7 +124,7 @@ Java/Kotlin 方法记录通过运行时插桩，在每次方法进入和退出�
 插桩逻辑会增加每次方法调用的工作量，并可能改变线程调度、缓存行为和运行时优化状态。方法越短、调用越密集，扰动占原始工作量的比例越高。Android 官方文档明确提示 trace 中的时间读数会偏离生产环境，并建议把录制控制在 5 秒以内。
 
 
-因此，方法记录显示的绝对耗时——某次调用在时间轴上的具体毫秒数——只适合在同一录制条件下辅助排序。要判断优化有没有缩短用户可见时延，应回到无插桩的基准测试或低扰动 System Trace。社区案例给出的固定放大倍数依赖设备、代码形态和录制配置，它只对各自的案例成立，我们把它当参考就好。
+因此，方法记录显示的绝对耗时——某次调用在时间轴上的具体毫秒数——只适合在同一录制条件下辅助排序。要判断优化有没有缩短用户可见时延，应回到无插桩的基准测试或低扰动 System Trace。社区案例给出的固定放大倍数依赖设备、代码形态和录制配置，只对各自案例成立，参考即可。
 
 录制前先把操作缩成一个可复现片段，并限制录制窗口。Android 7.1 及以下设备的采集量受配置中的 File size limit 约束；Android 8.0（API 26）及以上会忽略该上限，录制时长就更要克制：短采样间隔或密集方法调用会快速生成大文件，随后显著增加传输和解析时间。
 
@@ -176,7 +176,7 @@ Graphics 一类装的是图形缓冲区队列、GL surface、GL texture 等 CPU/
 排查时我们固定设备和构建，重复同一段用户路径，并在每轮回到等价界面状态，关注对象数、分类内存、GC 事件和多轮操作后的稳定区间。若 Java 对象数或某类实例在多轮 GC 后仍单调增长，再抓 heap dump 检查引用链。进程 RSS 没有立即下降时，先想想堆内的空闲空间：它可能被保留给后续分配，RSS 读数和 Java 对象的存活性是两回事。
 
 
-Java/Kotlin allocation 任务默认使用 Full，记录全部分配；也可以切换为 Sampled，按固定间隔抽样。Android 7.1 及以下最多保存最近 65,535 条分配记录；Android 8.0 及以上取消了这项上限——这是平台行为，LeakCanary 的专用任务属于 Android Studio 集成能力，两者是两回事。关于首发版本，当前 heap dump 指南写作 Panda，2026-07-16 的 Quail 2 发布说明则写作从 Quail 2 开始；两份官方资料表述有差异，本文不据此断定最早版本，使用时以所装 IDE 的任务列表为准。
+Java/Kotlin allocation 任务默认使用 Full，记录全部分配；也可以切换为 Sampled，按固定间隔抽样。Android 7.1 及以下最多保存最近 65,535 条分配记录，Android 8.0 及以上取消了这项平台上限。
 
 ### Heap Dump（堆快照）
 
@@ -189,7 +189,7 @@ Java/Kotlin allocation 任务默认使用 Full，记录全部分配；也可以�
 
 检查顺序可从“本应结束生命周期的对象”开始，例如退出页面后仍保留的 Activity、Fragment、View 树、`CoroutineScope`（协程作用域）、监听器或大型业务对象。多个 Activity 实例也可能来自配置变化、返回栈或多窗口，数量多寡还要结合来源看。选中实例后沿 References 追到 GC Root——它是垃圾回收器直接认定为可达的起点，例如活动线程栈、静态字段或 JNI 全局引用；只要对象仍能从这些根到达，GC 就不会回收它。最后判断这条持有关系是否符合生命周期设计。
 
-Profiler 的 `Show activity/fragment leaks` 过滤器会列出可疑实例，帮我们缩小候选集合，引用链和复现步骤仍要人工核对。支持 LeakCanary 集成的 Android Studio 版本会把检测结果带到 Profiler 专用任务中，项目要先按 LeakCanary 的接入要求运行检测。
+Profiler 的 `Show activity/fragment leaks` 过滤器会列出可疑实例，帮我们缩小候选集合，引用链和复现步骤仍要人工核对。支持 LeakCanary 集成的 Android Studio 版本会把检测结果带到 Profiler 专用任务中，项目要先按 LeakCanary 的接入要求运行检测。这项专用任务属于 Android Studio 集成能力，与上述平台级分配记录上限是两套机制；关于该集成的首发 IDE 版本，当前 heap dump 指南写作 Panda，而 2026-07-16 的 Quail 2 发布说明写作从 Quail 2 开始，两份官方资料表述存在差异，使用时应以所装 IDE 的任务列表为准。
 
 Android Studio 中的 Heap Dump 和 Java/Kotlin allocation 任务要求 debuggable App，也就是允许调试器和完整开发期采集能力接入的构建。若问题只在接近发布的构建中出现，可先用 profileable 构建采 System Trace、Callstack Sample 或 Native allocations——profileable 只开放受控的性能采集能力，更接近 release 的运行条件；随后再制作范围尽量小的 debuggable 构建变体复现 Java 堆问题。Android 15（API 35）起的 `ProfilingManager` 可以在真实用户设备上申请 Java heap dump，那是另一套受系统限流和隐私处理约束的生产采集接口。
 
@@ -257,7 +257,7 @@ ODPM 把设备级功耗分成若干 rail，可能包括 CPU Big/Mid/Little、GPU
 
 Android Studio Profiler 主要服务于连接设备上的交互式分析。若问题只在真实用户设备或接近发布的构建中出现，可考虑 `ProfilingManager`：Android 15（API 35）的 `requestProfiling()` 支持由 App 主动申请采集，Android 16（API 36）再加入系统事件触发器。请求会被限流，执行与否没有保证；结果类型和隐私处理要分别判断。例如，脱敏后的 system trace 保留申请进程的详细信息，其他进程的 CPU 活动则出现在 OtherProcesses 聚合轨道里，两类信息都在同一份文件中。结果回调、文件存储和隐私约束都独立于 IDE 任务。
 
-完整的 API 35—37 演进、`requestProfiling()`、后台 system trace、触发器矩阵、结果文件管理，以及系统不支持或拒绝请求时的处理方式，统一见 [15.7 ProfilingManager](07-profiling-manager.md)。本节只保留工具选择层面的结论，避免两处维护同一套 API 细节。
+完整的 API 35—37 演进、`requestProfiling()`、后台 system trace、触发器矩阵、结果文件管理，以及系统不支持或拒绝请求时的处理方式，见 [15.7 ProfilingManager](07-profiling-manager.md)，本节只保留工具选择层面的结论。
 
 ## 常见问题与误区
 
@@ -269,9 +269,9 @@ Android Studio Profiler 主要服务于连接设备上的交互式分析。若�
 
 **把 power rail 峰值归到前台 App。** ODPM 是设备级测量。需要用对照实验和同窗 trace 逐步排除其他进程与硬件状态。
 
-**以为 profileable 采不了什么。** 它覆盖多数低扰动任务；Java/Kotlin allocations、heap dump 和 Interaction timeline 要切换到 debuggable。
+**低估 profileable 构建的分析能力。** 它已覆盖多数低扰动采集任务；只有在需要 Java/Kotlin allocations、heap dump 或 Interaction timeline 时，才需要切换到 debuggable 构建。
 
-**认为 Android Studio System Trace 没有系统视角。** 它能展示调度、系统进程和渲染轨道，但 IDE 分析围绕所选 App，SQL 与跨进程深入分析更适合 Perfetto UI。
+**将 Android Studio System Trace 仅当作应用内时间轴。** 它同样能展示调度、系统进程和渲染轨道，只是 IDE 分析围绕所选 App 组织；需要执行 SQL 或深入分析跨进程关联时，再转入 Perfetto UI。
 
 ## 参考资料
 

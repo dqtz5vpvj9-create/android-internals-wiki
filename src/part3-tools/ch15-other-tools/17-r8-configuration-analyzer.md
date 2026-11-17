@@ -84,7 +84,7 @@ Android 17 / API 37 在这里有两个作用：
 
 ## 三条报告生成路径
 
-拿到报告有三条路径：AGP 9.3.0 及以上的独立任务、完整 release 构建的自动报告，以及旧 AGP 配合替换版 R8 的系统属性。三条路径的前提相同，官方只给出两种准入方式：用 AGP 9.3.0 及以上，或把旧 AGP 内置的 R8 替换为 9.3.7-dev 及以上。Configuration Analyzer 最早随 AGP 9.3.0-alpha05 预览，当前文档按 AGP 9.3.0 正式版本描述。
+拿到报告有三条路径：AGP 9.3.0 及以上的独立任务、完整 release 构建的自动报告，以及旧 AGP 配合替换版 R8 的系统属性。三条路径的前提相同，官方只给出两种准入方式：用 AGP 9.3.0 及以上，或把旧 AGP 内置的 R8 替换为 9.3.7-dev 及以上。Configuration Analyzer 最早随 AGP 9.3.0-alpha05 预览，下文按 AGP 9.3.0 正式版本描述。
 
 AGP 9.3.0 及以上提供一个独立任务，适合本地迭代 keep 规则：
 
@@ -139,7 +139,7 @@ android {
 
 ## 报告里哪些字段该看
 
-报告首页的三类分数，衡量的是“仍允许 R8 处理的类、字段和方法占比”。读数时我们先记住两点：它衡量的是剩余处理空间，已经获得的字节或性能收益要另行测量；跨 R8 版本直接比较绝对值也靠不住。以本次核对的 R8 9.4.14 HTML 为例，overall 的分母是分析时的 live class、field、method 个数之和，每项权重均为 1；一个元素只要被任一规则施加了对应限制，就计入受限数，多条规则约束同一个元素时只算一次。分数按 `100 × (1 - 受限元素数 / live元素数)` 解释，前提是分母大于 0；全局 `-dont*` 选项会把对应能力的分数置为 0。所以，它统计的是分析图中的元素数量，最终 DEX 字节和已删除代码的比例要另外换算。
+报告首页的三类分数，衡量的是“仍允许 R8 处理的类、字段和方法占比”。读数时我们先记住两点：它衡量的是剩余处理空间，已经获得的字节或性能收益要另行测量；跨 R8 版本直接比较绝对值也靠不住。以 R8 9.4.14 生成的 HTML 为例，overall 的分母是分析时的 live class、field、method 个数之和，每项权重均为 1；一个元素只要被任一规则施加了对应限制，就计入受限数，多条规则约束同一个元素时只算一次。分数按 `100 × (1 - 受限元素数 / live元素数)` 解释，前提是分母大于 0；全局 `-dont*` 选项会把对应能力的分数置为 0。所以，它统计的是分析图中的元素数量，最终 DEX 字节和已删除代码的比例要另外换算。
 
 <!-- gracker-diagram: ed15-17-r8-overlap-score-and-subsumption -->
 ![重叠规则去重计分，与 subsumed 条件分开判断](../../assets/diagrams/ch15/ed15-17-r8-overlap-score-and-subsumption.png)
@@ -154,13 +154,13 @@ android {
 | Optimization score | 仍允许被内联、类合并、访问级别调整等优化处理的比例 | <code>-dontoptimize</code>、未加 <code>allowoptimization</code> 的宽规则、为兼容 full mode 添加的临时宽规则 |
 | Obfuscation score | 仍允许被重命名的比例 | <code>-dontobfuscate</code>、协议字段名和反射类名被整包固定 |
 
-这三个分数要结合规则列表一起读。shrinking score 下降了，可能是 App 新增了一条宽规则，也可能是第三方 SDK 更新后扩大了 consumer rules 的匹配范围；报告里的来源文件和依赖信息，可以帮我们把 App 规则、library consumer rules 和 AGP 默认规则区分开。读来源时留意：序列化数据的 `source` 保存的是规则原文，在已核对的 R8 9.4.14 中，来源要经 `origin`、文件表和 Maven 信息关联，把它直接当文件或 Maven 坐标会读错。处理顺序上，App 规则我们直接改；库规则优先升级 SDK 或反馈库作者；AGP 默认规则只做识别，保持原样。规则是否真正生效也要分辨：AGP 9.0+ 会过滤 library consumer rules 中的全局选项，例如 `-dontobfuscate`；排查优化受限时，先查 App 自己声明的全局规则，库中已被过滤的声明可以先放到一边。
+这三个分数要结合规则列表一起读。shrinking score 下降了，可能是 App 新增了一条宽规则，也可能是第三方 SDK 更新后扩大了 consumer rules 的匹配范围；报告里的来源文件和依赖信息，可以帮我们把 App 规则、library consumer rules 和 AGP 默认规则区分开。读来源时留意：序列化数据的 `source` 保存的是规则原文，在 R8 9.4.14 中，来源要经 `origin`、文件表和 Maven 信息关联，把它直接当文件或 Maven 坐标会读错。处理顺序上，App 规则我们直接改；库规则优先升级 SDK 或反馈库作者；AGP 默认规则只做识别，保持原样。规则是否真正生效也要分辨：AGP 9.0+ 会过滤 library consumer rules 中的全局选项，例如 `-dontobfuscate`；排查优化受限时，先查 App 自己声明的全局规则，库中已被过滤的声明可以先放到一边。
 
 还要记住多条 keep 规则的限制会叠加：AAR 已经带入的宽规则，App 再加一条窄规则也抵消不掉。必须临时验证潜在收益时，AGP 8.4 及以上可以用 `optimization.keepRules.ignoreFrom("group:artifact")` 过滤指定 Maven 坐标的依赖规则，再由 App 补回确有运行时需要的部分；AGP 7.3～8.3 的旧接口名是 `ignoreExternalDependencies()`。过滤会改变库作者声明的运行时契约（反射、JNI 等路径依赖的名称、成员和元数据约束），我们把它留给隔离实验和有完整回归覆盖的受控构建。
 
 `impactful rules`（高影响规则）按每条 keep 规则涉及的类、字段和方法数量聚合，用来排优先级。我们先看影响范围最大的规则，再确认它是否对应真实的反射、JNI 或动态加载入口。
 
-`subsumed rules` 要结合当前工具的比较条件来读。已复核的 R8 9.4.14 的判定条件相当严格：两条规则的 modifiers（例如 `allowoptimization`）相同，且类、字段、方法三组匹配集合都分别被包含，才报告对应的 subsumed 关系；所以包名模式更宽、匹配数量更多，都推不出“一定会标成 subsumed”。典型例子是同一个包里同时存在下面两条声明：
+`subsumed rules` 要结合当前工具的比较条件来读。R8 9.4.14 的判定条件相当严格：两条规则的 modifiers（例如 `allowoptimization`）相同，且类、字段、方法三组匹配集合都分别被包含，才报告对应的 subsumed 关系；所以包名模式更宽、匹配数量更多，都推不出“一定会标成 subsumed”。典型例子是同一个包里同时存在下面两条声明：
 
 ```proguard
 # 规则 A：保留整个包
@@ -231,7 +231,7 @@ unused、identical 和 subsumed 描述的都是当前 variant 的配置关系；
 2. **反射框架规则**：Gson、Moshi、Jackson、反射式路由、插件化框架要区分“依赖类名”“依赖字段名”“依赖泛型签名”三种契约。只读字段名就保字段，读泛型就保 `Signature` 和相关类型，整个数据模型包则无需全保。
 3. **代码生成与自带规则的库**：Room、Hilt、Moshi codegen（代码生成）通过注解处理器或 KSP（Kotlin Symbol Processing）让 R8 看见静态引用；Gson 2.11.0+、Retrofit 2.10.0+ 自带关键 consumer rules。App 新增大范围临时规则前，先看库版本、AAR 内容和最终 `configuration.txt`。
 4. **JNI 入口**：Java/Kotlin 调 native 的 `native <methods>` 通常由默认优化规则覆盖；native 回调 Java/Kotlin 的 upcall 才需要项目补规则。规则要精确到 bridge（桥接）类或方法签名。
-5. **ServiceLoader 和可选依赖**：先判断 R8 能否识别并改写服务加载路径。固定 R8 9.4.14 的 rewriter 支持受限的双参数形式，例如 `ServiceLoader.load(Service.class, Service.class.getClassLoader())`，并结合打包的 `META-INF/services/` 建立 provider 引用；可见的标准路径不一定需要额外 keep；动态 class loader、外部 provider、动态 feature 等路径另查。只有 R8 推导不出的加载契约，才按实际需求保留 provider、构造函数和名称；看到 ServiceLoader 就整包保留，保护范围远超实际需要。
+5. **ServiceLoader 和可选依赖**：先判断 R8 能否识别并改写服务加载路径。R8 9.4.14 的 rewriter 支持受限的双参数形式，例如 `ServiceLoader.load(Service.class, Service.class.getClassLoader())`，并结合打包的 `META-INF/services/` 建立 provider 引用；可见的标准路径不一定需要额外 keep；动态 class loader、外部 provider、动态 feature 等路径另查。只有 R8 推导不出的加载契约，才按实际需求保留 provider、构造函数和名称；看到 ServiceLoader 就整包保留，保护范围远超实际需要。
 6. **注解和泛型签名**：R8 full mode 下，attribute 是否保留与被 keep 的类、字段、方法有关。只写 `-keepattributes` 可能不够，接着要确认读取 attribute 的对象也被规则匹配到。
 
 排查时我们同步查看 `build/outputs/mapping/<variant>/` 下的四个文件：`configuration.txt` 是最终合并配置，`mapping.txt` 记录改名前后的对应关系，`seeds.txt` 列出被规则阻止删除的元素，`usage.txt` 列出被删除的元素。要判断规则收窄之后包体有没有变小，四个文件和 Analyzer 报告得来自同一次构建。
@@ -281,7 +281,7 @@ CI 里至少归档这些产物：
 - DEX 体积增长和 Analyzer 分数下降同时出现，且增长集中在同一个业务包或 SDK 包。
 - 新版 SDK 带入 consumer rules 后，subsumed rules 数量明显增加。
 
-当前仓库的官方 `r8-analyzer` 文档元数据为 2026-09-22，它分成三条路径：AGP 9.3.0 及以上运行独立任务；旧 AGP 搭配 R8 9.3.7-dev 及以上生成定量数据；更旧 R8 只做启发式规则审查。该工作流的定位是生成摘要和候选清单，keep 规则由人来改。要注意当前仓库只有 `SKILL.md` 和 `references/`，文档引用的 `scripts/convert_pb_to_json.py` 与 `scripts/analyze.py` 未随目录提供，这些命令能否直接跑起来要先验证。参考文件里的内嵌转换和统计示例同样要小心：转换入口存在缩进问题，自动选择 proto 只是按文件名排序，作为“最新构建”的判据并不可靠。复用时从已固定版本的明确输入文件开始，先校验转换器、schema 与统计输出，再接入 CI。规则背后是运行时契约，反射、JNI、序列化和插件化路径最终由工程师确认覆盖。
+公开仓库 `android/skills` 中的 `r8-analyzer` 文档元数据为 2026-09-22，它分成三条路径：AGP 9.3.0 及以上运行独立任务；旧 AGP 搭配 R8 9.3.7-dev 及以上生成定量数据；更旧 R8 只做启发式规则审查。该工作流的定位是生成摘要和候选清单，keep 规则由人来改。要注意该 skill 目录目前只有 `SKILL.md` 和 `references/`，文档引用的 `scripts/convert_pb_to_json.py` 与 `scripts/analyze.py` 未随目录提供，这些命令能否直接跑起来要先验证。参考文件里的内嵌转换和统计示例同样要小心：转换入口存在缩进问题，自动选择 proto 只是按文件名排序，作为“最新构建”的判据并不可靠。复用时从已固定版本的明确输入文件开始，先校验转换器、schema 与统计输出，再接入 CI。规则背后是运行时契约，反射、JNI、序列化和插件化路径最终由工程师确认覆盖。
 
 
 ## 与 APK Analyzer / apkanalyzer 的边界

@@ -207,7 +207,7 @@ HPROF（Java heap dump 文件格式）的处理路径由配置决定：上游同
 
 IO Canary 在 Native 层拦截 `open`、`read`、`write`、`close` 等调用，把文件路径、Java 调用上下文、线程、次数、字节数和耗时汇总给 detector（判定规则）做判定。它依赖上游 Matrix 公共组件内置的 xHook 风格 PLT Hook：PLT 是动态链接函数的跳转表，ELF（Executable and Linkable Format，可执行与链接文件格式）是 Android Native 库使用的二进制格式。
 
-PLT Hook 的覆盖有一条清楚的线：它拦住的是经过目标 ELF 重定位槽的调用。静态链接、同一 ELF 内部直接调用、内联、不同符号变体和未列入 Hook 集合的系统调用都可能走在这条线之外，所以“全量监控”的说法在这里立不住。
+PLT Hook 的覆盖有一条清楚的边界：它拦截的是经过目标 ELF 重定位槽的调用。静态链接、同一 ELF 内部直接调用、内联、不同符号变体和未列入 Hook 集合的系统调用都可能走在这条线之外，因此 PLT Hook 无法覆盖全部 I/O 调用。
 
 三个公开 detector 的判定条件，我们按源码逐个过一遍：
 
@@ -281,7 +281,7 @@ Booster 把工作放在构建期：检查或改写编译后的 class 与安装�
 
 #### 两种 Transform 的区别
 
-这里有两个容易混淆的“Transform”。早期 Booster 建立在 AGP 的 `com.android.build.api.transform.Transform` 接口上，该接口从 AGP 8.0 起已经删除；而 Booster 文档里的 “Transform based modules” 是它自己对字节码转换模块的分类，名称延续到了 5.x。据此推断 5.x 仍调用旧 AGP Transform API，是把分类名读成了接口名。
+这里有两个容易混淆的“Transform”。早期 Booster 建立在 AGP 的 `com.android.build.api.transform.Transform` 接口上，该接口从 AGP 8.0 起已经删除；而 Booster 文档里的 “Transform based modules” 是它自己对字节码转换模块的分类名，并延续到了 5.x，不能把分类名等同于旧 AGP Transform API。
 
 当前主分支的 `BoosterPlugin.registerTransform()` 在 `androidComponents.onVariants` 中注册任务，再通过 `variant.artifacts.forScope(ScopedArtifacts.Scope.ALL).toTransform(ScopedArtifact.CLASSES, ...)` 接入 class 产物——这属于 Android Components / Scoped Artifacts 路径，可读写指定构建变体的一组 class 产物。
 
@@ -347,7 +347,7 @@ Booster `v5.1.0` README 的发布版兼容表列出：
 
 **Anchors** 在图调度上增加“锚点”：`AnchorsManager.start()` 可以阻塞等待指定节点完成，异步节点由线程池驱动，同步节点投递到主线程，也支持显式 block/unlock。锚点放在 `Application.onCreate()` 会直接占用主线程启动窗口，所以应只等待首个可交互页面不可缺少的节点。上游最新版本记录为 2022 年的 `v1.1.8`，接入现代 Kotlin 和 AGP 项目前要自行回归。
 
-**hacket/AppInit（hacket/AppInit）** 用 `@AppInitTask` 标注任务 id、进程、优先级、依赖和是否后台执行，通过 KAPT/KSP（Kotlin 注解处理与代码生成工具）收集任务，也提供 AndroidX Startup 入口。仓库与 Maven `1.0.1` 线停在 2022 年。项目里的 `@AppInit` 若来自另一个同名库，先确认 group id（依赖坐标中的组织标识）与仓库再下结论，免得把不同实现的能力写到一起。
+**hacket/AppInit** 用 `@AppInitTask` 标注任务 id、进程、优先级、依赖和是否后台执行，通过 KAPT/KSP（Kotlin 注解处理与代码生成工具）收集任务，也提供 AndroidX Startup 入口。仓库与 Maven `1.0.1` 线停在 2022 年。项目里的 `@AppInit` 若来自另一个同名库，先确认 group id（依赖坐标中的组织标识）与仓库再下结论，免得把不同实现的能力写到一起。
 
 选型时可用四项验收：
 
@@ -495,7 +495,7 @@ Session ID 表示一段使用期，Trace ID 表示一次操作或请求树，两
 
 Matrix、KOOM、btrace 这些工具会用到 PLT Hook、Inline Hook、ART/JVMTI 或构建期字节码改写：Inline Hook 直接改写目标函数开头的机器指令，JVMTI 是 Java 虚拟机的调试与监控接口。看到“使用了 Hook”，离判断兼容性还远。
 
-选型时至少记录目标符号、拦截位置、ABI、装载时机、链式调用规则、失败降级、4 KB / 16 KB page size、BTI/PAC、CFI（控制流完整性）/unwind（栈展开）和目标 ROM。本节先把选型前提固定下来，下文再展开具体实现、回调安全与验证矩阵，这样选型与实现就不用各维护一套原理说明。
+选型时至少记录目标符号、拦截位置、ABI、装载时机、链式调用规则、失败降级、4 KB / 16 KB page size、BTI/PAC、CFI（控制流完整性）/unwind（栈展开）和目标 ROM；具体实现、回调安全与验证矩阵将在下文展开。
 
 ## 插桩与 Native Hook 的实现约束
 
@@ -571,7 +571,7 @@ flowchart LR
 
 `bionic/linker/linker.cpp` 在处理 `DT_PLTGOT` 时明确写着 `RTLD_LAZY is not supported`：`link_image()` 调用 `relocate()` 填充跳转槽，随后调用 `protect_relro()` 把 GNU RELRO（Relocation Read-Only，重定位后只读）区域设为只读。也就是说，Android 上没有 glibc 风格的“第一次调用时再解析”窗口。
 
-这带来两个直接推论。若只要求拦截安装后的调用，Hook 可以在 `dlopen()` 返回后执行；若要覆盖构造函数或 `.init_array` 内的调用，就必须赶在这些调用之前完成。改槽时仍必须先取得 GOT 所在内存页的写权限：ByteHook `v1.1.2` 的 `bh_elf_get_protect()` 识别 `PT_GNU_RELRO`，`bh_util_set_addr_protect()` 按运行时页大小对齐后调用 `mprotect()（修改内存页权限）` 加上写权限。同版本里“写完恢复原权限”的调用仍被注释，改写后未必恢复只读——评估时应单独记录这一实现选择；反过来，把 GOT 描述成始终可写，又会漏掉 full RELRO（所有可保护重定位区都转只读）的常见情况。
+这带来两个直接推论。若只要求拦截安装后的调用，Hook 可以在 `dlopen()` 返回后执行；若要覆盖构造函数或 `.init_array` 内的调用，就必须赶在这些调用之前完成。改槽时仍必须先取得 GOT 所在内存页的写权限：ByteHook `v1.1.2` 的 `bh_elf_get_protect()` 识别 `PT_GNU_RELRO`，`bh_util_set_addr_protect()` 按运行时页大小对齐后调用 `mprotect()`（修改内存页权限）加上写权限。同版本里“写完恢复原权限”的调用仍被注释，改写后未必恢复只读——评估时应单独记录这一实现选择；反过来，把 GOT 描述成始终可写，又会漏掉 full RELRO（所有可保护重定位区都转只读）的常见情况。
 
 IFUNC（indirect function，间接函数）用 resolver（解析函数）在装载时选择具体实现：Android linker 执行 resolver 后，把结果写入相应重定位位置。PLT Hook 能否命中，仍取决于调用路径是否经过被改写的槽，只看符号类型还不够。
 
@@ -712,7 +712,7 @@ static bool uninstall_getpid_hook(void) {
 
 #### 可执行内存、W^X 与 SELinux
 
-W^X（Write xor Execute）是内存页避免同时可写、可执行的安全原则，RWX 则表示读、写、执行三种权限同时存在。先澄清一个流传的说法：Android 17 没有一条“targetSdk 34 起普通应用禁止所有 RWX”的统一规则——AOSP `system/sepolicy/private/app.te` 仍允许 `appdomain self:process execmem`，源码注释给出的用途是 WebView 和应用自带的 JIT 编译器。ShadowHook `v2.0.1` 在改写目标页和分配匿名 trampoline 页时都会请求 `PROT_READ | PROT_WRITE | PROT_EXEC`；SELinux 的 `execmem` 许可只是其中一个前提，任意映射操作也未必成功。
+W^X（Write xor Execute）是内存页避免同时可写、可执行的安全原则，RWX 则表示读、写、执行三种权限同时存在。在 SELinux 策略上，Android 17 并不存在“targetSdk 34 起普通应用禁止所有 RWX”的统一规则——AOSP `system/sepolicy/private/app.te` 仍允许 `appdomain self:process execmem`，源码注释给出的用途是 WebView 和应用自带的 JIT 编译器。ShadowHook `v2.0.1` 在改写目标页和分配匿名 trampoline 页时都会请求 `PROT_READ | PROT_WRITE | PROT_EXEC`；SELinux 的 `execmem` 许可只是其中一个前提，任意映射操作也未必成功。
 
 反过来，任意地址都能改同样不成立：
 
@@ -731,7 +731,7 @@ ARM 上用数据写入修改代码后，还要让新指令对 CPU 取指可见�
 
 ### ART 方法 Hook 的版本风险
 
-`art/runtime/art_method.h` 里仍有 `entry_point_from_quick_compiled_code_`——它是从 ART quick compiled code 进入方法时使用的入口指针。JNI 入口通过 `PtrSizedFields::data_` 表达，由 `GetEntryPointFromJni()` / `SetEntryPointFromJni()` 访问；源码中没有所谓“Android 13 才新增的独立 JNI 字段”。直接写固定偏移，就要同时面对字段布局、指针大小和方法类型语义的变化。
+`art/runtime/art_method.h` 里仍有 `entry_point_from_quick_compiled_code_`——它是从 ART quick compiled code 进入方法时使用的入口指针。JNI 入口通过 `PtrSizedFields::data_` 表达，由 `GetEntryPointFromJni()` / `SetEntryPointFromJni()` 访问，源码中并不存在按 Android 13 单独新增的独立 JNI 字段。直接写固定偏移，就要同时面对字段布局、指针大小和方法类型语义的变化。
 
 即便找对入口，Java 方法调用也可能走多条路径：
 
@@ -775,9 +775,9 @@ Hook 框架要处理两类问题：
 - 自身 `.so` 的 ELF 与 APK 打包对齐；
 - `mprotect()`、trampoline 分配和地址取整使用运行时 page size。
 
-进程应通过 `getpagesize()` 或 `sysconf(_SC_PAGESIZE)` 读取页大小；`4096`、`0xFFF` 这类写死的常数，只在页大小恰好为 4 KB 时正确。基础页大小由运行中的内核配置决定，“同一设备上 64 位进程用 16 KB、32 位进程用 4 KB”这类通用规则在这里套不上。
+进程应通过 `getpagesize()` 或 `sysconf(_SC_PAGESIZE)` 读取页大小；`4096`、`0xFFF` 这类写死的常数，只在页大小恰好为 4 KB 时正确。基础页大小由运行中的内核配置决定，同一设备上不会按 64 位进程用 16 KB、32 位进程用 4 KB 来分别划分。
 
-还有一个常见误解：ELF section（链接视角的节）的文件偏移，并不会因为页大小从 4 KB 变成 16 KB 就自动从 `+0x1000` 改成 `+0x4000`。内存加载由 program header（装载视角的段表）、`p_vaddr`、`p_offset`、`p_align` 与 load bias（装载基址修正量）共同决定。Hook 工具应读取 program header 和动态重定位表；section 偏移要实测，靠猜会读错。
+此外，ELF section（链接视角的节）的文件偏移也不会因为页大小从 4 KB 变成 16 KB 就固定从 `+0x1000` 改成 `+0x4000`。内存加载由 program header（装载视角的段表）、`p_vaddr`、`p_offset`、`p_align` 与 load bias（装载基址修正量）共同决定。Hook 工具应读取 program header 和动态重定位表；section 偏移要实测，靠猜会读错。
 
 ShadowHook `v2.0.1` 的构建脚本为 arm64 设置 `-Wl,-z,max-page-size=16384`，地址取整和 `mprotect()` 区间都用运行时 page size。采用预编译 AAR 时，仍要用 `readelf`、APK Analyzer 或官方脚本检查实际产物和所有传递依赖——一个兼容的 Hook 库，救不了 APK 里另一个未对齐的 native SDK。
 
@@ -826,7 +826,7 @@ Matrix TraceCanary 没有通过 PLT Hook 拦截 `MessageQueue.next()`。当前�
 - `UIThreadMonitor` 结合 Choreographer 回调拆分 input、animation 和 traversal；
 - `LooperAnrTracer`、`EvilMethodTracer` 和 `FrameTracer` 消费这些时间与方法记录。
 
-它也没有用 `Method.invoke()` 包装 `MessageQueue.next()`；用“2 秒 × 3 次”或“默认 700 ms”替代源码中的配置与 tracer 逻辑，同样是错的。截至 2026-10-25，GitHub 最新 release 仍为 `v2.1.0`（2023-03-21），早于 Android 17——AGP/R8 插桩、Compose、多模块和 release mapping 要自行验证，光看仓库示例判断不了兼容性。
+它也没有用 `Method.invoke()` 包装 `MessageQueue.next()`；用“2 秒 × 3 次”或“默认 700 ms”一概代替源码中的配置与 tracer 逻辑同样不准确。截至 2026-10-25，GitHub 最新 release 仍为 `v2.1.0`（2023-03-21），早于 Android 17——AGP/R8 插桩、Compose、多模块和 release mapping 要自行验证，光看仓库示例判断不了兼容性。
 
 #### KOOM
 
@@ -944,7 +944,7 @@ churn 指对象在短时间内大量创建又回收。我们选方案时先写�
 
 回到三种 Hook 本身。PLT Hook 按调用方重定位槽生效，覆盖范围有限但修改面较小；Inline Hook 改写函数入口，覆盖更广，代价是指令重定位、并发写入和可执行内存风险；ART 方法 Hook 还要面对 JIT/AOT/内联和 Mainline（可独立更新的系统模块机制）更新。三者没有统一的“稳定性排名”，结论取决于目标、调用路径和设备组合。
 
-落到测试组合上，GNU RELRO、linker namespace、APEX、CFI/BTI/PAC/MTE、16 KB 页与多进程都要覆盖。SELinux 同样概括不成一句“普通应用没有 execmem”：AOSP Android 17 的 appdomain 仍有 `execmem` 许可，具体映射操作仍可能受文件类型、VMA、厂商策略和加固机制限制。
+落到测试组合上，GNU RELRO、linker namespace、APEX、CFI/BTI/PAC/MTE、16 KB 页与多进程都要覆盖。在 SELinux 方面，AOSP Android 17 的 appdomain 仍允许 `execmem`，但具体映射操作依然受文件类型、VMA、厂商策略和加固机制限制。
 
 性能工具的目标是减少未知量。现有 Trace、Perfetto、Profiler 或构建期插桩能给答案时，我们直接使用它们；缺口落在明确函数边界上时，再安装最小范围的 Hook，并用命中、语义、开销和故障四组测试证明采集本身可信。
 

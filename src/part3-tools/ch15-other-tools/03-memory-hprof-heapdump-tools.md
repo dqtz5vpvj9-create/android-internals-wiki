@@ -86,12 +86,7 @@ consolidated_from:
 | 进程与 VMA 记账 | PSS/RSS/USS 如何变化，内存落在哪类映射 | `dumpsys meminfo`、`showmap`、`procrank`、libmeminfo |
 | 非法内存访问 | 哪里发生越界、释放后使用（use-after-free）或错误释放 | malloc debug、HWASan、MTE |
 
-下面的决策图从症状出发，帮我们选第一件工具。
-
-先用记账与现场信息区分 Java 对象、native 分配、图形缓冲区、非法访问和系统压力，再沿对应路径采集对象图、分配栈或系统证据。
-
-
-图里几个词先说清楚：OOM（Out of Memory） 是内存不足错误，native crash 指 C/C++ 代码或本地运行库中的崩溃；dma-buf 是内核中跨设备、跨进程共享缓冲区的机制，memtrack 是 Android 图形内存记账接口；LMKD（Low Memory Killer Daemon，低内存终止守护进程） 根据系统内存压力选择终止进程，PSI（Pressure Stall Information）记录任务因 CPU、内存或 I/O 资源紧张而停顿的时间。
+排查时，先用记账与现场信息区分 Java 对象、native 分配、图形缓冲区、非法访问和系统压力，再沿对应路径采集对象图、分配栈或系统证据。这一步常会用到几个关键概念：OOM（Out of Memory）是内存不足错误，native crash 指 C/C++ 代码或本地运行库中的崩溃；dma-buf 是内核中跨设备、跨进程共享缓冲区的机制，memtrack 是 Android 图形内存记账接口；LMKD（Low Memory Killer Daemon，低内存终止守护进程）根据系统内存压力选择终止进程，PSI（Pressure Stall Information）记录任务因 CPU、内存或 I/O 资源紧张而停顿的时间。
 
 同一个问题往往要走两步：先用记账工具确认“涨在哪里”，再让归因工具解释“由谁产生”；单次快照通常只能提出假设。
 
@@ -202,7 +197,7 @@ LeakCanary 的默认观察范围有限，单例、缓存和业务容器要显式
 
 CI（Continuous Integration，持续集成）里的泄漏检查要靠可重复的操作和明确的断言，一次人工截图只能当线索。
 
-Quail 2 的官方发布公告（2026-07-16）介绍了专用的 LeakCanary Profiler task。当前 Heap Dump 文档又把集成标为 Panda 开始，官方资料的首发版本表述不一致，本文不据单页断言最早版本，实际入口以安装的 IDE 与对应发布说明为准。这项任务中，设备仍负责运行应用和生成堆现场，Shark 转到开发机分析，报告可以从可疑引用跳回工程源码。这项能力跟着 IDE（Integrated Development Environment，集成开发环境）发布线走，与 Android API 版本没有绑定关系。
+Quail 2 的官方发布公告（2026-07-16）介绍了专用的 LeakCanary Profiler task，而当前 Heap Dump 文档将集成标注为从 Panda 开始。由于两份官方资料对首发版本的表述不一致，实际入口应以所装 IDE 及其发布说明为准。这项任务中，设备仍负责运行应用和生成堆现场，Shark 转到开发机分析，报告可以从可疑引用跳回工程源码。这项能力跟着 IDE（Integrated Development Environment，集成开发环境）发布线走，与 Android API 版本没有绑定关系。
 
 几种入口的职责不同：
 
@@ -425,7 +420,7 @@ Native 快照常见的两个视角是：
 - native 符号缺失：提供与二进制 Build ID（构建产物的唯一标识）匹配的未剥离符号，再执行 Perfetto 符号化。
 - Java 帧出现 `[DEDUPED]`：ART 的 identical code folding（ICF，相同机器码折叠）让多个方法共享代码，显示名不一定是执行的那个方法。
 
-“heapprofd 开销低于某个百分比”没有普适数字可写：分配率、采样间隔、栈深、线程数和缓冲策略都会改变扰动，扰动有多大，要在目标设备上对比开启前后的业务指标。
+heapprofd 的开销没有普适固定百分比：分配率、采样间隔、栈深、线程数和缓冲策略都会改变扰动，实际影响需要在目标设备上对比开启前后的业务指标。
 
 ### `dumpsys meminfo`：进程内存记账快照
 
@@ -787,7 +782,7 @@ ART 负责执行应用的 Java/Kotlin 代码并管理对象内存；由 ART 分�
 
 这两条管线都从 ART 的托管堆取快照，产物和暂停行为却不相同。`android.java_hprof` 这个名字容易造成误会：Perfetto 在目标进程中 fork（派生子进程）后，直接写入采用 Protocol Buffers（protobuf）编码的 `HeapGraph` 数据包，中间没有“先生成 HPROF 再解析”这一步。
 
-§23.2 讨论泄漏模型；本文前文介绍 Android Studio Memory Profiler 与 LeakCanary。这里聚焦采集管线、各自的数据范围，以及可以对着源码核对的行为。
+泄漏排查模型参见 §23.2，前文已介绍 Android Studio Memory Profiler 与 LeakCanary；下文聚焦 HPROF 与 `android.java_hprof` 的采集管线、各自的数据范围，以及可在源码中核对的行为。
 
 ### 完整 HPROF：从 Shell 到 ART
 
@@ -875,7 +870,7 @@ HPROF record 是带类型标记和长度的记录单元。`Hprof::Dump()` 在这
 1. 用计数输出器运行 `ProcessHeap(false)`，计算整体大小和最大 record 大小；
 2. 清空访问状态，再由 `DumpToFile()` 或 DDMS（Dalvik Debug Monitor Service，Android 调试监控协议）路径写正式数据。
 
-暂停覆盖计数遍历、正式遍历和文件输出，代价不止一次“扫对象”。耗时受对象数、字段与数组数据量、存储速度、Bitmap 内容和设备状态影响；“每 100 MB 几秒”这类固定数字跨不了设备，采集方案应在目标机型和目标堆规模上实测。
+暂停覆盖计数遍历、正式遍历和文件输出，代价不止一次“扫对象”。耗时受对象数、字段与数组数据量、存储速度、Bitmap 内容和设备状态影响，不存在跨设备通用的“每 100 MB 固定几秒”经验值，采集方案应在目标机型和目标堆规模上实测。
 
 <!-- gracker-diagram: ch15-03-14-two-pass-pause -->
 ![传统 HPROF 的暂停覆盖计数与正式输出](../../assets/diagrams/ch15/ch15-03-14-two-pass-pause.png)
@@ -1165,7 +1160,7 @@ Java heap graph 和 native allocation profile（原生内存分配采样） 是�
 
 KOOM 2.2.1 的 `ForkJvmHeapDumper` 源码执行 `suspendAndFork()`：子进程调用 `Debug.dumpHprofData(path)`，父进程走 `resumeAndWait(pid)`。`ForkStripHeapDumper` 在这条路径上安装 HPROF 裁剪逻辑，仓库同时提供用于处理裁剪产物的 `koom-fill-crop.jar`。
 
-这些代码依赖 ART 内部实现和版本适配。入口会调用 `sdkVersionMatch()` 读取 KOOM 公共配置中的版本检查结果，不支持时拒绝转储。源码中存在 fork 设计，但据此认定 KOOM 已适配 Android 17，或者推出一个固定的毫秒级停顿，都站不住。
+这些代码依赖 ART 内部实现和版本适配。入口会调用 `sdkVersionMatch()` 读取 KOOM 公共配置中的版本检查结果，不支持时拒绝转储。虽然源码采用 fork 设计，但仅凭这一点既无法确认 KOOM 已适配 Android 17，也不能推出固定的毫秒级停顿。
 
 接入 Android 17 时，要核对 KOOM 版本、ART 私有符号与实现、目标厂商 ROM（厂商定制的系统镜像）、子进程资源占用、文件可解析性和失败回退。
 

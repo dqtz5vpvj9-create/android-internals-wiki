@@ -89,9 +89,9 @@ consolidated_from:
 
 > 源码基线：设备侧 Android 17 / API 37 / AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
-APA 是 Google 独立分发的性能分析工具；截至本轮复核，当前首页明确主要面向游戏与 Vulkan 图形，其他 App 优先使用 Android Studio Profiler；2026 年 5 月的发布文还说明，其 System Trace viewer 已进入 Android Studio Panda 4 Canary 及后续版本。本文的 APA 操作流程以独立版 System Profiler 为准。它支持 Android 12 及以上的受支持设备，发布周期独立于 Android 平台，Android 17 新增的 framework API 与它是两条线。
+APA 是 Google 独立分发的性能分析工具，主要面向游戏与 Vulkan 图形场景，其他普通 App 优先使用 Android Studio Profiler（2026 年 5 月的发布文也说明，其 System Trace viewer 已进入 Android Studio Panda 4 Canary 及后续版本）。它支持 Android 12 及以上的受支持设备，发布周期独立于 Android 平台，Android 17 新增的 framework API 与它是两条并行演进的线。
 
-System Profiler 在 2026 年 5 月 19 日以 open beta 发布。当前应按 APA 自己的发布说明区分版本与通道：`0.10.0-canary`（2026 年 9 月）已加入实验性 Frame Profiler。旧交叉链接里的 Beta 字样不能代替当前发布记录；本文后续操作仍聚焦独立版 System Profiler。
+版本与通道按 APA 自己的发布说明区分：System Profiler 于 2026 年 5 月 19 日以 open beta 发布，而 `0.10.0-canary`（2026 年 9 月）已加入实验性 Frame Profiler。下文的 APA 操作流程以独立版 System Profiler 为准。
 
 System Profiler 负责录制 system trace（系统追踪）、在 Project（组织多份 trace 的项目容器）中保存多份 trace、查看 CPU/GPU/内存/功耗与 SurfaceFlinger 事件，并运行 PerfettoSQL。APA canary 的 Frame Profiler 则走 GFXR 捕获与逐 render pass 重放测量，还可导出 `.rdc` 交给 RenderDoc；兼容范围与预热、重复测量条件见 15.11。两条流程分别记录版本和测量条件。
 
@@ -192,7 +192,7 @@ Use custom trace configuration 会把界面当前设置自动展开成 Perfetto 
 - 采样频率是否改变被测负载；
 - trace 是否因 buffer 覆盖、flush（把暂存数据写出）或 stop 时机而丢掉目标窗口。
 
-本轮核对的 System Profiler 录制指南使用 GUI 与自定义 `TraceConfig`，没有将 `/system/etc/perfetto-configs/apa-config.textproto`、`--custom-cpu-freq`、`--custom-gpu` 或 `adb shell apa` 定义为本流程的入口；本章不依赖这些未在所引指南公开的字符串。本文的 APA 操作步骤以独立桌面 GUI 为准；2026 年 5 月发布文还描述了 Android Studio 集成，两种界面都属于交互式工具，脚本化采集交给 Perfetto CLI、Macrobenchmark（Jetpack 性能基准测试框架）或相应测试工具。
+System Profiler 通过独立桌面 GUI 或自定义 `TraceConfig` 完成录制配置，不提供命令行录制入口；2026 年 5 月发布文还描述了 Android Studio 集成。两种界面都属于交互式工具，需要脚本化采集时应交给 Perfetto CLI、Macrobenchmark（Jetpack 性能基准测试框架）或相应测试工具。
 
 
 ### 5. Vulkan Layers：能力与扰动
@@ -329,7 +329,7 @@ Java/Kotlin 对象增长、GC（垃圾回收） 与调用栈，交给 Android St
 
 表中几个工具先认一下：Winscope 用来看 WindowManager 与 SurfaceFlinger 状态；Macrobenchmark（Jetpack 的可重复性能测试框架）负责可重复的基准测试；CI（Continuous Integration） 是持续集成流水线；`ProfilingManager` 是面向真实用户设备采集脱敏 profile 的 Android API；statsd 是 Android 系统统计守护进程。它们各管一段，APA 主要承担本地 system trace 的交互分析。
 
-官方仍推荐 APA 做 system profiling；AGI Frame Profiler、Android Studio Profiler、Perfetto CLI、Trace Processor 也都还没有停用的说法。
+官方仍推荐 APA 做 system profiling；同时 AGI Frame Profiler、Android Studio Profiler、Perfetto CLI 与 Trace Processor 均继续并行使用，并未被它替代或停用。
 
 ### 10. Android 17 平台边界
 
@@ -339,7 +339,7 @@ Java/Kotlin 对象增长、GC（垃圾回收） 与调用栈，交给 Android St
 - Android build fingerprint（系统构建指纹） / `android-17.0.0_r1`：决定 framework trace event、Perfetto producer、FrameTimeline 和系统服务行为；
 - kernel `android17-6.18-2026-06_r6` 与 vendor driver：决定 scheduler/ftrace 语义、GPU counter、render stage 和设备能力。
 
-APA 安装包不属于 `android-17.0.0_r1` framework 源码，在平台 tag 里翻不到它的可执行文件属于正常现象，也不影响这个桌面产品本身的定位。反过来说，APA 文档里出现某项 UI 能力，只代表桌面工具有这个界面；具体某台 Android 17 设备配有哪些 data source，要回到 build fingerprint 与 vendor driver 那两层确认。
+APA 安装包不属于 `android-17.0.0_r1` framework 源码，独立桌面产品的发布与 AOSP 平台源码是分开的。反过来说，APA 文档里出现某项 UI 能力，只代表桌面工具有这个界面；具体某台 Android 17 设备配有哪些 data source，仍要回到 build fingerprint 与 vendor driver 那两层确认。
 
 
 ### 11. 一轮可复查的 APA 实验
@@ -399,7 +399,7 @@ v3 报告的结果如下：
 | GAPS（关闭 PHIL） | 23.24% | 2 分 26 秒 |
 | GAPS（启用 PHIL） | 56.93% | 3 分 15 秒 |
 
-动态基线均运行三轮，每轮上限 30 分钟。GAPS 在这些实验中没有超过 5 分钟，表中的 3 分 15 秒是平均运行时间，据此写成“所有工具统一使用 5 分钟超时”就对不上了。PHIL 从 23.24% 提升到 56.93% 的消融实验（关闭一个模块后比较结果）也说明，v3 的完整动态结果包含 agent fallback（确定性步骤失败后的代理补救）；LLM（Large Language Model，大型语言模型） 已是论文实验的一部分。
+动态基线均运行三轮，每轮上限 30 分钟；GAPS 在这些实验中均未超过 5 分钟，表中的 3 分 15 秒是平均运行时间，并非所有工具都按 5 分钟超时截断。PHIL 从 23.24% 提升到 56.93% 的消融实验（关闭一个模块后比较结果）也说明，v3 的完整动态结果包含 agent fallback（确定性步骤失败后的代理补救）；LLM（Large Language Model，大型语言模型） 已是论文实验的一部分。
 
 ### GAPS 的处理链
 
@@ -429,7 +429,7 @@ Android 应用没有单一 `main()` 入口。ICC（Inter-Component Communication
 
 GAPS 从目标方法向调用者反向扩展，按需构建 CHA（Class Hierarchy Analysis，类层次分析）图，对运行时才确定实现的虚调用保守列出潜在调用者；遇到已识别入口时停止该分支；完整的整应用调用图并不预先构建，用到哪段建哪段。
 
-v3 的 Algorithm 2 把路径提取写成深度优先遍历 `dfs_visit`；同一论文的实现说明与本轮复核的 `path_generation.py` 则使用自定义 `all_shortest_paths()` 枚举最短路径。它的生成器在 `n_paths > max_paths` 时才停止，单次调用可多产一条；调用方还按入口分配预算并在合并后检查数量。因此 `path_limit` 是配置预算，不能当作该快照严格满足的总路径硬上限。复现实验应固定快照文件，只凭伪代码名称去推枚举策略，是靠不住的。
+v3 的 Algorithm 2 把路径提取写成深度优先遍历 `dfs_visit`；同一论文的实现说明与公开快照中的 `path_generation.py` 则使用自定义 `all_shortest_paths()` 枚举最短路径。它的生成器在 `n_paths > max_paths` 时才停止，单次调用可多产一条；调用方还按入口分配预算并在合并后检查数量。因此 `path_limit` 是配置预算，不能当作该快照严格满足的总路径硬上限。复现实验应固定快照文件，不宜仅凭伪代码名称推断实际枚举策略。
 
 
 论文将整体分析描述为 target-oriented（围绕目标）、demand-driven（按需扩展）、inter-procedural（跨方法）、context-sensitive（区分调用上下文）。EdgeMiner 与 Soot virtual edges（框架隐式回调边）提供回调映射；不过，未被跟踪的 implicit flow（由框架隐式触发、源码中没有直接调用语句的执行流程）仍会让调用图漏边。
@@ -460,7 +460,7 @@ XML View 体系能提供稳定资源 ID，正好适合这套分析。Jetpack Com
 
 动态阶段安装应用，并用 AndroidViewClient 的 `findViewById()` 与 `touch()` 执行静态指令。论文 Algorithm 5 在每条候选路径开始前调用 `restart_app()`，执行器持续轮询 runtime monitor（运行时触达监视器）；方法被观察到后返回 `REACHED`，当前路径走不下去时转试下一条。公开快照的具体重启范围与这段伪代码不同，见下文的重启范围说明。
 
-确定性操作（同一输入按既定指令执行）遇到权限弹窗、广告或动态布局时，v3 会调用 PHIL（Predictive Handler for Interface Limitations，界面障碍预测处理器）。它接收经过筛选的当前 GUI 层级、目标方法和静态路径，输出 `click`、`type` 等结构化动作。论文实验写的是 GPT-5.4、temperature（采样随机度）0.7；本轮取回的复现文件 `phil.py` 则配置 `gpt-5.4-mini`、temperature 0.7。PHIL 是 LLM 组件，可关闭也可换模型，模型名必须随实验记录，算不上 GAPS 的稳定接口。
+确定性操作（同一输入按既定指令执行）遇到权限弹窗、广告或动态布局时，v3 会调用 PHIL（Predictive Handler for Interface Limitations，界面障碍预测处理器）。它接收经过筛选的当前 GUI 层级、目标方法和静态路径，输出 `click`、`type` 等结构化动作。论文实验写的是 GPT-5.4、temperature（采样随机度）0.7；公开复现快照中的 `phil.py` 则配置 `gpt-5.4-mini`、temperature 0.7。PHIL 是 LLM 组件，可关闭也可换模型，模型名必须随实验记录，算不上 GAPS 的稳定接口。
 
 PHIL 的调用受到两层约束：
 
@@ -472,7 +472,7 @@ PHIL 的调用受到两层约束：
 - 每条路径中的同一个 `Activity` 最多介入一次；
 - 障碍仍未清除，或该 `Activity` 已用过 PHIL 时，当前路径会终止。
 
-以上是论文 Algorithm 5 的语义。本轮复核的 `gaps_run.py`（内容 SHA-256 前缀 `47b7b00773a261b2`）把 `llm_used` 保存在 `GAPSRUN` 实例上，没有在每条候选路径或每个目标方法开始时清空。若某 Activity 的补救已经用过且动作仍失败，当前代码走 `i += 1` 跳到后续指令，并不按论文 Algorithm 5 立即放弃该路径。PHIL 线程最多15轮尝试，其中可能只有焦点/层级检查而没有动作；单轮模型请求另有最多3次重试，所以15轮不等于15个成功动作或15次API请求，也不是5分钟硬超时。工程复现时，“每路径每 Activity 一次”这套语义套不到该快照上，实际预算要以固定代码和运行日志确认。
+以上是论文 Algorithm 5 的语义。公开复现快照中的 `gaps_run.py`（内容 SHA-256 前缀 `47b7b00773a261b2`）把 `llm_used` 保存在 `GAPSRUN` 实例上，没有在每条候选路径或每个目标方法开始时清空。若某 Activity 的补救已经用过且动作仍失败，当前代码走 `i += 1` 跳到后续指令，并不按论文 Algorithm 5 立即放弃该路径。PHIL 线程最多15轮尝试，其中可能只有焦点/层级检查而没有动作；单轮模型请求另有最多3次重试，所以15轮不等于15个成功动作或15次API请求，也不是5分钟硬超时。工程复现时，“每路径每 Activity 一次”这套语义套不到该快照上，实际预算要以固定代码和运行日志确认。
 
 <!-- gracker-diagram: ch15-13-21-snapshot-executor-control -->
 ![复现代码的 PHIL 作用域与失败跳步](../../assets/diagrams/ch15/ch15-13-21-snapshot-executor-control.png)
@@ -545,7 +545,7 @@ GAPS 论文没有把 Perfetto 纳入路径生成、动态执行或 reachability�
 7. 移除 Frida hook 后复测可疑场景，确认异常不由探针、重打包或调试环境引入。
 
 
-论文 Algorithm 5 的每路径重启会改变进程冷启动/热启动、JIT、页面缓存、数据库连接和图片缓存；本轮代码在单目标分支或遍历所有目标之前调用一次 `restart_app()`；随后每个 `_process_method()` 可创建 Frida spawn/attach，或通过 monkey 启动应用，处理方法结束后会 `force-stop`。候选路径之间主要重新启动主 `Activity`，没有逐路径完整 `force-stop`。缺包时的安装使用 `adb install -r -g`，也会影响运行时权限初始状态。若待测问题只在长会话、后台恢复或热缓存条件下出现，需要先确认所用版本的重置范围，再修改执行器或使用 `--manual-setup` 准备状态，统一的 clean-state（干净初始状态）策略在这里立不住。
+论文 Algorithm 5 的每路径重启会改变进程冷启动/热启动、JIT、页面缓存、数据库连接和图片缓存；公开复现快照代码在单目标分支或遍历所有目标之前调用一次 `restart_app()`；随后每个 `_process_method()` 可创建 Frida spawn/attach，或通过 monkey 启动应用，处理方法结束后会 `force-stop`。候选路径之间主要重新启动主 `Activity`，没有逐路径完整 `force-stop`。缺包时的安装使用 `adb install -r -g`，也会影响运行时权限初始状态。若待测问题只在长会话、后台恢复或热缓存条件下出现，需要先确认所用版本的重置范围，再修改执行器或使用 `--manual-setup` 准备状态，统一的 clean-state（干净初始状态）策略在这里立不住。
 
 <!-- gracker-diagram: ch15-13-22-reset-and-state-lifetime -->
 ![run、目标方法与候选路径的重置范围](../../assets/diagrams/ch15/ch15-13-22-reset-and-state-lifetime.png)
@@ -668,7 +668,7 @@ GAPS（Graph-based Automated Path Synthesizer，基于图的自动路径合成�
 
 以下说明依据 2026 年 7 月 17 日发布的论文 v3 与论文公开的 4open.science 复现快照。v3 已更名为 *GAPS: Targeted Execution of Android Apps via Static Path Reconstruction*，作者也从 v1 的 2 人扩展为 5 人；实验环境、动态基线、运行时间和 PHIL 代理模块数据均有更新。57.44%、Guardian 17.12%、静态分析 4.27 秒及 Android 13 模拟器等数字来自 v1，描述不了 v3 的表现。
 
-平台集成部分以 Android 17 / API 37 / `android-17.0.0_r1` 为知识库基线。论文自身的动态实验使用 Android 16 x86-64 模拟器；需要 ARM 架构时使用 Pixel 2 / Android 11。论文没有报告过 Android 17 实验；文中的 Android 17 + Perfetto 流程属于工程扩展，写作时应与论文已验证结论区分开。
+平台集成部分以 Android 17 / API 37 / `android-17.0.0_r1` 为知识库基线。论文自身的动态实验使用 Android 16 x86-64 模拟器；需要 ARM 架构时使用 Pixel 2 / Android 11。论文没有报告过 Android 17 实验，前文将 GAPS 与 Android 17 + Perfetto 串联的流程属于基于平台机制的工程扩展，实际应用时应与论文已验证结论区分开。
 
 
 ## 小结

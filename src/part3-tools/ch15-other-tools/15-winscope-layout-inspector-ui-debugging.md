@@ -505,7 +505,7 @@ Layout Inspector 是 Android Studio 中检查运行时 UI 的工具，看的是�
 
 帧耗时交给 Perfetto，窗口与 SurfaceFlinger layer 状态回到前文的 Winscope 时间线，GPU 命令和 buffer 像素问题根据图形 API 转到 AGI 或对应 Producer 工具。
 
-以下界面步骤按本轮取回的官方嵌入式Layout Inspector指南叙述，平台机制按Android17/API37源码核对。Quail3 | 2026.1.3修复单用于历史版本对照，以下UI操作以实际安装版本为准。3D、独立窗口入口与连接方式仍按实际IDE版本确认。
+下文界面步骤依据官方嵌入式 Layout Inspector 指南叙述，平台机制按 Android 17 / API 37 源码核对，Quail 3（2026.1.3）修复单仅作历史版本对照。3D 模式、独立窗口入口、连接方式与具体 UI 操作，均以实际安装的 Android Studio 版本为准。
 
 ### 1. 当前 Layout Inspector 的入口与界面
 
@@ -591,7 +591,7 @@ View 的 `left/top/right/bottom` 是相对父 View 的布局边界，`translatio
 
 `visibility=VISIBLE` 加 `alpha>0（并非全透明）` 也不足以证明最终可见：节点可能被父层裁剪、被 sibling（同一父节点下的兄弟节点）覆盖、位于窗口外，或者宿主窗口在 SurfaceFlinger 中被系统 layer 遮住。应用内父子层级用 Inspector，跨窗口与 SF layer 遮挡用 Winscope。
 
-点击区域要再加一组检查：`enabled`、`clickable`、`focusable`、`TouchDelegate`、父 View 的 `onInterceptTouchEvent()（是否拦截子节点触摸）`、Compose pointer input（指针输入处理）、semantics merge（把子节点语义合并到父节点）和窗口级 input target（系统选中的输入目标）。视觉上位于最上方的节点不一定收到事件；`clickable=true` 也不证明事件已经抵达。
+点击区域要再加一组检查：`enabled`、`clickable`、`focusable`、`TouchDelegate`、父 View 的 `onInterceptTouchEvent()`（是否拦截子节点触摸）、Compose pointer input（指针输入处理）、semantics merge（把子节点语义合并到父节点）和窗口级 input target（系统选中的输入目标）。视觉上位于最上方的节点不一定收到事件；`clickable=true` 也不证明事件已经抵达。
 
 
 ### 5. Compose 层级、重组计数与 semantics

@@ -109,7 +109,7 @@ Camera 性能问题通常横跨 App、Framework、HAL（Hardware Abstraction Lay
 
 ## 基线、设备边界与四类问题
 
-> 源码基线：Android 17 / API 37，AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。CameraX 机制按已发布的 `1.6.1` source artifacts 核对；它独立于平台发布，实际实验仍记录所用库版本。GFXReconstruct 的动态 dev 文档仅代表本轮取回内容，复现时固定工具构建。
+> 源码基线：Android 17 / API 37，AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。CameraX 机制按已发布的 `1.6.1` source artifacts 核对；它独立于平台发布，实际实验仍记录所用库版本。GFXReconstruct 文档跟随其 `dev` 分支演进，复现时应固定工具构建版本。
 
 Camera provider（向 framework 枚举并打开相机设备的 HAL 服务）、sensor driver（传感器驱动）、ISP（Image Signal Processor，图像信号处理器） 固件、算法库和 vendor tracepoint（厂商自定义追踪点） 都由设备厂商提供，这几部分的行为要以目标设备为准。AOSP 定义的是 framework 与 HAL 之间的公共接口；接口以内是什么样，还要靠目标设备上的实测来回答。
 
@@ -233,7 +233,7 @@ CameraX `ImageAnalysis` 的 `STRATEGY_KEEP_ONLY_LATEST` 使用 latest-only（只
 
 采集前先记录 camera id、logical/physical（逻辑多摄与实体摄像头）关系、所有 output 的 format/size/fps range、dynamic range（动态范围配置）、stream use case（输出流的长期用途提示）、timestamp base、CameraX 版本、preview carrier、ZSL/Extensions（CameraX 对厂商增强拍照模式的封装） 状态和 thermal（设备热状态） 条件。缺了这些信息，同一条 trace 就很难解释目标周期和 consumer 拓扑。
 
-下面的 textproto（Perfetto 文本配置格式） 配置用于抓取 30 秒 Camera 诊断基线。把 `com.example.camera` 替换成目标包名；vendor HAL 有自己的 trace category（ATRace 类别） 或 ftrace event（内核追踪事件） 时，再按设备文档添加。
+下面的 textproto（Perfetto 文本配置格式） 配置用于抓取 30 秒 Camera 诊断基线。把 `com.example.camera` 替换成目标包名；vendor HAL 有自己的 trace category（ATrace 类别） 或 ftrace event（内核追踪事件） 时，再按设备文档添加。
 
 ```textproto
 buffers {
@@ -618,7 +618,7 @@ CameraX 的开销随配置浮动，写不成固定的“多 80–150 ms”：差
 | 设备兼容 | App 维护 capability 与 workaround | CameraX quirk 和版本参与 |
 | 诊断记录 | 平台 build 与 App 配置 | 还要记录 CameraX artifact 版本与实际 carrier |
 
-本轮核对的 Android 17 公开变更与 CameraX 发布说明没有给出本章场景通用的 CameraX 最低版本；该结论限于这些资料和场景。就算平台固定在 API 37，CameraX 行为仍随库版本变化；所以报告中要记录实际 artifact（Maven 库构件） 版本，库升级后重跑启动、预览、拍照与分析回归。
+Android 17 公开变更与 CameraX 发布说明没有为本文场景规定统一的 CameraX 最低版本。就算平台固定在 API 37，CameraX 行为仍随库版本变化；所以报告中要记录实际 artifact（Maven 库构件） 版本，库升级后重跑启动、预览、拍照与分析回归。
 
 ## HAL3 管线延迟的深度分析
 
@@ -654,7 +654,7 @@ Android 17 / API 37 与 Camera 性能相关的公开变化包括：
 - vendor-defined camera extensions（厂商自定义相机扩展）：OEM 可以提供自定义 extension type，使用前通过 `isExtensionSupported()` 查询支持，并查看可用的 request/result key（请求与结果字段）；
 - `CameraCharacteristics.INFO_DEVICE_TYPE`：区分 built-in（内置）、external（外接）、virtual（虚拟） 与 unknown（未知） 图像源。这个值可能在 session 中变化，在意数据来源的 App 还要检查 capture result，别只缓存 open 前的 characteristics。
 
-这些能力影响的是 capability、stream 配置和工作量；HAL3 request-result、buffer ownership 与 consumer 回收的主线没有变。旧文中的 `CAMERA_PROCESS_PRIORITY_TYPE`、vendor `PerformanceHintManager` camera 通道和 `CameraPerformanceAttestation` 没有对应的 API 37 公开接口或 `android-17.0.0_r1` 源码依据，本书也就不采用这些名称。
+这些能力影响的是 capability、stream 配置和工作量；HAL3 request-result、buffer ownership 与 consumer 回收的主线没有变。涉及平台新增特性或扩展接口时，直接对照 API 37 公开文档与目标设备的 `android-17.0.0_r1` 实现核对即可。
 
 
 ## GFXReconstruct 辅助检查花屏和 YUV 帧问题

@@ -165,7 +165,7 @@ Android 已经把 BPF 用在系统记账和诊断上，通用加载能力没有�
 我们读源码时先分清平台版本、设备内核和产品配置：平台仓库里有某个程序，只说明源码里有它，每台 Android 17 设备是否加载要看产品配置；内核仓库里有某项能力，量产设备也未必打开了对应的 Kconfig 编译开关。
 
 
-Android eBPF 程序在内核事件处采集低开销信号，由 bpfloader 按平台规则加载、固定和授权。Android 17 增加的程序，我们要结合 hook（触发点） 点、map、消费端和设备内核能力逐项确认。
+Android eBPF 程序在内核事件处采集低开销信号，由 bpfloader 按平台规则加载、固定和授权。Android 17 增加的程序，我们要结合 hook（触发点）、map、消费端和设备内核能力逐项确认。
 
 ## Hook 点、Map 与性能观测场景
 
@@ -449,7 +449,7 @@ BPF 程序运行在事件热路径上，也就是每次该事件发生时都会�
 
 JIT 会把 BPF 字节码编译为目标 CPU 的机器码；设备是否启用、程序是否成功 JIT，都应以运行时状态为准。
 
-BPF ring buffer 在空间不足时，reserve（预留写入空间） 会直接失败，而不是阻塞等消费者。程序若忽略返回值仍会继续运行，用户态也可能读到部分事件，但缺失的记录会让 enter/exit 配对、延迟分布和对象生命周期分析失真。
+BPF ring buffer 在空间不足时不会阻塞等待消费者，此时 reserve（预留写入空间）会直接失败。程序若忽略返回值仍会继续运行，用户态也可能读到部分事件，但缺失的记录会让 enter/exit 配对、延迟分布和对象生命周期分析失真。
 
 还有三类常见放大器：
 
@@ -646,7 +646,7 @@ netbpfload done
 
 表里的几个词也交代一下：clatd 负责 IPv4/IPv6 地址转换，offload 指把部分网络处理交给内核或硬件；system image（系统镜像） 是平台系统分区，vendor partition 是厂商分区。
 
-`libbpf-rs` 是 libbpf 的 Rust binding（语言绑定）。平台 Rust 加载器不会扫描 `/system/etc/bpf` 后无条件加载每个文件，而是按 `BpfFileDesc` descriptor（描述文件路径、权限和对象清单的数据结构） 打开指定对象，逐个核对 map、program 名称。
+`libbpf-rs` 是 libbpf 的 Rust binding（语言绑定）。平台 Rust 加载器不会扫描 `/system/etc/bpf` 后无条件加载每个文件；它按 `BpfFileDesc` descriptor（描述文件路径、权限和对象清单的数据结构）打开指定对象，并逐个核对 map、program 名称。
 
 官方 BPF 文档所说的 `/system/etc/bpf` 启动装载约定仍可用来理解文件布局；分析 Android 17 的精确行为时，还要同时查看 `bpfloader.rs` 的 descriptor。
 
@@ -934,7 +934,7 @@ adb shell ls /sys/kernel/tracing/events/power/cpu_frequency
 - `cyclePerUid.bpf`：x86_64 平台按 Linux UID 汇总的 CPU cycle（处理器周期） 统计。
 - `dmabufIter.bpf`：设备间共享缓冲区 DMA-BUF（设备间共享缓冲区） 的全局快照迭代器。
 - `kernelWakelockDuration.bpf`：至少一个 kernel wakelock（内核唤醒锁）处于 active 状态时的累计时长。
-- `bpfLockContention.bpf`：指定内核锁的 contention（竞争等待） 等待时延聚合。
+- `bpfLockContention.bpf`：指定内核锁的 contention（竞争等待）时延聚合。
 
 四个对象都由 Soong（Android 构建系统） 的 `libbpf_prog` 模块构建为 `.bpf` 文件，但源码层面的内核依赖并不相同：`cyclePerUid`、`dmabufIter` 和 `bpfLockContention` 使用 BTF；`kernelWakelockDuration` 直接读取 raw tracepoint 参数，不依赖 `vmlinux` 类型。
 

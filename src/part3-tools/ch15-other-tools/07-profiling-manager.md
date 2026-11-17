@@ -109,7 +109,7 @@ boolean hasProfiling36_1 =
             && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1);
 ```
 
-这段守卫这样读：API 37 的设备已经包含这组接口，直接走第一个分支；Android 16 设备则要用 `SDK_INT_FULL` 查询带 minor release 序号的完整 SDK 版本。能力探测就认这套判断——版本字符串、机型名单、系统更新日期这几条捷径都到不了 minor release 这一层，编译期也要用包含相应 minor release API 的 SDK。详细的 36.1 判断见下文“System-triggered profiling 的运行方式”。
+这段守卫这样读：API 37 的设备已经包含这组接口，直接走第一个分支；Android 16 设备则要用 `SDK_INT_FULL` 查询带 minor release 序号的完整 SDK 版本。能力探测就认这套判断——版本字符串、机型名单、系统更新日期这几条捷径都到不了 minor release 这一层，编译期也要用包含相应 minor release API 的 SDK。涉及 36.1 的触发器清单见下文“System-triggered profiling 的运行方式”。
 
 
 ## 发起一次显式请求
@@ -230,8 +230,7 @@ metadata（描述这份文件来源和状态的附加字段） 至少包含：
 
 我们先辨认格式：本节 `JavaHeapDumpRequestBuilder` 在固定 r1 使用 `android.java_hprof`，由 ART 的 Perfetto 写出器生成 HeapGraph，和 `Debug.dumpHprofData()` 或传统 HPROF 是两种东西。常规对象记录的是类型、大小和引用；登录 Token、字符串正文、密钥字节或所有 primitive 字段值，并不保证原样写出。特殊类型可以额外带 NAR 大小、Bitmap 尺寸等有限元数据，具体以 protobuf 和设备实现为准。
 
-对象图仍能暴露内部类名、引用字段名、代码位置及结构关系，与同文件中的其他数据一起可能揭示业务实现。若另行接入原始 HPROF，字段、数组和字符串内容的风险要另外评估——两种格式各配一套脱敏规则与分析器，使用时分开。
-system trace 的 redactor 不等于覆盖所有产物的数据审查，HeapGraph 与其他 heap 数据仍按真实字段和用途评估。方案按分析方式选：
+对象图仍能暴露内部类名、引用字段名、代码位置及结构关系，与同文件中的其他数据一起可能揭示业务实现。若另行接入原始 HPROF，字段、数组和字符串内容的风险要另外评估——两种格式各配一套脱敏规则与分析器，使用时分开。system trace 的 redactor 仅覆盖自身产物中的无关进程信息，并不能替代对 HeapGraph 与其他 heap 数据的隐私审查，后者仍须按真实字段和用途评估。具体方案可按分析方式选择：
 
 
 1. **优先在设备上提取**：若问题能由对象计数、Retained Size（对象及其支配对象占用的内存）、类分布或少量调用栈回答，可在设备上提取诊断摘要，只上传摘要。
@@ -318,7 +317,7 @@ trigger 按版本分层，下表同时列出逐项的产物与触发语义：
 关于限流，再多说两句。次数、时长上限和缓冲区上限来自可更新模块与 `DeviceConfig`；这些服务端配置并不是普通应用可以依赖读取的公开能力，产品侧用保守的本地策略，并准备好应对实际的拒绝或裁剪。实验设备上，`adb shell device_config list profiling` 可以看当前配置；`adb shell device_config put profiling_testing rate_limiter.disabled true` 在通用 RateLimiter 中只为显式请求绕过限流；系统 trigger 的测试包开关 `system_triggered_profiling.testing_package_name` 会强制该包的后台 trace，并对该包绕过通用系统限流——普通 trigger 的应用自定间隔仍另行检查，memory-limit anomaly 还有特殊分支。设置时用实际包名。改前记录相关 key 的原值及是否存在，结束后按原值恢复：原本存在的 key 写回原值，原本不存在的 key 删除即可，一律置 false 并不算恢复。
 
 
-限流比“每小时几次”这个印象细得多：通用限流对显式请求按 profiling 类型计成本，对 system-triggered 请求使用触发式成本；再检查小时、天、周窗口以及应用 UID 与整机预算，任何一项预算见底都可能拒绝请求。应用侧的对策是设更保守的本地冷却时间、保证同类采集串行——额度花完只能等窗口重置，循环重试刷不回来。
+实际的限流机制比单纯按“每小时几次”计数精细得多：通用限流对显式请求按 profiling 类型计成本，对 system-triggered 请求使用触发式成本；再检查小时、天、周窗口以及应用 UID 与整机预算，任何一项预算见底都可能拒绝请求。应用侧的对策是设更保守的本地冷却时间、保证同类采集串行——额度花完只能等窗口重置，循环重试刷不回来。
 
 <!-- gracker-diagram: ch15-07-13-quota-paths -->
 ![普通请求、trigger 与 anomaly 的限流差异](../../assets/diagrams/ch15/ch15-07-13-quota-paths.png)

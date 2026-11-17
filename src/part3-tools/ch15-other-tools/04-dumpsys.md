@@ -234,7 +234,7 @@ Android 17 的输出同时打印 deadline-aware 与 legacy 两套统计：前者
 
 图：当前 Jank 先经过有效帧和 deadline 判断，四项慢阶段计数只在 deadline miss 分支检查。 图描述 A17 当前路径；legacy 另有规则，SurfaceCanvas 仍可能进入总帧直方图，分类相加会重复计数。
 
-跨应用通用的 5% 合格线并不存在。基线应来自相同设备、刷新率、温控状态和 workload，并配合 FrameTimeline 的 jank type、用户可见场景和业务目标判断。
+不存在跨应用通用的 5% 合格线。判断卡顿与否应以相同设备、刷新率、温控状态和 workload 下的基线为准，并结合 FrameTimeline 的 jank type、用户可见场景和业务目标。
 
 ### `framestats` 的列
 
@@ -306,7 +306,7 @@ adb shell getconf PAGESIZE
 
 ## dumpsys window：窗口层级与焦点
 
-窗口焦点对不上、或者窗口有焦点但触摸无响应时，我们要知道至少有三个观察者各管一段：ActivityTaskManager 管 Activity/Task，WindowManager 管 WindowState 与 display，InputDispatcher 负责选择输入事件的接收窗口。三个焦点字段相同，多半对应一种常见的稳定状态；“相同”本身还不够当结论，三个观察者要各自核对。
+当窗口焦点对不上，或者窗口有焦点却不响应触摸时，需要同时核对三个模块的视角：ActivityTaskManager 管 Activity/Task，WindowManager 管 WindowState 与 display，InputDispatcher 负责选择输入事件的接收窗口。三者焦点一致通常对应正常稳定状态，但定位异常时仍需逐一核对各自字段。
 
 下面的命令按显示器保存 WMS 与 InputDispatcher 两份现场。
 
@@ -458,7 +458,7 @@ applyAndCommitDisplayTransactionStatesLocked(update.transactions);
 mLayerSnapshotBuilder.update(args);
 ```
 
-`mStateLock` 是保护 SurfaceFlinger 核心状态的互斥锁。事务收集、requested state 应用和 hierarchy 更新位于该锁之前；display transaction 提交与 `LayerSnapshotBuilder.update()` 仍在锁内——所以“FrontEnd 整条 snapshot 路径无锁”的说法与 Android 17 实现不符。完整顺序见 [`SurfaceFlinger::updateLayerSnapshots()`](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/services/surfaceflinger/SurfaceFlinger.cpp)。
+`mStateLock` 是保护 SurfaceFlinger 核心状态的互斥锁。事务收集、requested state 应用和 hierarchy 更新位于该锁之前，但 display transaction 提交与 `LayerSnapshotBuilder.update()` 仍在该锁保护下执行，可见 Android 17 的 FrontEnd snapshot 路径并非全程无锁。完整顺序见 [`SurfaceFlinger::updateLayerSnapshots()`](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-17.0.0_r1/services/surfaceflinger/SurfaceFlinger.cpp)。
 
 <!-- gracker-diagram: ch15-04-15-frontend-lock-boundary -->
 ![FrontEnd 状态转换与 mStateLock 边界](../../assets/diagrams/ch15/ch15-04-15-frontend-lock-boundary.png)
@@ -505,7 +505,7 @@ if ((args.layerLifecycleManager.getGlobalChanges().get() &
 return true;
 ```
 
-仅含 Content/Buffer 且没有 force/display change 时，`tryFastUpdate()` 可以返回 true；`update()` 还要求 `args.mergeableHierarchyManager == nullptr` 才会提前返回。若启用 `frontend_caching_v0`，该参数和 `forceUpdate` 会走另一组配置，是否跳过完整 hierarchy traversal，要把 caller 的配置条件一起算上。它缩小的是 snapshot 重算范围：本帧是否合成、性能收益多大，以目标设备的 `FastPath` trace、FrontEnd 工作量与整帧 deadline。
+仅含 Content/Buffer 且没有 force/display change 时，`tryFastUpdate()` 可以返回 true；`update()` 还要求 `args.mergeableHierarchyManager == nullptr` 才会提前返回。若启用 `frontend_caching_v0`，该参数和 `forceUpdate` 会走另一组配置，是否跳过完整 hierarchy traversal，要把 caller 的配置条件一起算上。它缩小的是 snapshot 重算范围；本帧是否合成、能带来多大性能收益，仍要以目标设备的 `FastPath` trace、FrontEnd 工作量与整帧 deadline 为准。
 
 <!-- gracker-diagram: ch15-04-16-snapshot-fast-path -->
 ![Snapshot fast path 与本轮合成的分离](../../assets/diagrams/ch15/ch15-04-16-snapshot-fast-path.png)

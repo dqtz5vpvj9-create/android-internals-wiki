@@ -100,7 +100,7 @@ consolidated_from:
 
 > GPU Counter 与 GPU memory 的信号都在 trace 里，但要回答不同的问题：counter（计数值） 记录某个 GPU 随时间变化的指标样本，内存事件记录某个时间点全局或各进程的 GPU 内存总量。这两种信号各有自己的采集链路和解释规则，把它们混在一起，是分析中最常见的错误来源。本文沿着两条链路各走一遍：我们先看 `external/perfetto` 里 GPU counter、GPU memory 事件和 Trace Processor 的导入实现，再看 `frameworks/native/services/gpuservice` 里 GPU 内存采集、驱动统计和各自的消费接口。
 >
-> 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。跨厂商性能阈值、Ray Tracing（光线追踪）、NPU（神经网络处理器）/ML（机器学习） 协同、远程 GPU 调试与完整 AGI 工作流不在讨论范围内。
+> 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
 下文沿用 Perfetto 源码名称。counter 是按时间记录的 GPU 指标样本；producer 是向 Perfetto 声明数据源并写入事件的实现；descriptor 是解释 counter ID、名称、单位和采样能力的元数据；Trace Processor 把 trace packet（追踪数据包） 解析成可查询的表与时间轨道。
 
@@ -162,7 +162,7 @@ select_by_default
 groups
 ```
 
-`reserved 4` 对应早期已弃用的 `MeasureUnit unit` tag，Trace Processor 只按 `numerator_units` 与 `denominator_units` 生成单位字符串。`oneof peak_value` 表示整数峰值与浮点峰值最多选一种。这个版本的 `GpuCounterSpec` 没有 `value_direction` 字段，Perfetto 上游后续设计或其他分支里的字段，要进入本标签之后才算这条基线里的协议字段。
+`reserved 4` 对应早期已弃用的 `MeasureUnit unit` tag，Trace Processor 只按 `numerator_units` 与 `denominator_units` 生成单位字符串。`oneof peak_value` 表示整数峰值与浮点峰值最多选一种。这个版本的 `GpuCounterSpec` 没有 `value_direction` 字段，Perfetto 上游后续设计或其他分支新增的字段在进入本基线前不属于当前协议。
 
 #### Counter block 容量约束
 
@@ -361,7 +361,7 @@ Camera 和视频还存在相反情况：主体内容通过 ISP、codec 与 HWC �
 3. **区分平台事件与厂商 counter**：`GpuMemTotalEvent` 是 Android 平台 GPU memory 事件；GPU 频率、fragment、triangle 等 counter 仍要靠 GPU counter producer 暴露。
 4. **记录出图拓扑**：同一 counter 峰值在标准 HWUI、TextureView、独立 Surface 与视频 overlay 等场景中的来源不同；这里的视频 overlay 指独立视频 layer 由 HWC 直接合成的路径。采集说明至少要记下 Surface 类型、layer、graphics API、HWC composition 与显示模式，否则两次采集之间没法对比。
 5. **不要强行跨厂商比较**：仅凭同属 `MEMORY`、`FRAGMENTS` 或 `COMPUTE` 分组不足以证明 counter 可比。若要建立跨设备基准，必须记录厂商 producer、counter 名称、单位和采样频率；若用不同名称作为同类指标，还要写明映射依据。
-6. **控制 trace 体积**：样本数量近似为 `counter 数 × 采样频率 × 时长`，但 protobuf 的 `int_value` 用 varint（按数值大小改变字节数的整数编码） 编码，字节数随数值大小变化；`double_value`、嵌套 message（嵌套消息）、packet framing（数据包边界信息）、descriptor 与 interning 引用也各有额外成本。所以我们不按固定的“每项 12 bytes”推算容量，而是先做一次短时采集，测出生成 trace 的 bytes/s，再为目标时长设置 buffer 和采样周期。
+6. **控制 trace 体积**：样本数量近似为 `counter 数 × 采样频率 × 时长`，但 protobuf 的 `int_value` 用 varint（按数值大小改变字节数的整数编码）编码，字节数随数值大小变化；`double_value`、嵌套 message（嵌套消息）、packet framing（数据包边界信息）、descriptor 与 interning 引用也各有额外成本。因此容量估算不能直接按固定的“每项 12 bytes”套算，最好先做一次短时采集，测出实际生成 trace 的 bytes/s，再为目标时长设置 buffer 和采样周期。
 
 
 ### 范围外主题
@@ -759,7 +759,7 @@ adb shell dumpsys SurfaceFlinger
 - `SurfaceFlinger dump`：提供 layer 与合成状态；DMA-BUF 引用分析要靠 `dmabuf_dump`。
 - `gfxinfo / GraphicsStats`：报告帧耗时与 jank（掉帧或卡顿事件），不提供 GPU 内存总账。
 
-§10.4 讨论应用与图形内存症状，§15.11 介绍 GPU 调试工具，§15.16 展开 eBPF 观测范围。本文只覆盖 GpuService、GPU memory tracepoint、GpuStats 和 DMA-BUF 对账之间的接口关系。
+前面 §10.4 讨论应用与图形内存症状，§15.11 介绍 GPU 调试工具，§15.16 则会展开 eBPF 观测范围；本节聚焦 GpuService、GPU memory tracepoint、GpuStats 与 DMA-BUF 对账之间的接口关系。
 
 ### 失败模式与结论强度
 

@@ -116,7 +116,7 @@ public final class App extends Application {
 
 用这套检查前，先把四件事弄清楚。其一，检查点认路径：直接从 native（C/C++）代码发起、没有经过对应检查点的 syscall（系统调用）可能绕过检测。其二，报告只登记“发生过”：检测到磁盘访问，说明不了这次访问一定慢。其三，报告跟线程走：主线程通过 `Future.get()` 等待后台 I/O 时，磁盘检查点发生在工作线程，主线程不会自动因此拿到 `DiskReadViolation`。其四，策略认线程：第三方库若在后台线程读写，而后台线程没有安装策略，主线程策略就看不到那次操作。
 
-拿 `SharedPreferences` 举例时要多想一步：直觉上会以为“XML 在后台加载，主线程就该没有读盘违规”，实际顺序要复杂一点。`SharedPreferencesImpl.awaitLoadedLocked()` 发现尚未加载完成时，会在当前调用线程显式执行 `BlockGuard.onReadFromDisk()`，随后才等待；于是主线程 getter / edit 等路径可能报告 `DiskReadViolation`，哪怕真实文件读取发生在另一条线程。纯粹的 `Future.get()` 等待通常没有这项额外检查，是否报告仍取决于实际入口；要把等待时间定位出来，我们还要看 Perfetto。
+以 `SharedPreferences` 为例，XML 文件虽然在后台加载，但 `SharedPreferencesImpl.awaitLoadedLocked()` 发现尚未加载完成时，会在当前调用线程显式执行 `BlockGuard.onReadFromDisk()` 随后才进入等待；因此主线程上的 getter 或 edit 等路径仍可能报告 `DiskReadViolation`，哪怕真实的文件读取发生在另一条线程。纯粹的 `Future.get()` 等待通常没有这项额外检查，是否报告仍取决于实际入口；要把等待时间定位出来，我们还要看 Perfetto。
 
 写接口这边，`commit()` 会等待本次持久化结果，常见路径也可能在调用线程执行写入；`apply()` 把写盘排入后台，但生命周期收尾仍有等待的可能。固定 r1 的 `QueuedWork.waitToFinish()` 会处理待完成工作，并在处理 pending work 时暂时放开当前线程的磁盘读写策略——所以日志里没有写盘报告，这条路径的等待或工作照样可能发生过。
 
@@ -129,7 +129,7 @@ public final class App extends Application {
 
 `detectNetwork()` 由 `BlockGuard.Policy.onNetwork()` 触发：Java socket 和基于它的常见 HTTP 客户端会经过这类检查点，native socket 代码是否进入同一检查则没有保证。
 
-`penaltyDeathOnNetwork()` 是一个特殊 penalty：启用 `detectNetwork()` 后，它会在其他 penalty 之前抛出 `NetworkOnMainThreadException`。这个名字容易带偏：异常在命中网络检查点的实际线程抛出，哪怕把该策略安装到工作线程，抛出的仍是这个类型——判断违规线程，我们看实际抛出位置，异常类的名字不作数。若只需记录，配置 `penaltyLog()` 就够了，无需再叠加这个提前终止 penalty。
+`penaltyDeathOnNetwork()` 是一个特殊 penalty：启用 `detectNetwork()` 后，它会在其他 penalty 之前抛出 `NetworkOnMainThreadException`。需要留意异常命名与实际线程的差异：该异常在命中网络检查点的当前线程抛出，即使把该策略安装到工作线程，抛出的类型依然是 `NetworkOnMainThreadException`——判断违规线程要看实际抛出位置，不能只看异常类名。若只需记录，配置 `penaltyLog()` 就够了，无需再叠加这个提前终止 penalty。
 
 ### 自定义慢调用
 
@@ -300,7 +300,7 @@ try {
 - `allowThreadDiskReads()` 只清除 disk-read 检测；
 - `allowThreadDiskWrites()` 同时清除 disk-write 与 disk-read 检测，因为写文件通常伴随读取元数据。
 
-放行提不了速，也换不来“这段 I/O 适合主线程”的结论。注释里应写明数据量上限、调用阶段和无法异步化的原因，并留下可搜索的问题单 ID，方便后续迁移。
+临时放行既不能提速，也不意味着这段 I/O 适合留在主线程。注释里应写明数据量上限、调用阶段和无法异步化的原因，并留下可搜索的问题单 ID，方便后续迁移。
 
 
 ## 自动化测试怎样安装策略

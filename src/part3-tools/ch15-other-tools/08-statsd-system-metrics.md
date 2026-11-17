@@ -50,7 +50,7 @@ related_chapters:
 
 Android 平台的系统级指标，除了 Perfetto Trace 还有一条独立通道：平台会把 ANR（Application Not Responding，应用无响应）、LMK（low memory kill，低内存杀进程）、JobScheduler 状态、启动、功耗和网络统计等信号写成 atom；atom 是由 Protocol Buffers（protobuf）schema（数据结构定义）描述的结构化事件或状态记录。statsd 再按配置把 atom 聚合成 metric（指标）报告。
 
-本章说明 statsd 在系统观测中的位置、atom 和 metric 的建模方式、本地调试流程，以及它和 Perfetto、logcat、dumpsys（输出系统服务当前状态的命令）的分工。线上出现系统事件而 Trace 缺少完整时序时，应先判断需要补充哪类信号。
+本节说明 statsd 在系统观测中的位置、atom 和 metric 的建模方式、本地调试流程，以及它和 Perfetto、logcat、dumpsys（输出系统服务当前状态的命令）的分工。线上出现系统事件而 Trace 缺少完整时序时，应先判断需要补充哪类信号。
 
 ## statsd 适合回答什么问题
 
@@ -279,7 +279,7 @@ statsd 位于系统侧，权限边界比普通 App 埋点严格。AOSP `StatsSer
 
 - Android 11 及以上设备通过 `com.android.os.statsd` APEX 分发 StatsD 模块；Android 12 起源码结构迁移到 `packages/modules/StatsD`。
 - `atoms.proto` 的 pushed atom 从 field 2 开始，pulled atom 从 field 10000 开始，但具体 atom 是否存在、字段是否相同，要按目标版本源码确认。
-- 官方模块文档注明 Statsd APEX 不支持产品侧定制。atom 命名空间另有扩展约定：field 100000–199999 留给 non-AOSP/OEM（设备厂商），300000–349999 用于 pushed generic vendor atom，350000–399999 用于 pulled generic vendor atom。厂商应使用规定的扩展路径；模块本身的修改或替换仍受同一句“不支持产品侧定制”的限制。
+- 官方模块文档注明 Statsd APEX 不支持产品侧定制。atom 命名空间另有扩展约定：field 100000–199999 留给 non-AOSP/OEM（设备厂商），300000–349999 用于 pushed generic vendor atom，350000–399999 用于 pulled generic vendor atom。厂商应使用规定的扩展路径，避免修改或替换 Statsd APEX 模块本身。
 - 隐私相关字段可能被 hash（转换为摘要值）、截断或过滤。配置中的 `hash_strings_in_metric_report` 默认开启，`allowed_log_source` 限制来源，`uid_fields` 则位于各 metric 子消息；它们各覆盖自己的范围，报告字段仍按目标 atom、metric 与实现解读。
 
 团队手册里，我们可以把 statsd 定位成“系统事件索引”。每个指标旁边写清三件事：atom ID 和字段来自哪个 Android 版本，metric 配置如何聚合，遇到异常后用哪类 trace、日志或 dump 复核。

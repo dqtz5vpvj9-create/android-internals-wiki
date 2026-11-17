@@ -227,7 +227,7 @@ Perfetto 官方文档也说明 SurfaceView 不受标准 FrameTimeline 支持。�
 
 ### Android Performance Analyzer（APA）
 
-截至 2026 年 10 月 25 日，APA 仍以 Perfetto 为系统追踪基础，并支持自定义 TraceConfig；当前首页明确主要面向游戏与 Vulkan 图形，其他应用先使用 Android Studio Profiler。System Profiler 的 CPU、GPU、内存和功耗能力还受设备 producer 限制。另须区分发布通道：官方发布说明已在 `0.10.0-canary`（2026 年 9 月）加入实验性 Frame Profiler，不能再把 APA 概括成只有系统时间线。
+截至 2026 年 10 月 25 日，APA 仍以 Perfetto 为系统追踪基础，并支持自定义 TraceConfig；当前首页明确主要面向游戏与 Vulkan 图形，其他应用先使用 Android Studio Profiler。System Profiler 的 CPU、GPU、内存和功耗能力还受设备 producer 限制。同时需要区分发布通道：随着 `0.10.0-canary`（2026 年 9 月）加入实验性 Frame Profiler，APA 已不再仅限于系统时间线。
 
 APA 和 Perfetto 的差别主要在入口和分析体验：
 
@@ -245,7 +245,7 @@ APA 的实验性测量会先用 compute workload 把 GPU 拉到最高频，再�
 
 图：APA 先记录 GFXR，再以受控 GPU 频率和重复重放测量逐 pass 性能。 最高频预热、最多100次平均与过滤污染属于实验流程；结果不代表正常运行一帧。
 
-APA Frame Profiler 的[当前兼容说明](https://developer.android.com/android-performance-analyzer/frame-profiler/compatibility)要求 Android 12+，重点支持 Pixel 6 起的大多数 Pixel；其他设备即使通过验证也可能不兼容。图形 API 为 Vulkan，GLES 需经 ANGLE；Vulkan 采集按文档设置 debuggable。不要把系统分析的覆盖、发布版功能与 canary 抓帧的支持范围合并。
+APA Frame Profiler 的[当前兼容说明](https://developer.android.com/android-performance-analyzer/frame-profiler/compatibility)要求 Android 12+，重点支持 Pixel 6 起的大多数 Pixel；其他设备即使通过验证也可能不兼容。图形 API 为 Vulkan，GLES 需经 ANGLE；Vulkan 采集按文档设置 debuggable。系统分析的覆盖、正式版功能与 canary 抓帧的支持范围各自独立，评估时应分开核对。
 
 ### Android GPU Inspector（AGI）
 
@@ -313,7 +313,7 @@ Sokatoa 由 Samsung Austin Research Center 发起，并与 Google、LunarG 协�
 | Samsung Xclipse | Sokatoa，配合 APA/Perfetto 与 Samsung 扩展 | 多帧 Vulkan、Xclipse performance view、系统时间线 | 扩展与设备支持仍在演进，报告要记录版本 |
 | Imagination PowerVR | AGI、Sokatoa 与 Imagination 工具 | PowerVR counter、系统与帧分析 | counter 名称和可用性依设备 producer |
 
-Arm Streamline 能在未 root 的受支持 Android 设备上采集 CPU、GPU、内存、调度和硬件 counter；Frame Advisor 面向问题帧的 API 与几何分析；RenderDoc for Arm GPUs 偏重图形调试；Mali Offline Compiler 不运行 App，而是估算 shader 在不同 Arm GPU 上的指令、寄存器和周期成本。这四个工具用途各不相同，报告里我们要写出具体用的哪一个，别把它们混在“Arm profiler”一个名字下。
+Arm Streamline 能在未 root 的受支持 Android 设备上采集 CPU、GPU、内存、调度和硬件 counter；Frame Advisor 面向问题帧的 API 与几何分析；RenderDoc for Arm GPUs 偏重图形调试；Mali Offline Compiler 并不运行 App，只静态估算 shader 在不同 Arm GPU 上的指令、寄存器和周期成本。这四个工具用途各不相同，报告里我们要写出具体用的哪一个，别把它们混在“Arm profiler”一个名字下。
 
 厂商 counter 要保留原名称、单位、采样方式、GPU 型号、driver 和文档版本。Adreno 的 busy、Mali 的 shader core active 与 Xclipse 的相似名称一旦放进同一张跨机型排行榜，数值就很容易失去可比性。
 
@@ -528,7 +528,7 @@ AGI 为不同 ABI 准备独立 package，例如：
 
 `DeviceInfoService` 与 `PackageInfoService` 是前台 `IntentService`（启动时显示通知、按 Intent 处理任务的服务），分别做设备探测和 package 枚举。抓帧数据并不经过名为 `com.google.android.gapid` 的 AIDL（Android Interface Definition Language，Android 跨进程接口定义） capture service：gapii 在目标进程内监听 local abstract socket，开发机用 adb forward（把主机端口转发到设备 socket） 连上来。
 
-“AI 压缩算法、GPU 数据加密存储、动态采样率或 GPU 访问审计日志”这类描述，源码里找不到任何支持。安全上能依据的，仍然是 Android 的 debuggable 状态、Vulkan layer 注入条件、adb 授权、layer package 与目标 package 选择这几项。
+这条捕获链路本身不提供内建的 GPU 数据加密存储、动态采样率或独立访问审计日志；安全与访问边界依赖 Android 的 `debuggable` 状态、Vulkan layer 注入条件、adb 授权，以及 `gpu_debug_layer_app` 与 `gpu_debug_app` 的包选择这几项。
 
 ### 一帧捕获从连接到结束发生了什么
 
@@ -588,7 +588,7 @@ gapit unpack -verbose capture.gfxtrace
 
 #### `.gfxtrace` 的跨设备重放边界
 
-Android Developers 的 Vulkan 工具页写有“trace 不可跨设备移植”的警告。这句话位于 GFXReconstruct 小节，我们把它当作 GFXReconstruct 自己的边界；直接套到 AGI `.gfxtrace` 上并不成立。
+Android Developers 的 Vulkan 工具页写有“trace 不可跨设备移植”的警告，但该提示位于 GFXReconstruct 小节，针对的是 GFXReconstruct 自身的限制，不能直接套用到 AGI `.gfxtrace` 上。
 
 AGI `v3.3.3` 的开发文档写明了与本节直接相关的限制：主机可以演算 API state，但 draw 对 render target（渲染目标图像） 的真实像素影响仍要在设备上重放，结果取决于重放设备及其 driver。所以对 `.gfxtrace`，我们采用保守结论：跨 OS、芯片组或驱动版本的稳定重放要逐台验证，先别当作默认能力。分享问题时同时保存：
 
@@ -642,7 +642,7 @@ AGI 官方 Frame Profile 入口区分：
 
 所以 OpenGL on ANGLE 的 trace 描述的是 ANGLE 生成的 Vulkan workload（实际提交的图形工作序列），适合观察转换后的 render pass、pipeline、resource 与 GPU 成本；原始 GLES driver 的调用序列在这份 trace 里已经看不到了，而且 ANGLE 自身的 API 转换、shader translation（着色器转译） 和状态管理开销也进入了被测路径。
 
-当前 AGI 源码文档写明工具主线只支持 Vulkan，这与官方 UI 的 OpenGL on ANGLE 说明一致。“gapii 直接替换全部 GLES 2.0/3.x 函数”“ANGLE D3D11 on Vulkan”这类 Android 描述都没有证据支持：Android 上的 ANGLE 后端是 Vulkan 方向，D3D11 属于其他平台语境。
+当前 AGI 源码文档写明工具主线只支持 Vulkan，这与官方 UI 的 OpenGL on ANGLE 说明一致：Android 上的 ANGLE 后端面向 Vulkan，gapii 并不直接拦截原生 GLES 2.0/3.x 驱动函数。
 
 ### Frame Profiler 的视图与分析路径
 
@@ -684,7 +684,7 @@ Producer 的 `queueBuffer` 携带 acquire fence（此时 GPU 写入可以尚未�
 
 我们把顺序定成这样：先用 System Profile、Perfetto 或 APA 锁定异常 display frame 和目标应用 Surface，确认瓶颈落在应用 GPU 区间后，再抓相同场景的 Frame Profile；改完 shader、render pass 或资源，回到系统时间线验证 producer fence、latch 与 present 是否一起改善。OpenGL on ANGLE 还要保留“转换后的 Vulkan workload 与原 GLES driver 路径不同”这个实验变量。
 
-Frame Profile 给我们的是单帧内部的数据；跨设备通用的阈值，要靠对照实验自己建立。公开资料里还查不到可核验的 Android 17“机器学习性能预测、AI 异常检测或云端趋势分析”能力，`Sokatoa` 在上述 AGI 与 AOSP 来源中也没有对应组件或扩展定义——遇到这类描述，先拿到独立产品文档、版本和可复现实验再说。
+Frame Profile 给我们的是单帧内部的数据；跨设备通用的阈值，要靠对照实验自己建立。同时要注意，AGI `v3.3.3` 与 AOSP 来源中都不包含独立的 `Sokatoa` 或云端趋势预测组件，需要多帧 Vulkan 捕获或预测能力时应结合各自独立工具的文档与可复现实验。
 
 ### 常见失败怎样定位
 
@@ -808,7 +808,7 @@ GPU 写入完成由 acquire fence 表达，buffer 入队和受限的 SurfaceFlin
 - GAPIS 在主机解析和生成 replay opcode，GAPIR 在 Android 设备 driver 上执行；`.gfxtrace` 的 replay 结果依赖设备与 driver，跨 OS、GPU 和 driver 的稳定复现要另行验证。
 - OpenGL ES Frame Profile 经 custom ANGLE 转成 Vulkan，分析结果对应转换后的 workload。
 - Frame Profile 停在应用图形 API 与 replay 范围内，producer fence、SurfaceFlinger latch、HWC composition 与 display present 的运行时证据仍需另外采集。
-- 公开主链路没有 GFXReconstruct、完整 replay2 引擎、Sokatoa 或 Android 17 AI 诊断功能的证据。
+- AGI `v3.3.3` 公开主链路以 GraphicsSpy、GAPIS 与 GAPIR 为核心，不包含 GFXReconstruct、完整 `replay2` 引擎或 `Sokatoa` 组件。
 
 
 ## 参考资料

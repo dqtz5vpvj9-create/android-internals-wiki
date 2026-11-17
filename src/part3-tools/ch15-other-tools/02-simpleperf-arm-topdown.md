@@ -71,19 +71,17 @@ consolidated_from:
 
 # Simpleperf 与 ARM Topdown 微架构分析
 
-我们做 CPU 优化时，第一批问题通常是“CPU 时间集中在哪些函数”“某段代码执行了多少条指令”“热点由哪条调用路径进入”。回答它们的主力工具就是 Simpleperf：它通过 Linux `perf_events` 子系统采集事件计数、PC（Program Counter，当前执行指令的地址） 和调用栈，把结果写入 `perf.data`。
+我们做 CPU 优化时，第一批问题通常是“CPU 时间集中在哪些函数”“某段代码执行了多少条指令”“热点由哪条调用路径进入”。回答它们的主力工具就是 Simpleperf：它通过 Linux `perf_events` 子系统采集事件计数、PC（Program Counter，当前执行指令的地址）和调用栈，把结果写入 `perf.data`。
 
 > 源码基线：AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。下文以“A17”简称这份平台源码；设备可能使用其他内核分支，较早版本只用于说明兼容范围，旧设备行为以当时的版本为准。
 
-堆内存泄漏、Java 对象分配、完整系统调用时序和整机功耗归因各有专门工具：Heap Dump/LeakCanary、Allocation Tracking、Perfetto ftrace 和 Power Profiler。Simpleperf 也能读 PMU（Performance Monitoring Unit，处理器性能监控单元） 的硬件计数器，但这些计数单独换算不出可靠的能耗。在这些计数与采样能力之上，Topdown 用 CPU 专属公式描述四类流水线 slot：前端（Frontend Bound）、后端（Backend Bound）、错误推测（Bad Speculation）和退休（Retiring）。Topdown 结论要落在设备 PMU 支持和可复现负载上，这是全篇的前提。
+堆内存泄漏、Java 对象分配、完整系统调用时序和整机功耗归因各有专门工具：Heap Dump/LeakCanary、Allocation Tracking、Perfetto ftrace 和 Power Profiler。Simpleperf 也能读取 PMU（Performance Monitoring Unit，处理器性能监控单元）的硬件计数器，但仅靠这些计数无法换算出可靠的能耗。在这些计数与采样能力之上，Topdown 用 CPU 专属公式描述四类流水线 slot：前端（Frontend Bound）、后端（Backend Bound）、错误推测（Bad Speculation）和退休（Retiring）。得出可靠的 Topdown 结论，前提是确认设备 PMU 支持并固定可复现的测试负载。
 
 ## 采样、调用图与硬件事件基础
 
 ### 采样模型
 
-一次采样从内核事件开始，在主机报告结束。下面的图用于定位每一层负责的数据。
-
-采集链路从 Simpleperf 配置目标并调用 `perf_event_open()` 开始，目标应用线程是被观测对象。内核记录事件后，Simpleperf 保存样本和元数据，主机报告再解析符号。
+采集链路从 Simpleperf 配置目标并调用 `perf_event_open()` 开始，内核观测目标应用线程并记录事件，Simpleperf 保存样本与元数据，最后由主机端报告解析符号。下图展示了各层负责的数据分工：
 
 <!-- gracker-diagram: ch15-02-01-sampling-pipeline -->
 ![目标线程、内核采样与主机报告的分工](../../assets/diagrams/ch15/ch15-02-01-sampling-pipeline.png)
@@ -138,7 +136,7 @@ consolidated_from:
 
 ### 工具位置与环境检查
 
-NDK 发行包把设备端程序、主机端程序和 Python 脚本放在顶层 `simpleperf/` 目录，而不是 LLVM 工具链的 `bin/` 目录。路径中的 `${arch}` 表示目标 CPU 架构，`${host}` 表示运行报告工具的桌面系统：
+NDK 发行包把设备端程序、主机端程序和 Python 脚本放在顶层 `simpleperf/` 目录，不在 LLVM 工具链的 `bin/` 目录内。路径中的 `${arch}` 表示目标 CPU 架构，`${host}` 表示运行报告工具的桌面系统：
 
 - `simpleperf/bin/android/${arch}/simpleperf`：设备端静态可执行文件。
 - `simpleperf/bin/${host}/${arch}/simpleperf`：主机端报告程序。
@@ -484,7 +482,7 @@ Perfetto Trace Processor 会把这种 protobuf 中的样本导入 `cpu_profile_s
 
 图：导出 Simpleperf 样本、在 Perfetto 会话采样和按已有 slice 筛选样本是不同入口。 A17 Simpleperf 导入器不恢复完整 ContextSwitch/event_type/丢样语义，不能视为系统调度 trace。
 
-Perfetto 的 `linux.perf` 是另一套采集入口，由 `traced_perf` 组件调用 `perf_event_open` 并直接向 Perfetto 会话写入调用栈样本，这样采到的样本能与 ftrace 数据共享时间轴。已经生成的 Simpleperf `perf.data` 属于另一场采集，我们要另行发起会话，它不会自动并入。
+Perfetto 的 `linux.perf` 是另一套采集入口，由 `traced_perf` 组件调用 `perf_event_open` 并直接向 Perfetto 会话写入调用栈样本，这样采到的样本能与 ftrace 数据共享时间轴。已经生成的 Simpleperf `perf.data` 属于独立采集，不会自动并入新的 Perfetto 会话，需要重新按 `linux.perf` 发起录制。
 
 下面的 A17 配置以真实系统进程 `surfaceflinger` 为目标，按 100 Hz 采集用户态调用栈，并在同一会话加入调度和进程信息。SurfaceFlinger 是 Android 负责合成屏幕图层的系统服务；采样这类系统进程通常需要 userdebug/eng 构建或等价权限。
 
@@ -603,9 +601,7 @@ bool prefer_simpleperf_app_runner = GetAndroidVersion() >= kAndroidVersion16;
 
 ## Android 17 采集能力与微架构工作流
 
-基础采样回答“热点在哪里”；要进一步确认缓存、分支和流水线的瓶颈，就要动用 Android 17 新加入的这批能力。
-
-前文的 PMU 采样是基础，Android 17 在这之上加入了 SPE（Statistical Profiling Extension，统计分析扩展）的采集与解码，并改进后台采集、应用进程跟踪和 ETM profile（性能数据）转换。这里的“微架构”指缓存、地址转换和分支预测等处理器内部行为。我们讨论的范围限于已经进入 `android-17.0.0_r1` 的实现；某台设备用不用得上这些能力，由 SoC、内核配置和权限共同决定。
+常规 PMU 采样主要回答“热点在哪里”；要进一步确认缓存、分支和流水线瓶颈，需要借助 Android 17 在 `android-17.0.0_r1` 中新增的一批微架构采集能力，包括 SPE（Statistical Profiling Extension，统计分析扩展）的采集与解码，以及后台采集、应用进程跟踪和 ETM profile（性能数据）转换的改进。这里的“微架构”指缓存、地址转换和分支预测等处理器内部行为。某台设备能否启用这些能力，取决于具体的 SoC、内核配置和权限策略。
 
 ### 先分清 PMU、SPE 和 ETM
 
@@ -718,7 +714,7 @@ CoreSight 链路可以概括为：
 
 > CPU 上的 ETM/ETE 生成控制流 trace → CoreSight 选择 sink → ETR 或每 CPU 的 TRBE 把 trace 保存到内存
 
-TRBE 是每 CPU 的 trace sink，对应 CPU 的 ETE 可以把 trace 写入该 CPU 的内存缓冲。缓冲到达边界时，内核驱动通过 maintenance IRQ（维护中断）更新 AUX 状态；wrap（写指针绕回）、碰撞、截断和硬件 erratum（已知设计缺陷）都可能造成 trace gap（控制流记录缺口）。所以“独立带宽必然无丢包”“固定低延迟”这类说法推不出来。
+TRBE 是每 CPU 的 trace sink，对应 CPU 的 ETE 可以把 trace 写入该 CPU 的内存缓冲。缓冲到达边界时，内核驱动通过 maintenance IRQ（维护中断）更新 AUX 状态；wrap（写指针绕回）、碰撞、截断和硬件 erratum（已知设计缺陷）都可能造成 trace gap（控制流记录缺口）。因此，TRBE 也可能出现控制流丢包或延迟波动，并不能保证零丢包或固定低延迟。
 
 #### Android 17 的选择逻辑
 
@@ -937,7 +933,7 @@ Topdown（自顶向下微架构分析）处理的是前一个问题。处理器�
 
 示例公式取自 Arm Telemetry Solution 支持的具体 CPU 数据库，公式按 CPU 型号给出；直接套到任意 Android SoC（System on Chip，片上系统） 上是行不通的。
 
-结论只覆盖参考资料列出的版本：AOSP simpleperf、Android common kernel 的 perf 权限说明，以及 Arm 对 Topdown/Telemetry Solution 的公开文档。厂商内核补丁、后续平台版本的 simpleperf 变化、SoC 私有 PMU 扩展和商业性能工具链都在讨论范围之外。
+本节讨论基于 AOSP simpleperf、Android common kernel 的 perf 权限说明，以及 Arm 对 Topdown/Telemetry Solution 的公开文档，不含厂商内核补丁、后续平台版本的 simpleperf 变更、SoC 私有 PMU 扩展与商业性能工具链的差异。
 
 ### Intel TMAM 与 Arm Topdown 的关系
 
@@ -1042,7 +1038,7 @@ Android 17 simpleperf 还提供 `sample_filter_for_perfetto_trace.py`：脚本�
 
 Android 17 simpleperf 源码包含 `SPERecorder` 与 `SPEDecoder`，`simpleperf list arm_spe` 会检查内核是否暴露 SPE PMU。该版本解码器会输出采样指令虚拟地址（也称 IP，Instruction Pointer）、数据虚拟地址、线程 ID 和事件位，却不会输出 operation type（操作类型）、`PERF_SAMPLE_DATA_SRC`、latency weight（延迟权重）或可用于逐样本对齐的时间戳。因此，它能按事件位定位热点指令或地址；读写类型、逐级数据来源和访问延迟，还得另想办法。
 
-SPE 也顶替不了一级 Topdown 公式；它的位置是在 Backend Bound 已由计数确认后，帮忙定位延迟落在哪些指令或地址。另外，Android 17 该版本源码中没有名为 `brbe` 的 simpleperf 后端，把 BRBE（Branch Record Buffer Extension，分支记录扩展）写成通用可用的采集选项是不成立的。
+SPE 也顶替不了一级 Topdown 公式；它的位置是在 Backend Bound 已由计数确认后，帮忙定位延迟落在哪些指令或地址。另外，Android 17 该版本源码中没有名为 `brbe` 的 simpleperf 后端，因此无法将 BRBE（Branch Record Buffer Extension，分支记录扩展）作为通用采集选项使用。
 
 ### 一套可复现的 Android 工作流
 
@@ -1262,7 +1258,7 @@ Android 17 上可执行的可靠路径是：
 
 缺少 CPU 专属公式时，保留“前端 stall 事件升高”“分支错误增加”这类可核验的描述，比硬凑出四个看似完整的百分比更可靠。
 
-本节的依据都已在参考资料列出。拿到具体手机 SoC 时，还要补入对应 CPU 的 telemetry specification、设备 `simpleperf list raw` 输出和同窗口计数原始记录；这些依据缺位时，示例公式只能当示范看，通用 Android 结论写不得。
+分析具体手机 SoC 时，必须补入对应 CPU 的 telemetry specification、设备 `simpleperf list raw` 输出和同窗口计数原始记录；缺少这些实测依据时，示例公式只能作为示范参考，不能外推为通用 Android 结论。
 
 
 ## 参考资料
