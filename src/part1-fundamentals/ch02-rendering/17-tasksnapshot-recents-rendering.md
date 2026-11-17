@@ -113,7 +113,7 @@ SF LayerSnapshot 集合
       → WMS TaskSnapshot
 ```
 
-因此，Perfetto 或源码中出现的 `LayerSnapshotBuilder` 对应的是 SurfaceFlinger 为普通显示帧更新 FrontEnd 状态，与缩略图生成属于不同职责。
+因此，Perfetto 或源码中出现的 `LayerSnapshotBuilder` 可能用于 SurfaceFlinger 为普通显示帧更新 FrontEnd 状态；分析时应结合上下文确认其职责。
 
 ## 2. 快照的捕获时机
 
