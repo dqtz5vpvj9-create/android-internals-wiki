@@ -141,7 +141,7 @@ private void awaitLoadedLocked() {
 
 图：常见读取/解析异常可能回退为空 map；被记录到 mThrowable 的失败则在 awaitLoadedLocked 结束后抛出 IllegalStateException。
 
-“在 `Application` 中提前调用 `getSharedPreferences()`”只是提前创建对象、提前安排加载；紧接着就读 key 的话，仍可能进入等待。要降低首帧风险，要把首次使用挪到有余量的阶段，再用 trace 验证加载有没有在关键路径前完成。
+“在 `Application` 中提前调用 `getSharedPreferences()`”只是提前创建对象、提前安排加载；紧接着就读 key 的话，仍可能进入等待。要降低首帧风险，需把首次使用挪到有余量的阶段，再用 trace 验证加载是否在关键路径前完成。
 
 <!-- gracker-diagram: ch06-03-load-wait-timeline -->
 ![单加载线程与首次读取等待](../../assets/diagrams/ch06/ch06-03-load-wait-timeline.png)
@@ -188,14 +188,14 @@ public void apply() {
 }
 ```
 
-确定的顺序是先更新内存、再安排写盘并调用通知逻辑。调用线程是主线程时，监听器在这里直接执行；其他线程调用时，通知会 post 到主线程，可能在 apply() 返回后才发生。监听器观察的只是内存变化；磁盘结果如何，要等写盘结束才知道。`awaitCommit` 作为 finisher（收尾任务）留在 `QueuedWork.sFinishers` 里，直到写盘结束后由 `postWriteRunnable`（可执行任务） 移除，或者被框架的收尾逻辑取出来执行。
+确定的顺序是先更新内存、再安排写盘并调用通知逻辑。调用线程是主线程时，监听器在这里直接执行；其他线程调用时，通知会 post 到主线程，可能在 apply() 返回后才发生。监听器观察的只是内存变化；磁盘结果如何，要等写盘结束才知道。`awaitCommit` 作为 finisher（收尾任务）留在 `QueuedWork.sFinishers` 里，直到写盘结束后由 `postWriteRunnable`（可执行任务）移除，或者被框架的收尾逻辑取出来执行。
 
 <!-- gracker-diagram: ch06-03-apply-finisher-listener -->
 ![apply 的后台任务与监听器分支](../../assets/diagrams/ch06/ch06-03-apply-finisher-listener.png)
 
 图：apply 注册 finisher 并排队写盘，再触发内存变更通知；监听器是否同步执行取决于调用线程，返回无需等待磁盘结果。
 
-`apply()` 没有返回值，序列化、`fsync()` 还是重命名失败了，调用方都拿不到信号。所以写重要安全状态、或必须确认数据已持久化时，我们的判断依据是写盘结果本身；只凭“内存已经读到新值”认定成功，是不够的。
+`apply()` 没有返回值，无论是序列化、`fsync()` 还是重命名失败，调用方都拿不到信号。因此，写入重要安全状态或需要确认数据已持久化时，必须依据写盘结果本身判断，不能只凭“内存已经读到新值”就认定成功。
 
 ### 第三步：`enqueueDiskWrite()` 决定在哪条线程写
 
@@ -213,7 +213,7 @@ public void apply() {
 | 错误信息 | 无磁盘结果 | 只有布尔结果，没有详细失败原因 |
 | 生命周期收尾 | pending work（待处理任务）/finisher（收尾任务）可能被框架等待 | 调用点已经同步等待 |
 
-两种常见说法都站不住：“`commit()` 总在当前线程写”和“`apply()` 总在 `queued-work-looper` 写”——`commit()` 可能先排队再等待，`apply()` 的任务也可能被随后调用 `waitToFinish()` 的线程取走执行。
+需要注意的是，`commit()` 并不总在当前线程写盘，`apply()` 也未必都在 `queued-work-looper` 上写：已有在途写盘时，`commit()` 同样会先排队再等待；而尚未开始的 `apply()` 任务，也可能被随后调用 `waitToFinish()` 的线程取走执行。
 
 <!-- gracker-diagram: ch06-03-enqueue-write-thread -->
 ![enqueueDiskWrite 的执行线程选择](../../assets/diagrams/ch06/ch06-03-enqueue-write-thread.png)
@@ -255,7 +255,7 @@ SP 没有按 key 更新磁盘文件的能力，改一个布尔值也可能重写
 - `SharedPreferencesImpl.MAX_FSYNC_DURATION_MILLIS = 256`：单次 `fsync` 超过 256 ms 时输出累计直方图；每 1024 次同步也会输出。
 - `QueuedWork.MAX_WAIT_TIME_MILLIS = 512`：`waitToFinish()` 超过 512 ms 时输出等待直方图；每 1024 次等待也会输出。
 
-这两个阈值只做观测，既取消不了写盘，也拦不住 ANR，也没有面向普通 App 的公开调参接口。256 ms 和 512 ms 只是日志观测线，我们别把它们当成系统超时线。
+这两个阈值只用于日志观测，既不能取消写盘或拦截 ANR，也没有面向普通 App 的公开调参接口。256 ms 和 512 ms 只是日志观测线，不要把它们当成系统超时线。
 
 
 ## `apply()` 如何进入组件收尾路径
@@ -295,7 +295,7 @@ public static void waitToFinish() {
 }
 ```
 
-`processPendingWork()` 先获取覆盖整批处理的 sProcessingWork monitor，再取走 sWork 中的任务并在当前线程逐个运行。若后台已持有这个 monitor，主线程会先阻塞在锁入口，尚未走到 finisher 的 latch 等待。若主线程调用 `waitToFinish()`，尚未开始的 SP 写盘就可能直接在主线程执行。完成这批处理后它再运行 finisher；若仍有对应写入未完成，finisher 可以在 writtenToDiskLatch.await() 等待。monitor 等待、主线程直接写盘和 latch 等待是不同位置。
+`processPendingWork()` 先获取覆盖整批处理的 sProcessingWork monitor，再取走 sWork 中的任务并在当前线程逐个运行。若后台已持有这个 monitor，主线程会先阻塞在锁入口，尚未走到 finisher 的 latch 等待。若主线程调用 `waitToFinish()`，尚未开始的 SP 写盘就可能直接在主线程执行。完成这批处理后，`waitToFinish()` 再逐个运行 finisher；若对应写入仍未完成，finisher 就会阻塞在 writtenToDiskLatch.await() 上。可以看到，monitor 等待、主线程直接写盘和 latch 等待发生在三个不同的位置。
 
 <!-- gracker-diagram: ch06-03-queuedwork-finish -->
 ![waitToFinish 的锁、任务与 finisher](../../assets/diagrams/ch06/ch06-03-queuedwork-finish.png)
@@ -309,7 +309,7 @@ public static void waitToFinish() {
 组件收尾的等待点分四类：
 
 - **现代 Activity**：`handleStopActivity()` 在 Activity 停止时调用 `QueuedWork.waitToFinish()`。
-- **pre-Honeycomb Activity**：面向 Android 3.0（API 11）之前行为的兼容路径仍在 `handlePauseActivity()` 调用；现代 App 的主路径要按 `handleStopActivity()` 理解，不要写成 `onPause()`。
+- **pre-Honeycomb Activity**：面向 Android 3.0（API 11）之前行为的兼容路径仍在 `handlePauseActivity()` 调用；现代 App 的主路径发生在 `handleStopActivity()`，并不在 `onPause()`。
 - **Service**：`handleServiceArgs()` 在命令处理后等待，`handleStopService()` 在销毁清理后等待。
 
 - **BroadcastReceiver**：`PendingResult.finish()` 不直接调用 `waitToFinish()`。仅 TYPE_COMPONENT 分支在 hasPendingWork() 为真时把 sendFinished() 排在队尾；其他类型或没有 pending work 时直接发送。这个检查只看尚在 sWork 中的任务，不等同于统计所有 in-flight 写盘。排队分支会使 AMS（ActivityManagerService，系统的 Activity 管理服务） 收到完成回执的时间随之推迟。
@@ -378,7 +378,7 @@ Perfetto 默认并不会给每个 Java 方法生成名为 `QueuedWork` 的 slice
 
 ### 非阻塞 API 的完成时序
 
-DataStore 的 `data` 是 `Flow<T>（异步数据流）`，`edit()`/`updateData()` 是挂起 API。默认工厂的协程作用域使用 `Dispatchers.IO + SupervisorJob()`，内部 I/O 与 actor 任务使用该作用域，但 transform 会通过 withContext(callerContext) 回到调用方协程上下文；把它当成自动迁移到 IO 的任意计算，属于误用。SupervisorJob 隔离子任务失败；自定义作用域还需按实际配置判断。调用方线程不会像 SP `commit()` 那样同步执行文件 I/O，但调用方协程会挂起；挂起期间不占用当前线程，直到更新完成或异常抛出。
+DataStore 的 `data` 是 `Flow<T>（异步数据流）`，`edit()`/`updateData()` 是挂起 API。默认工厂的协程作用域使用 `Dispatchers.IO + SupervisorJob()`，内部 I/O 与 actor 任务运行在这个作用域上，但 transform 会通过 withContext(callerContext) 切回调用方协程上下文——若从主线程发起调用，transform 里的耗时计算仍会占用主线程，不能依赖 DataStore 自动把计算迁往 IO 线程。SupervisorJob 用来隔离子任务失败；若使用自定义作用域，还需按实际配置判断。调用方线程不会像 SP `commit()` 那样同步执行文件 I/O，但调用方协程会挂起；挂起期间不占用当前线程，直到更新完成或异常抛出。
 
 <!-- gracker-diagram: ch06-03-datastore-contexts -->
 ![DataStore 的调用协程、transform 与 I/O](../../assets/diagrams/ch06/ch06-03-datastore-contexts.png)
@@ -402,7 +402,7 @@ suspend fun setNightMode(enabled: Boolean) {
 }
 ```
 
-`setNightMode()` 返回时，这次更新已经走完 DataStore 的串行更新与持久化路径；写入失败的话，异常会回到挂起调用方。重试、提示用户还是保留旧状态，由调用者决定——`launch` 启动协程后立刻把业务操作标记为永久成功，等于放弃了失败信号。
+`setNightMode()` 返回时，这次更新已经走完 DataStore 的串行更新与持久化路径；写入失败的话，异常会回到挂起调用方。至于失败后是重试、提示用户还是保留旧状态，需由调用者自行决定——若用 `launch` 启动协程后立刻把业务操作标记为永久成功，就相当于丢掉了失败信号。
 
 官方 API 对 DataStore 的承诺包括线程安全、非阻塞和事务化更新。普通读取可以走缓存或尝试锁路径，通知触发的刷新仍可能等待协调锁；非阻塞 API 不承诺零等待。第一次收集还需要完成初始化、迁移和首次读盘；初始化失败会通过 Flow 或更新调用传播。
 
@@ -452,7 +452,7 @@ Proto DataStore 的 schema 更利于审查和演进，但业务迁移仍要应�
 
 ### 单例是文件级约束
 
-同一进程、同一路径应只有一个活跃 DataStore 实例。标准 FileStorage 在首次建立读写连接时，按 canonical path 的 activeFiles 登记检查重复并抛出 IllegalStateException；自定义或不同 Storage 也必须遵守唯一实例约束；某个后端自带的检查，当不成跨后端的全局文件锁。顶层 `by preferencesDataStore` 属性是一种方便的单例组织方式，但指向同一文件创建多个 delegate（属性委托） 依旧是错的。
+同一进程、同一路径应只有一个活跃 DataStore 实例。标准 FileStorage 在首次建立读写连接时，按 canonical path 的 activeFiles 登记检查重复并抛出 IllegalStateException；自定义或不同 Storage 也必须遵守唯一实例约束，单个后端自带的检查不能替代跨后端的全局文件锁。顶层 `by preferencesDataStore` 属性是一种方便的单例组织方式，但指向同一文件创建多个 delegate（属性委托）依旧是错的。
 
 <!-- gracker-diagram: ch06-03-file-singleton-immutability -->
 ![文件级单例检查与值的不变性](../../assets/diagrams/ch06/ch06-03-file-singleton-immutability.png)
@@ -690,7 +690,7 @@ suspend fun updateNightMode(enabled: Boolean) {
 }
 ```
 
-这里的 `Trace` 可以用 `androidx.tracing.Trace`；并发请求要使用不同的 cookie（配对异步区间的整数标识），也就是配对 begin/end 的那对整数标识。当前 `androidx.tracing` 版本若支持挂起函数 `traceAsync`，直接用它包装调用也可以。Trace 名称里不要出现用户值或其他敏感信息。
+这里的 `Trace` 可以用 `androidx.tracing.Trace`；并发请求需要使用不同的 cookie（用于配对 begin/end 异步区间的整数标识）。当前 `androidx.tracing` 版本若支持挂起函数 `traceAsync`，直接用它包装调用也可以。Trace 名称里不要出现用户值或其他敏感信息。
 
 <!-- gracker-diagram: ch06-03-async-trace-pairing -->
 ![跨挂起更新的异步 Trace 配对](../../assets/diagrams/ch06/ch06-03-async-trace-pairing.png)
