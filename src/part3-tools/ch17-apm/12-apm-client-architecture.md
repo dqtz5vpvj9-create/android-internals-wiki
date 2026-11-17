@@ -53,7 +53,7 @@ sources:
 
 # 千万级 DAU（Daily Active Users，日活跃用户数） 的 APM 端侧架构
 
-DAU 到千万级之后，APM SDK（应用性能监控软件开发包） 在单台设备上要做的还是那几件事，但极小比例的缺陷也会落在大量用户头上。SDK 的压力峰值往往与宿主故障同时出现：卡顿会增加慢帧事件，网络失败会积压待传批次，内存异常可能触发更高采样率或更重的诊断采集，进程退出又要求保住故障前的少量上下文。端侧架构要按这个峰值设计，平稳期的平均流量只能作参考。
+DAU 到千万级之后，APM SDK（应用性能监控软件开发包）在单台设备上要做的还是那几件事，但极小比例的缺陷也会落在大量用户头上。SDK 的压力峰值往往与宿主故障同时出现：卡顿会增加慢帧事件，网络失败会积压待传批次，内存异常可能触发更高采样率或更重的诊断采集，进程退出又要求保住故障前的少量上下文。端侧架构要按这个峰值设计，平稳期的平均流量只能作参考。
 
 > 源码基线：Android 17 / API 37 / AOSP `android-17.0.0_r1`；内核 `android17-6.18-2026-06_r6`。
 
@@ -87,7 +87,7 @@ Android 8—17 的应用都能采用以下队列、分片和上传模型；`Appl
 3. 高优先级故障证据有独立容量，普通指标再多也挤不进去。
 
 
-“业务线程不等待”指的是不在编码、文件这类慢操作上阻塞；至于每次调用的耗时，对象分配、CAS（Compare-And-Set，并发代码常用的原子比较后更新） 竞争、缺页（访问尚未驻留内存的页面）和线程调度都可能带来少量高延迟调用。所以我们要在目标低端机上实测入口 P50/P95/P99.9——分别对应 50%、95% 和 99.9% 的样本不高于该耗时——并给主线程路径配上自动降级。
+“业务线程不等待”指的是不在编码、文件这类慢操作上阻塞；至于每次调用的耗时，对象分配、CAS（Compare-And-Set，并发代码常用的原子比较后更新）竞争、缺页（访问尚未驻留内存的页面）和线程调度都可能带来少量高延迟调用。所以我们要在目标低端机上实测入口 P50/P95/P99.9——分别对应 50%、95% 和 99.9% 的样本不高于该耗时——并给主线程路径配上自动降级。
 
 ## 2. 线程模型
 
@@ -99,7 +99,7 @@ Android 8—17 的应用都能采用以下队列、分片和上传模型；`Appl
 
 拿到“立即返回”这个性质，还要把它和 lock-free 分开：lock-free 指系统整体总有线程能前进，wait-free 更进一步，要求每个操作在有限步骤内完成。这两条进度保证，连同固定的纳秒上限，Channel 文档都没有承诺；我们手里拿到的契约，只有“非挂起、失败可观测”一条。
 
-如果项目选择自研 MPSC（Multi-Producer, Single-Consumer，多生产者单消费者）RingBuffer（首尾相接、循环复用槽位的缓冲区），就要用每个 slot（队列槽位） 的 sequence（代次序号） 证明发布顺序，并处理槽位值循环后被误认成旧状态的 ABA 问题。这样的实现要通过并发测试、长时间 soak test（持续压力测试） 和线性化检查才算数；直接把一个循环数组叫作无锁队列，是过不了这几关的。
+如果项目选择自研 MPSC（Multi-Producer, Single-Consumer，多生产者单消费者）RingBuffer（首尾相接、循环复用槽位的缓冲区），就要用每个 slot（队列槽位）的 sequence（代次序号）证明发布顺序，并处理槽位值循环后被误认成旧状态的 ABA 问题。这样的实现要通过并发测试、长时间 soak test（持续压力测试）和线性化检查才算数；直接把一个循环数组叫作无锁队列，是过不了这几关的。
 
 下面的示例只展示准入语义。事件使用预先分配的 `sceneId`，避免在入口处理 URL、路由名和动态标签。
 
@@ -169,7 +169,7 @@ class ApmIngress(
 <!-- gracker-diagram: ch17-12-04-memory-budget -->
 ![队列容量与 SDK 总内存分别核算](../../assets/diagrams/ch17/ch17-12-04-memory-budget.png)
 
-图：驻留 buffer、并发构造对象、在途批次和编码工作区分别计入内存。 4096 是 buffer 元素数上限，不是总事件数、对象字节数或持久化承诺。
+图：驻留 buffer、并发构造对象、在途批次和编码工作区分别计入内存。4096 是 buffer 元素数上限，不是总事件数、对象字节数或持久化承诺。
 
 失败计数同样在 hot path（调用频繁、对耗时敏感的路径）：计数器预先创建、按固定枚举索引，只做有界自增。示例要求 `clock` 与 `ApmSelfMetrics` 的实现线程安全、不阻塞且不抛异常；这层保证要自己实现，Channel 的非挂起契约替它们兜不了底。队列关闭与容量满分开统计；计数失败不再递归投递普通 event。
 
@@ -180,11 +180,11 @@ class ApmIngress(
 <!-- gracker-diagram: ch17-12-03-channel-admission -->
 ![固定 SUSPEND 策略下的准入结果](../../assets/diagrams/ch17/ch17-12-03-channel-admission.png)
 
-图：固定4096容量与 SUSPEND 后，trySend 的成功、满和关闭分别统计。 ACCEPTED 只表示交付或入队；换成自定义丢弃策略，可能一边返回成功一边丢样，持久化与否要看后续链路。
+图：固定 4096 容量与 SUSPEND 后，trySend 的成功、满和关闭分别统计。ACCEPTED 只表示交付或入队；换成自定义丢弃策略，可能一边返回成功一边丢样，持久化与否要看后续链路。
 
 ### 2.2 三级优先级准入
 
-单个 FIFO（First In, First Out，先进先出） 队列满载时，普通帧样本可能先占满所有 slot，随后到达的 crash breadcrumb（崩溃前留下的少量事件线索）就无处可放。更稳妥的准入模型把事件分成三级：
+单个 FIFO（First In, First Out，先进先出）队列满载时，普通帧样本可能先占满所有 slot，随后到达的 crash breadcrumb（崩溃前留下的少量事件线索）就无处可放。更稳妥的准入模型把事件分成三级：
 
 | 级别 | 例子 | 队列满时的策略 |
 | --- | --- | --- |
@@ -217,21 +217,21 @@ IN_MEMORY -> ACTIVE -> SEALED -> UPLOADING -> ACKED -> DELETED
 noBackupFilesDir/apm/spool/<process-name-hash>/<process-instance-id>/
 ```
 
-上传协调者固定在主进程或专用诊断进程，负责扫描其他进程的 sealed 文件；其他进程只做 seal 和轻量 IPC（Inter-Process Communication，进程间通信） 通知，通知丢失时由下次扫描补上。需要从多个进程安全地提交 WorkManager 请求时，显式接入 `androidx.work.multiprocess.RemoteWorkManager`，每个进程各自初始化一套未验证调度器的做法要避开。
+上传协调者固定在主进程或专用诊断进程，负责扫描其他进程的 sealed 文件；其他进程只做 seal 和轻量 IPC（Inter-Process Communication，进程间通信）通知，通知丢失时由下次扫描补上。需要从多个进程安全地提交 WorkManager 请求时，显式接入 `androidx.work.multiprocess.RemoteWorkManager`，每个进程各自初始化一套未验证调度器的做法要避开。
 
-同一个 mmap（memory-mapped file） active file 也只能有一个写进程：Java/Kotlin 的进程内锁只覆盖本进程，文件锁只提供互斥，记录何时算完整提交要靠 record commit protocol（记录何时算完整提交的协议） 自己约定。Mars xLog 的接入文档同样是这个要求：多进程各用独立日志文件。
+同一个 mmap（memory-mapped file） active file 也只能有一个写进程：Java/Kotlin 的进程内锁只覆盖本进程，文件锁只提供互斥，记录何时算完整提交要靠 record commit protocol（记录何时算完整提交的协议）自己约定。Mars xLog 的接入文档同样是这个要求：多进程各用独立日志文件。
 
 <!-- gracker-diagram: ch17-12-07-process-isolation -->
 ![每进程独立写入与统一上传协调](../../assets/diagrams/ch17/ch17-12-07-process-isolation.png)
 
-图：每个 SDK 进程实例拥有独立队列与 active 分片，协调者扫描 sealed 文件并统一调度。 PID 会重用；WebView 隔离 renderer 不自动运行宿主 SDK，文件锁也不提供记录提交协议。
+图：每个 SDK 进程实例拥有独立队列与 active 分片，协调者扫描 sealed 文件并统一调度。PID 会重用；WebView 隔离 renderer 不自动运行宿主 SDK，文件锁也不提供记录提交协议。
 
 ### 3.1 crash handler 的最小职责
 
-Java 未捕获异常、native signal、OOM（Out of Memory，内存耗尽） 和系统结束进程，这几种场景下能安全执行的操作各不相同：
+Java 未捕获异常、native signal、OOM（Out of Memory，内存耗尽）和系统结束进程，这几种场景下能安全执行的操作各不相同：
 
 - Java uncaught handler 仍在故障进程内，锁、堆和线程状态可能已损坏；
-- native fatal signal handler 里只能调用 async-signal-safe（POSIX 明确允许在信号处理器中调用） 函数，也就是那个极小的函数集合；Java、malloc、常规日志和复杂文件 API 都不安全；
+- native fatal signal handler 里只能调用 async-signal-safe（POSIX 明确允许在信号处理器中调用）函数，也就是那个极小的函数集合；Java、malloc、常规日志和复杂文件 API 都不安全；
 - OOM 后再创建大 event、压缩或 dump heap 很容易触发二次失败；
 - LMK（Low Memory Killer，系统因内存压力终止进程）、force-stop、设备掉电与 `SIGKILL` 没有应用清理回调。
 
@@ -271,7 +271,7 @@ Java `MappedByteBuffer.force()` 会把 read/write mapping 的修改强制写到�
 <!-- gracker-diagram: ch17-12-11-durable-rename -->
 ![记录同步、名称切换与目录持久性](../../assets/diagrams/ch17/ch17-12-11-durable-rename.png)
 
-图：先定义允许丢失窗口，再分别完成映射数据同步、封口与名称提交。 MappedByteBuffer.force 与 FileChannel.force 作用不同，rename 的原子性也顶替不了父目录同步。
+图：先定义允许丢失窗口，再分别完成映射数据同步、封口与名称提交。MappedByteBuffer.force 与 FileChannel.force 作用不同，rename 的原子性也顶替不了父目录同步。
 
 ### 4.2 可恢复分片的文件格式
 
@@ -294,7 +294,7 @@ record:
 <!-- gracker-diagram: ch17-12-12-ab-commit -->
 ![A/B superblock 的提交与恢复](../../assets/diagrams/ch17/ch17-12-12-ab-commit.png)
 
-图：记录数据先同步，再提交下一代 A/B 元数据，恢复只接受校验完整的已提交前缀。 checksum 正确只说明内容未损坏，来源可信与否另看认证；提交点之外的完整字节也不会自动算作已提交记录。
+图：记录数据先同步，再提交下一代 A/B 元数据，恢复只接受校验完整的已提交前缀。checksum 正确只说明内容未损坏，来源可信与否另看认证；提交点之外的完整字节也不会自动算作已提交记录。
 
 ### 4.3 预分配、磁盘满与 `SIGBUS`
 
@@ -314,7 +314,7 @@ record:
 <!-- gracker-diagram: ch17-12-13-preallocation-failures -->
 ![预分配、映射失败与截短风险](../../assets/diagrams/ch17/ch17-12-13-preallocation-failures.png)
 
-图：在 worker 上准备有限文件，初始失败受控回退，活跃映射禁止截短和路径复用。 预分配也会失败；已建立映射后的 SIGBUS 统一靠 Java catch 恢复是行不通的，unlink 与 truncate 不同。
+图：在 worker 上准备有限文件，初始失败受控回退，活跃映射禁止截短和路径复用。预分配也会失败；已建立映射后的 SIGBUS 统一靠 Java catch 恢复是行不通的，unlink 与 truncate 不同。
 
 纯 Java 还要注意 mapping 生命周期：关闭 FileChannel 不会让 MappedByteBuffer 立即失效，Android 17 的这组公开 API 没有可依赖的同步 unmap。Linux unlink 只移除路径名，已有映射不会仅因名字被删除就立即失效；但会破坏基于路径的发现、上传和配额管理，空间也可能等最后引用消失才释放。truncate 后访问文件尾以外则可能 SIGBUS，这是两件事，要分开处理。
 
@@ -323,9 +323,9 @@ record:
 <!-- gracker-diagram: ch17-12-14-mapping-lifetime -->
 ![映射生命周期与小型 journal 复用](../../assets/diagrams/ch17/ch17-12-14-mapping-lifetime.png)
 
-图：长期小 journal 可在 worker 复制已提交块为普通 sealed 文件，再受控复用。 关闭 FileChannel 不使已有 mapping 立即失效；纯 Java 不依赖同步 unmap 或提前截短复用。
+图：长期小 journal 可在 worker 复制已提交块为普通 sealed 文件，再受控复用。关闭 FileChannel 不使已有 mapping 立即失效；纯 Java 不依赖同步 unmap 或提前截短复用。
 
-`mmap` 本身只是缓冲与访问方式。crash-safe（进程异常终止后仍可判定并恢复有效记录）这个性质，要靠文件格式和恢复逻辑自己实现。Mars、Logan 的源码适合学习预分配、fallback（主路径失败后的受限备用方案） 和恢复思路；只复制一个 `mmap()` 调用，是学不到这些的。
+`mmap` 本身只是缓冲与访问方式。crash-safe（进程异常终止后仍可判定并恢复有效记录）这个性质，要靠文件格式和恢复逻辑自己实现。Mars、Logan 的源码适合学习预分配、fallback（主路径失败后的受限备用方案）和恢复思路；只复制一个 `mmap()` 调用，是学不到这些的。
 
 ## 5. 编码与文件 envelope 的选型
 
@@ -340,10 +340,10 @@ record:
 
 runtime 在这里指随 App 一起运行的协议支持库。Protobuf Lite 适合资源受限设备，但 schema 规则照样要执行：线上 field number 不改、不复用，删除字段后标记 `reserved`，enum 保留对 unknown value（新值未被旧客户端识别）的处理，批次大小设上限。
 
-Lite runtime 没有 full runtime 那种能在运行时读取消息结构、按字段动态访问的 descriptor/reflection（运行时读取消息结构并按字段动态访问） 能力，服务端工具要按“端侧没有完整描述信息”来设计。
+Lite runtime 没有 full runtime 那种能在运行时读取消息结构、按字段动态访问的 descriptor/reflection（运行时读取消息结构并按字段动态访问）能力，服务端工具要按“端侧没有完整描述信息”来设计。
 
 
-FlatBuffers 的“直接访问”指读取时无需先 unpack（展开） 成第二份对象表示；写入侧照样有成本，遍历快慢也要看具体访问模式。APM 多数场景是“写一次、服务端读一次”，值不值得引入，由写入成本、APK 体积、服务端生态和 schema 维护共同决定。
+FlatBuffers 的“直接访问”指读取时无需先 unpack（展开）成第二份对象表示；写入侧照样有成本，遍历快慢也要看具体访问模式。APM 多数场景是“写一次、服务端读一次”，值不值得引入，由写入成本、APK 体积、服务端生态和 schema 维护共同决定。
 
 
 一个常见的存储结构是外层 block envelope 加内部 event；envelope 包住一批事件，描述编码和安全参数：
@@ -363,25 +363,25 @@ block envelope:
   authenticated_ciphertext
 ```
 
-内部可放多个 length-delimited Protobuf event，先写长度再写字节。示例选 AES-GCM 这类 AEAD：先压缩，再加密并认证；同一 key 下 IV/nonce 只用一次，进程重启也不得把同一密钥的计数器简单归零。重传复用原密文，不重新用相同 nonce 加密变化的明文。版本、算法、长度、序号及 key ID 纳入规范化 AAD；密钥建立与服务端如何得到解密材料见第7节。
+内部可放多个 length-delimited Protobuf event，先写长度再写字节。示例选 AES-GCM 这类 AEAD：先压缩，再加密并认证；同一 key 下 IV/nonce 只用一次，进程重启也不得把同一密钥的计数器简单归零。重传复用原密文，不重新用相同 nonce 加密变化的明文。版本、算法、长度、序号及 key ID 纳入规范化 AAD；密钥建立与服务端如何得到解密材料见第 7 节。
 
 <!-- gracker-diagram: ch17-12-17-block-envelope -->
 ![压缩、AEAD 与可认证的 envelope](../../assets/diagrams/ch17/ch17-12-17-block-envelope.png)
 
-图：把有界事件批次压缩后用 AES-GCM 加密，规范化头字段作为 AAD。 同 key 下 IV 不重用，跨重启不从0重置；重传复用原密文，密钥建立另有协议。
+图：把有界事件批次压缩后用 AES-GCM 加密，规范化头字段作为 AAD。同 key 下 IV 不重用，跨重启不从 0 重置；重传复用原密文，密钥建立另有协议。
 
 解码前先限制文件/批次/记录长度、事件数和工作区；密文认证通过后再解压，并对真实解压输出逐块计数、到限中止。未认证的 `uncompressed_length` 只能当受限候选，直接照它申请大数组要避免；认证成功也不免除解压上限。
 
 <!-- gracker-diagram: ch17-12-18-decode-budget -->
 ![认证与解压上限分别执行](../../assets/diagrams/ch17/ch17-12-18-decode-budget.png)
 
-图：先限制格式、字段和工作区，认证成功后再解压并按真实输出持续计数。 未认证的长度字段先当受限候选，直接照它分配大数组要避免；认证成功也不免除资源上限。
+图：先限制格式、字段和工作区，认证成功后再解压并按真实输出持续计数。未认证的长度字段先当受限候选，直接照它分配大数组要避免；认证成功也不免除资源上限。
 
-选型 benchmark 使用 App 的真实字段分布，在低端32/64位与当前主力设备分别跑1000、10000条事件，记录：
+选型 benchmark 使用 App 的真实字段分布，在低端 32/64 位与当前主力设备分别跑 1000、10000 条事件，记录：
 
 - 编码/解码 wall time 与 thread CPU time；
 - payload 与压缩后字节数；
-- Java/native 分配量和 GC（Garbage Collection） 次数；
+- Java/native 分配量和 GC（Garbage Collection）次数；
 - 峰值工作区与大对象数量；
 - 版本兼容、损坏输入和超大字段的行为。
 
@@ -408,7 +408,7 @@ block envelope:
 
 重取证优先复用 [15.7 ProfilingManager](../ch15-other-tools/07-profiling-manager.md) 已定义的两类流程：app-driven（App 主动请求）和 system-triggered（App 登记条件、系统决定是否采集）。系统会限流，请求也未必被满足，所以客户端要另设更低的本地预算。Perfetto SDK 的 system mode 适合 adb/lab 场景；in-process mode 无需特权，覆盖范围就是上面说的进程内事件。
 
-Android 17 的 OOM system trigger 还有一个容易遗漏的前提：App 安装了自定义 uncaught exception handler 时，处理结束后必须继续调用系统默认 handler，这类 OOM 触发采集才能由平台完成。远程指令在执行前应把该接入条件也算入 capability（平台能力） 检查。
+Android 17 的 OOM system trigger 还有一个容易遗漏的前提：App 安装了自定义 uncaught exception handler 时，处理结束后必须继续调用系统默认 handler，这类 OOM 触发采集才能由平台完成。远程指令在执行前应把该接入条件也算入 capability（平台能力）检查。
 
 
 Java heap dump 可能包含 token（访问凭据）、会话、地址、订单和密钥材料。普通用户设备上，只放行有明确数据用途、可审计授权和严格人群范围的方案；端侧类计数或摘要能回答的问题，就让原始 heap 留在端侧。内部 build 与用户支持场景也要设置文件上限、加密、访问审计和短保留期。
@@ -436,14 +436,14 @@ wall clock 可能被用户修改，数字签名管不到设备现在的时间。
 <!-- gracker-diagram: ch17-12-22-ttl-clock -->
 ![同 boot 单调时间与跨重启新鲜度](../../assets/diagrams/ch17/ch17-12-22-ttl-clock.png)
 
-图：用认证 server time 与 elapsed 锚点推进 TTL，进程重启不重置到期和已用预算。 签名 expires_at 证明不了现在的时间；确认不了 boot 或可信时间时，先挂起重取证并重新获取配置。
+图：用认证 server time 与 elapsed 锚点推进 TTL，进程重启不重置到期和已用预算。签名 expires_at 证明不了现在的时间；确认不了 boot 或可信时间时，先挂起重取证并重新获取配置。
 
 服务端 kill switch 依赖网络，端侧 hard limit 仍然要自己兜底。
 
 <!-- gracker-diagram: ch17-12-21-command-validation -->
 ![指令从签名到执行资格的核验](../../assets/diagrams/ch17/ch17-12-21-command-validation.png)
 
-图：指令通过签名、版本、新鲜度、人群、授权、能力与预算核验，远端放宽不了本地硬上限。 TLS 与数字签名各有职责；网络失联时本地预算和拒绝规则仍需独立工作。
+图：指令通过签名、版本、新鲜度、人群、授权、能力与预算核验，远端放宽不了本地硬上限。TLS 与数字签名各有职责；网络失联时本地预算和拒绝规则仍需独立工作。
 
 “特定 UserID”类指令要把原始账号挡在配置和 APM 文件之外。服务端应生成短期、仅限当前 App 使用的 App scoped（只能在当前 App 范围使用） opaque cohort token（不携带可读账号信息的目标令牌）；也可在获得相应授权的支持流程中使用一次性 case ID。指令回执只带 command/case ID、结果码和预算消耗。
 
@@ -464,7 +464,7 @@ crash loop 是 App 启动后很快再次崩溃并反复重启的循环；重取�
 <!-- gracker-diagram: ch17-12-23-command-states -->
 ![指令验证、布防、预算预留与终止](../../assets/diagrams/ch17/ch17-12-23-command-states.png)
 
-图：指令先验证再布防，进入 RUNNING 前持久预留预算，异常恢复不反复执行。 拒绝可发生在验证阶段，过期或预算耗尽可中止后续阶段；回收只归还能安全归还的预算。
+图：指令先验证再布防，进入 RUNNING 前持久预留预算，异常恢复不反复执行。拒绝可发生在验证阶段，过期或预算耗尽可中止后续阶段；回收只归还能安全归还的预算。
 
 ## 7. 网络投递的两条路径
 
@@ -475,14 +475,14 @@ crash loop 是 App 启动后很快再次崩溃并反复重启的循环；重取�
 
 WorkManager 是持久、可延迟后台任务的推荐 API：工作状态会被持久化，进程退出或设备重启后仍可由系统重新调度。它支持网络、电量、充电和存储约束，执行时刻则听系统调度。普通 worker 通常有约 10 分钟执行窗口；大 trace/Hprof 应切块和续传，每次都在窗口内收尾。
 
-long-running worker 借助 foreground service 继续执行，并按要求显示用户可见通知。Android16起它仍通过 JobScheduler 调度，可能耗尽 App 的 job quota；提升为 foreground 并不自动获得无限执行额度。直接启动前台服务还受启动条件、服务类型和权限限制，用户真正发起的数据传输则另核对 user-initiated data transfer 的适用条件。APM 大附件默认分块、限量和续传。
+long-running worker 借助 foreground service 继续执行，并按要求显示用户可见通知。Android 16 起它仍通过 JobScheduler 调度，可能耗尽 App 的 job quota；提升为 foreground 并不自动获得无限执行额度。直接启动前台服务还受启动条件、服务类型和权限限制，用户真正发起的数据传输则另核对 user-initiated data transfer 的适用条件。APM 大附件默认分块、限量和续传。
 
 上传使用 unique work 合并持久调度入口，输入只放 batch ID，实际字节留在 spool。合并的只是调度入口，foreground fast path 的文件锁、多进程之间的互斥，都要另靠同一套机制解决：两条上传路径通过同一持久索引原子 claim 批次，记录 owner/attempt 和可恢复租约，仅 owner 能推进状态；中断后重新确认归属再重试。事件上行整体按至少一次投递设计，重复的业务效果由服务端幂等 batch ID 消除；“网络只发一次”这样的宣称，我们给不了。worker 执行：
 
 <!-- gracker-diagram: ch17-12-24-upload-two-paths -->
 ![前台快路径和 WorkManager 共享批次 claim](../../assets/diagrams/ch17/ch17-12-24-upload-two-paths.png)
 
-图：前台上传与持久 worker 共用同一索引的原子 claim，按 owner/attempt 协调。 unique work 合并的是调度入口，另一条快路径和其他进程的文件互斥要靠共享索引。
+图：前台上传与持久 worker 共用同一索引的原子 claim，按 owner/attempt 协调。unique work 合并的是调度入口，另一条快路径和其他进程的文件互斥要靠共享索引。
 
 ```text
 select SEALED
@@ -498,7 +498,7 @@ select SEALED
 <!-- gracker-diagram: ch17-12-25-ack-before-delete -->
 ![至少一次投递与确认后删除](../../assets/diagrams/ch17/ch17-12-25-ack-before-delete.png)
 
-图：上传可重复发送，服务端按 batch ID 与完整 hash 幂等提交，本地持久 ACKED 后再清理。 content hash 管的是内容一致，鉴权与签名另走机制；块级接收或任意 HTTP 响应都顶替不了完整提交确认。
+图：上传可重复发送，服务端按 batch ID 与完整 hash 幂等提交，本地持久 ACKED 后再清理。content hash 管的是内容一致，鉴权与签名另走机制；块级接收或任意 HTTP 响应都顶替不了完整提交确认。
 
 重试策略区分响应：
 
@@ -508,12 +508,12 @@ select SEALED
 - schema/4xx 永久错误：隔离批次并上报摘要，不无限重试；
 - 文件 hash 不一致：停止上传，进入 `CORRUPT`，保住唯一证据。
 
-WorkManager 公开 backoff 只有 LINEAR/EXPONENTIAL，最小10秒；它的调度精度有限，业务要的 full jitter 或 Retry-After 还得自己实现。把持久的 `next_attempt_at` 与服务端冷却先记入索引，worker 被调度时再核对到期、约束和 owner；未到期则安排后续工作并退出，别占着线程 sleep。Retry-After 与 WorkManager 自身退避取更晚的允许时刻，重启也清不掉已记下的冷却。
+WorkManager 公开 backoff 只有 LINEAR/EXPONENTIAL，最小 10 秒；它的调度精度有限，业务要的 full jitter 或 Retry-After 还得自己实现。把持久的 `next_attempt_at` 与服务端冷却先记入索引，worker 被调度时再核对到期、约束和 owner；未到期则安排后续工作并退出，别占着线程 sleep。Retry-After 与 WorkManager 自身退避取更晚的允许时刻，重启也清不掉已记下的冷却。
 
 
-除了重试节奏，上传的时间点也要管：固定每15分钟整点上传会形成设备群请求洪峰。我们让每设备在允许窗口内选一个随机偏移，并在配置周期内保持稳定；这与按分钟精确执行是两回事。
+除了重试节奏，上传的时间点也要管：固定每 15 分钟整点上传会形成设备群请求洪峰。我们让每设备在允许窗口内选一个随机偏移，并在配置周期内保持稳定；这与按分钟精确执行是两回事。
 
-Crash/ANR 先传小摘要，等 unmetered（非按流量计费网络）、battery-not-low（电量不低）、storage-not-low（可用存储不低） 等约束满足后再传大附件。
+Crash/ANR 先传小摘要，等 unmetered（非按流量计费网络）、battery-not-low（电量不低）、storage-not-low（可用存储不低）等约束满足后再传大附件。
 
 压缩、加密和网络放 worker，已压缩的 Perfetto/归档文件避免再次压缩。TLS 保护传输；本地加密与服务端解密分别设计：设备 Keystore 的不可导出密钥适合保护本机文件，服务端并不因拿到相同 `key_id` 就拥有它。
 
@@ -522,7 +522,7 @@ Crash/ANR 先传小摘要，等 unmetered（非按流量计费网络）、batter
 <!-- gracker-diagram: ch17-12-27-key-envelopes -->
 ![本地 Keystore 与服务端解密各自需要密钥材料](../../assets/diagrams/ch17/ch17-12-27-key-envelopes.png)
 
-图：按批数据密钥加密内容，服务端公钥封装给服务端，设备 Keystore 另保护本地副本。 key_id 只标识密钥，不可导出的设备密钥交不到服务端手上；临时 DEK 仍可能出现在进程内存。
+图：按批数据密钥加密内容，服务端公钥封装给服务端，设备 Keystore 另保护本地副本。key_id 只标识密钥，不可导出的设备密钥交不到服务端手上；临时 DEK 仍可能出现在进程内存。
 
 ## 8. 断路器与自我保护
 
@@ -552,12 +552,12 @@ Runtime heap headroom 指 Java heap 当前占用距离运行时上限还剩多�
 - 探测成功且成本恢复后才回到 `CLOSED`；
 - 连续失败增加冷却，但设置最大值，避免永久失去诊断能力。
 
-自保规则由 SDK 内置上限与已验签配置共同计算：远端最多把规则继续收紧，硬上限永远以客户端内置值为准。服务端失联、DNS（域名解析） 故障或 App 离线时，本地规则照常工作。
+自保规则由 SDK 内置上限与已验签配置共同计算：远端最多把规则继续收紧，硬上限永远以客户端内置值为准。服务端失联、DNS（域名解析）故障或 App 离线时，本地规则照常工作。
 
 <!-- gracker-diagram: ch17-12-28-circuit-breaker -->
 ![断路器的冷却与有限探测](../../assets/diagrams/ch17/ch17-12-28-circuit-breaker.png)
 
-图：持续超成本或失败后熔断，冷却到期只放少量探测，成功后恢复。 冷却有上限且跨重启保存；服务端失联不解除本地硬限制，P0保留容量仍有限。
+图：持续超成本或失败后熔断，冷却到期只放少量探测，成功后恢复。冷却有上限且跨重启保存；服务端失联不解除本地硬限制，P0 保留容量仍有限。
 
 ## 9. APM 监控 APM 的指标口径
 
@@ -587,7 +587,7 @@ profileable build 是清单允许性能分析工具附加、但区别于 debugga
 
 发布策略从 0.01%/内部设备开始，按 Android 版本、RAM 档位（设备物理内存分组）、ABI（如 `arm64-v8a`）、厂商和 App 进程分别统计成本分布。
 
-入口耗时、ANR/crash、OOM、耗电、流量、storage repair（存储启动修复） 都稳定，且目标样本中成功产出有效数据的比例没有下降后，才扩大发布比例。
+入口耗时、ANR/crash、OOM、耗电、流量、storage repair（存储启动修复）都稳定，且目标样本中成功产出有效数据的比例没有下降后，才扩大发布比例。
 
 
 ## 10. App 私有存储、备份与隐私
@@ -604,9 +604,9 @@ Scoped storage（分区存储）限制的是 shared/external storage，即多个
 | 临时 Hprof/trace | 专用私有目录 | 与普通日志分开权限、配额、上传和保留 |
 | 用户导出诊断包 | 私有源文件 + FileProvider/SAF | 用户明确触发，授予短期 URI 权限 |
 
-FileProvider 通过 `content://` URI（统一资源标识符） 临时分享 App 私有文件；SAF（Storage Access Framework，存储访问框架）让用户通过系统选择器决定导出位置。两者都只授予本次操作需要的读写权限，并在使用结束后撤销或让权限自然失效。
+FileProvider 通过 `content://` URI（统一资源标识符）临时分享 App 私有文件；SAF（Storage Access Framework，存储访问框架）让用户通过系统选择器决定导出位置。两者都只授予本次操作需要的读写权限，并在使用结束后撤销或让权限自然失效。
 
-`cacheDir` 可在上传前被系统删除，故障摘要选择受控可靠 spool。`noBackupFilesDir` 默认排除备份，卸载、清数据和文件系统故障仍会丢失；若用 filesDir 或平台 files/profiling，按 target/系统版本分别验证 cloud backup 与 device transfer 排除规则。仅凭 allowBackup=false 就认定所有OEM都禁用了设备迁移，是靠不住的。私有存储隔离之外，服务端访问控制和敏感文件加密仍有各自职责。
+`cacheDir` 可在上传前被系统删除，故障摘要选择受控可靠 spool。`noBackupFilesDir` 默认排除备份，卸载、清数据和文件系统故障仍会丢失；若用 filesDir 或平台 files/profiling，按 target/系统版本分别验证 cloud backup 与 device transfer 排除规则。仅凭 allowBackup=false 就认定所有 OEM 都禁用了设备迁移，是靠不住的。私有存储隔离之外，服务端访问控制和敏感文件加密仍有各自职责。
 
 
 采集层执行数据最小化：
@@ -618,7 +618,7 @@ FileProvider 通过 `content://` URI（统一资源标识符） 临时分享 App
 - heap dump、trace 和日志正文分别设置授权、访问人群与保留期；
 - 上传确认、过期、撤回授权和 command 结束都触发可审计删除。
 
-多进程清理器与上传器共享 owner/claim 状态，只清理未被 active writer 或上传任务占用、已经过期或已确认的分片；不要求创建该 sealed 分片的进程先退出。判断不了 owner 是否仍活跃时先延迟清理，并在后续恢复中依据实例代次、锁/租约和状态重新核验。仅凭PID存在、文件年龄或“已经冷启动”，都证明不了其他进程已停止使用；清理不 truncate 活跃映射。
+多进程清理器与上传器共享 owner/claim 状态，只清理未被 active writer 或上传任务占用、已经过期或已确认的分片；不要求创建该 sealed 分片的进程先退出。判断不了 owner 是否仍活跃时先延迟清理，并在后续恢复中依据实例代次、锁/租约和状态重新核验。仅凭 PID 存在、文件年龄或“已经冷启动”，都证明不了其他进程已停止使用；清理不 truncate 活跃映射。
 
 
 ## 11. 完整架构与排查入口
@@ -632,7 +632,7 @@ FileProvider 通过 `content://` URI（统一资源标识符） 临时分享 App
 <!-- gracker-diagram: ed17-12-apm-data-control-recovery -->
 ![APM 数据流、控制与恢复](../../assets/diagrams/ch17/ed17-12-apm-data-control-recovery.png)
 
-图：各进程有界准入与单写者提交，上传共享 claim 并在完整确认后清理。 本地预算、固定计数器与启动恢复独立作用于链路；fatal signal 走预留安全路径，持久性和实际成本另验。
+图：各进程有界准入与单写者提交，上传共享 claim 并在完整确认后清理。本地预算、固定计数器与启动恢复独立作用于链路；fatal signal 走预留安全路径，持久性和实际成本另验。
 
 
 从图上看，业务线程到文件、网络之间没有直连边，副作用都要经过队列和 writer。P0 走保留容量，仍受硬上限；P1/P2 可按成本丢弃。active mmap 只有单写者，上传只读 sealed 文件；断路器读固定计数器，与普通事件队列分开。

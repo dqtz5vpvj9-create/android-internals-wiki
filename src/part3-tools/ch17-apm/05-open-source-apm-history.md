@@ -130,7 +130,7 @@ Collie 的 1.1.8 tag 指向 `a079c99d`，与本文分析的 master `bfdc6782` �
 
 我们从 BlockCanary 1.5.0 看起：它用公开的 `Looper.setMessageLogging()` 安装 `Printer` 回调，拿到主线程每次 `Message` dispatch（从开始执行到执行结束）的起止时刻，再由后台线程采样主线程 Java 栈。
 
-它测到的是一次 dispatch（消息开始执行到执行结束） 的 wall time（实际经过时间）；delivery delay（消息入队后未执行的等待）和从输入处理、RenderThread、GPU 执行到画面 present（提交显示）的完整帧流水线，都在这个测量窗口之外。
+它测到的是一次 dispatch（消息开始执行到执行结束）的 wall time（实际经过时间）；delivery delay（消息入队后未执行的等待）和从输入处理、RenderThread、GPU 执行到画面 present（提交显示）的完整帧流水线，都在这个测量窗口之外。
 
 固定源码的 Android 版本属性仍为 1.5.0，使用 AGP 2.2.2、`compileSdk 23` 和 `targetSdk 22`。analyzer manifest 声明旧存储与电话权限，Android UI 模块的 Activity 带 intent-filter 却没有显式 `exported`；通知代码未建 channel，`PendingIntent` 只有 `FLAG_UPDATE_CURRENT`，`BlockInfo` 还尝试读取设备 ID。现代宿主要分别处理清单合并、通知、mutability、存储和标识权限；无论借用原理还是维护迁移分支，都要按 Android 17 重新验收，旧版默认路径本身给不了兼容方案。
 
@@ -148,9 +148,9 @@ Collie 的 1.1.8 tag 指向 `a079c99d`，与本文分析的 master `bfdc6782` �
 <!-- gracker-diagram: ch17-05-03-block-sampling-window -->
 ![dispatch窗口内的延迟采样](../../assets/diagrams/ch17/ch17-05-03-block-sampling-window.png)
 
-图：阈值1000ms、间隔300ms的示例，名义采样约在800ms和1100ms，结束时还需区间内有栈。 非实测时间轴；任务排队和抓栈耗时会推迟采样，默认间隔其实是1000ms。
+图：阈值 1000 ms、间隔 300 ms 的示例，名义采样约在 800 ms 和 1100 ms，结束时还需区间内有栈。这并非实测时间轴；任务排队和抓栈耗时会推迟采样，默认间隔其实是 1000 ms。
 
-采样栈只说明取样瞬间主线程停在什么位置。wall time 很长、thread CPU time（该线程占用 CPU 的时间）却很短时，我们要再借 Perfetto（Android 系统 trace 分析工具） 区分 Runnable 饥饿（可运行却长期抢不到 CPU）、Binder 跨进程调用、锁等待或 I/O；两者都长，才更接近持续占用 CPU。
+采样栈只说明取样瞬间主线程停在什么位置。wall time 很长、thread CPU time（该线程占用 CPU 的时间）却很短时，我们要再借 Perfetto（Android 系统 trace 分析工具）区分 Runnable 饥饿（可运行却长期抢不到 CPU）、Binder 跨进程调用、锁等待或 I/O；两者都长，才更接近持续占用 CPU。
 
 
 还有一个问题要提前想清楚：`Looper` 只有一个 message logger 槽位，后安装的 SDK 会覆盖先安装者，BlockCanary 停止时还会把它设为 `null`。自研方案若由应用控制所有观察者，可以装一个统一分发器（hub）转发回调；另一个 SDK 之后再来覆盖，这条路也拦不住。Android 17 里还有隐藏的 `Looper.Observer` 和 slow-log 阈值，但隐藏 API 不在普通应用的稳定契约之内，反射方案当不了长期替代。
@@ -175,7 +175,7 @@ ArgusAPM 是 360 在 2018 年开源的客户端 APM。它把编译期织入、�
 <!-- gracker-diagram: ch17-05-06-argus-data-flow -->
 ![编译织入、Provider汇总与宿主上传](../../assets/diagrams/ch17/ch17-05-06-argus-data-flow.png)
 
-图：旧插件插入采集逻辑，运行时经Provider和缓存进入SQLite，再由宿主上传接口处理。 Provider须由宿主正确声明authority；入队、入库和服务端确认是三个独立的检查点。
+图：旧插件插入采集逻辑，运行时经 Provider 和缓存进入 SQLite，再由宿主上传接口处理。Provider 须由宿主正确声明 authority；入队、入库和服务端确认是三个独立的检查点。
 
 | 旧能力 | 实际来源与口径 | Android 17 处理 |
 |---|---|---|
@@ -187,7 +187,7 @@ ArgusAPM 是 360 在 2018 年开源的客户端 APM。它把编译期织入、�
 | 内存/文件/进程 | PSS（Proportional Set Size，按共享页比例分摊的进程内存）快照、目录遍历和 SDK 看到的进程 | 不能据此判定泄漏、存储介质状态或进程存活率 |
 | 函数/WebView | 固定签名 ASM；末次代码中 task 未完整注册 | 不能因 class 存在就宣称功能可用 |
 
-构建期的问题集中在插件一侧：旧 Gradle 插件依赖 `AppExtension`、`registerTransform()` 与旧 AGP 内部类型，consumer rules（随 AAR 传给宿主的 R8 规则）还包含无参数 `-dontwarn`、`-dontoptimize` 和宽泛 keep；R8 负责压缩、优化和混淆 Java/Kotlin 字节码。迁移时我们改用按 variant（构建变体） 工作的 Android Components Instrumentation/Artifacts API，并重新验证 Kotlin、协程、lambda、R8、增量构建与插桩失败行为。替换一个类名，离完成迁移还差得远。
+构建期的问题集中在插件一侧：旧 Gradle 插件依赖 `AppExtension`、`registerTransform()` 与旧 AGP 内部类型，consumer rules（随 AAR 传给宿主的 R8 规则）还包含无参数 `-dontwarn`、`-dontoptimize` 和宽泛 keep；R8 负责压缩、优化和混淆 Java/Kotlin 字节码。迁移时我们改用按 variant（构建变体）工作的 Android Components Instrumentation/Artifacts API，并重新验证 Kotlin、协程、lambda、R8、增量构建与插桩失败行为。替换一个类名，离完成迁移还差得远。
 
 运行时要移除的东西也不少：`ActivityThread.mInstrumentation` 反射、`/data/anr`、旧动态广播、`NetworkInfo`、不可重置设备标识、外部存储根目录和全局 WebView JS bridge（JavaScript 与 Java 的双向调用入口）。本轮所读核心 Java 源码没有给出 native 采集实现；即使所用核心 AAR 不带 native `.so`（原生共享库），宿主 uploader 或其他组合 SDK 仍要自己满足 16 KB page size（原生库装载对齐）要求。
 
@@ -199,7 +199,7 @@ ArgusAPM 是 360 在 2018 年开源的客户端 APM。它把编译期织入、�
 <!-- gracker-diagram: ch17-05-08-argus-final-batch-ack -->
 ![满批与末批上传失败的不同删除行为](../../assets/diagrams/ch17/ch17-05-08-argus-final-batch-ack.png)
 
-图：DataHelper对满1000条检查回调结果，末批不足1000条却忽略结果并清理。 现代方案应在明确ACK后推进删除游标，保留有界重试并以event_id去重。
+图：`DataHelper` 对满 1000 条检查回调结果，末批不足 1000 条却忽略结果并清理。现代方案应在明确 ACK 后推进删除游标，保留有界重试并以 `event_id` 去重。
 
 网络采集的 OkHttp 路径还把本次 `OkHttpData` 放在 interceptor 实例字段；同一实例并发处理请求时可能串写。成功响应且 Body 长度未知时用 `source.request(Long.MAX_VALUE)` 读到结束，可能增加内存与等待，而记录的 `costTime` 在这之前就已结算。迁移时要使用每次调用独立的状态，并区分收到响应头、读完 Body、失败与取消。
 
@@ -216,7 +216,7 @@ ArgusAPM 是 360 在 2018 年开源的客户端 APM。它把编译期织入、�
 
 ## AndroidGodEye：浏览器看板式调试平台
 
-AndroidGodEye 分成 Core、Debug Monitor 和 Toolbox 三层：Core 生成性能数据，Debug Monitor 在浏览器展示，Toolbox 提供 LeakCanary、xCrash、OkHttp 等组合入口。其 README 列出的范围很广，包括 CPU、Battery、FPS、PSS、Heap（堆内存）、RAM（物理内存）、流量、卡顿、启动、线程 dump、页面耗时、Java/native Crash、ANR、方法耗时、APK（应用安装包） 体积、图片与 View 检查。
+AndroidGodEye 分成 Core、Debug Monitor 和 Toolbox 三层：Core 生成性能数据，Debug Monitor 在浏览器展示，Toolbox 提供 LeakCanary、xCrash、OkHttp 等组合入口。其 README 列出的范围很广，包括 CPU、Battery、FPS、PSS、Heap（堆内存）、RAM（物理内存）、流量、卡顿、启动、线程 dump、页面耗时、Java/native Crash、ANR、方法耗时、APK（应用安装包）体积、图片与 View 检查。
 
 这套设计里值得借鉴的，是“采集能力与查看方式分离”：
 
@@ -224,14 +224,14 @@ AndroidGodEye 分成 Core、Debug Monitor 和 Toolbox 三层：Core 生成性能
 - Release 生产包只保留经过预算和脱敏的事件，不携带浏览器面板或调试入口。
 - 每个 monitor 单独声明采样周期、线程、权限、缓存上限和停用动作。
 
-放到今天的新项目里，它就算不上能直接依赖的二进制基线了：固定版本仍使用 AGP 3.2.1，`compileSdk` 与 `targetSdk` 都是 29，发布脚本还保留着已停止更新、进入退役状态的 JCenter 仓库流程。接入这样的项目，我们要做构建迁移、依赖升级、manifest（组件与权限声明文件） 审核和模块级回归，远超改一个版本号的工作量。
+放到今天的新项目里，它就算不上能直接依赖的二进制基线了：固定版本仍使用 AGP 3.2.1，`compileSdk` 与 `targetSdk` 都是 29，发布脚本还保留着已停止更新、进入退役状态的 JCenter 仓库流程。接入这样的项目，我们要做构建迁移、依赖升级、manifest（组件与权限声明文件）审核和模块级回归，远超改一个版本号的工作量。
 
 如果团队喜欢 AndroidGodEye 的浏览器看板，可以复用它的信息架构：保留“模块列表—实时曲线—单次事件详情”的交互，再用自己的事件协议和采集器供数，这样就不会把旧运行时依赖一起带进 Release 包。固定 `GodEyeMonitorServer` 用 HTTP 和 `/refresh` WebSocket 向浏览器发送数据；“在浏览器查看”只描述查看方式，本机限定与生产认证都要另行确认。复用 UI 时还要限制调试服务的开启范围、网络可达性与字段内容。
 
 <!-- gracker-diagram: ch17-05-10-godeye-data-ui -->
 ![采集模块、观察者与浏览器看板](../../assets/diagrams/ch17/ch17-05-10-godeye-data-ui.png)
 
-图：Core模块产生数据，由观察者接到调试Monitor，再经HTTP/WebSocket服务供浏览器查看。 图表达分层职责；浏览器UI只说明查看方式，本机可达范围与生产鉴权要另行确认。
+图：Core 模块产生数据，由观察者接到调试 Monitor，再经 HTTP/WebSocket 服务供浏览器查看。图表达的是分层职责；浏览器 UI 只说明查看方式，本机可达范围与生产鉴权要另行确认。
 
 ## Collie：轻量实现里的指标陷阱
 
@@ -249,7 +249,7 @@ Collie 在 dispatch 开始时先往 `FpsThread` 的无界队列放一个任务�
 <!-- gracker-diagram: ch17-05-11-collie-stall-two-queues -->
 ![5000ms从何时开始计时](../../assets/diagrams/ch17/ch17-05-11-collie-stall-two-queues.png)
 
-图：dispatch开始先排入FpsThread，再由它安排Handler延时，最终只检查共享标志与Activity弱引用。 结束会修改invalid；队列延迟、复用标志和跨线程状态使它离精确5秒单消息判定还有距离。
+图：dispatch 开始先排入 `FpsThread`，再由它安排 Handler 延时，最终只检查共享标志与 Activity 弱引用。结束时会修改 `invalid`；队列延迟、复用标志和跨线程状态使它离精确 5 秒单消息判定还有距离。
 
 系统 ANR 分 input（输入） dispatch、BroadcastReceiver、Service、ContentProvider、无焦点窗口等多种类型，超时阈值也不是统一的 5 秒常量。如果要借这个回调触发抓 Java 栈，还需另加受控采样；当前 `onANRAppear` 本身没有抓栈：事件名可以写成 `main_dispatch_stall` 就好，`system_anr` 这个名字留给系统判定。
 
@@ -264,7 +264,7 @@ Collie 在 dispatch 开始时先往 `FpsThread` 的无界队列放一个任务�
 
 ### 启动、流量与泄漏的指标命名
 
-Collie README（固定 commit） 把启动方式写成 `ContentProvider+onwindforcus`，其中 `onwindforcus` 是 README 的原文拼写，指的是 window focus（窗口获得焦点）。但固定 commit 的 library manifest 并没有注册采集 Provider，源码里也找不到对应的 `ContentProvider`；当前实现要靠应用手动调用 `Collie.instance.init()`，再结合进程启动时间、一个透明 View 的 `onDraw()` 和 window focus 估算启动或页面可见耗时。
+Collie README（固定 commit）把启动方式写成 `ContentProvider+onwindforcus`，其中 `onwindforcus` 是 README 的原文拼写，指的是 window focus（窗口获得焦点）。但固定 commit 的 library manifest 并没有注册采集 Provider，源码里也找不到对应的 `ContentProvider`；当前实现要靠应用手动调用 `Collie.instance.init()`，再结合进程启动时间、一个透明 View 的 `onDraw()` 和 window focus 估算启动或页面可见耗时。
 
 这三个时间点都能辅助调试，离系统定义的 TTID 或 TTFD 还差一层：
 
@@ -280,7 +280,7 @@ Collie README（固定 commit） 把启动方式写成 `ContentProvider+onwindfo
 <!-- gracker-diagram: ch17-05-14-collie-rx-counter -->
 ![共享基线与重复累计](../../assets/diagrams/ch17/ch17-05-14-collie-rx-counter.png)
 
-图：只在创建时重置UID RX基线，每次pause仍减同一旧值，恢复页面后会重复累计。 多个页面共用基线且不检查UNSUPPORTED；旧数值当不了正确的页面流量。
+图：只在创建时重置 UID RX 基线，每次 pause 仍减同一旧值，恢复页面后会重复累计。多个页面共用基线且不检查 `UNSUPPORTED`；旧数值当不了正确的页面流量。
 
 更严重的是，`statsMap` 用 Activity 作强引用键，`TrafficStatsItem` 也保存 Activity；destroy 时只通知 listener，没有移除 map 项。启用这条路径会保留已销毁页面，进而污染它自己的泄漏提示。现代实现应及时释放生命周期引用，并以独立网络事件的 route、字节数、时间与页面上下文做关联。
 
@@ -322,7 +322,7 @@ Java 路径本身也要先修：`RabbitExceptionMonitor` 安装全局 handler �
 <!-- gracker-diagram: ch17-05-19-rabbit-crash-delegation -->
 ![异常捕获与默认处理链](../../assets/diagrams/ch17/ch17-05-19-rabbit-crash-delegation.png)
 
-图：原实现只在主线程异常时继续原handler，close只改标志，会留下提前返回的全局handler。 这些是固定源码行为；迁移应保留所有异常路径的原处理链，并移除Toast等待。
+图：原实现只在主线程异常时继续调用原 handler，`close` 只修改标志，会留下提前返回的全局 handler。这些属于固定源码行为；迁移应保留所有异常路径的原处理链，并移除 Toast 等待。
 
 ## 横向对比
 
@@ -360,7 +360,7 @@ Matrix 的 Trace Gradle 插件在固定 commit 中仍由 `MatrixTraceInjection` 
 
 ## Android 版本与 APM 能力演进
 
-平台实现固定到 AOSP（Android Open Source Project，Android 开源项目） `android-17.0.0_r1`，公开契约以官方 API 37 reference（官方 API 参考） 为准。版本表只记录与 APM 直接相关、能从公开 API 验证的变化。`ProcessLifecycleOwner`、`JankStats` 这些 Jetpack 库随依赖版本发布，我们把它们写成某个 Android 系统版本“新增”的平台 API 就错了。
+平台实现固定到 AOSP（Android Open Source Project，Android 开源项目）`android-17.0.0_r1`，公开契约以官方 API 37 reference（官方 API 参考）为准。版本表只记录与 APM 直接相关、能从公开 API 验证的变化。`ProcessLifecycleOwner`、`JankStats` 这些 Jetpack 库随依赖版本发布，把它们写成某个 Android 系统版本“新增”的平台 API 会混淆版本归属。
 
 | Android 版本 | API Level | 公开能力 | 使用边界 |
 |---|---:|---|---|
@@ -389,7 +389,7 @@ ANR 预警还有独立的关联路径：
 <!-- gracker-diagram: ch17-05-24-anr-warning-correlation -->
 ![预警、系统ANR与退出记录关联](../../assets/diagrams/ch17/ch17-05-24-anr-warning-correlation.png)
 
-图：API37在接近超时前尽力预警，可用anrId与后续AnrInfo关联已有现场。 预警不保证执行，也不证明最终ANR或死亡；进程没有退出，就别期待对应的退出记录。
+图：API 37 在接近超时前尽力预警，可用 `anrId` 与后续 `AnrInfo` 关联已有现场。预警不保证执行，也不证明最终会发生 ANR 或进程死亡；如果进程没有退出，也不要期待对应的退出记录。
 
 Android 从 36.1 开始允许 minor SDK（次版本 SDK）增加 API。`Build.VERSION.SDK_INT` 只记录大版本；要区分 36 与 36.1，先守住 API 36 的大版本下限，再比较 `Build.VERSION.SDK_INT_FULL` 与 `Build.VERSION_CODES_FULL`。API 存在也只是入口可用，某台设备是否开启了所有 profiling 触发器还要单独确认；注册、限频与结果错误必须处理。
 
@@ -406,22 +406,22 @@ Android 从 36.1 开始允许 minor SDK（次版本 SDK）增加 API。`Build.VE
 | 需要深挖内存、I/O 或启动 trace | 专项框架或按需 profiling | 重样本需要独立预算和分析工具 |
 | 私有化、删除请求和迁移成本是硬条件 | 先定义内部事件协议，再评估平台 | 数据所有权比客户端功能数量更重要 |
 
-我们先拆一个常见误区：DAU（Daily Active Users，日活跃用户数）和团队人数都不适合当唯一阈值——一天一万用户，如果每次会话产生数百个网络 span（有起止时间的请求记录），数据量可能高过百万 DAU 的低采样 Crash 系统。切换点要看事件率、retention（数据保留期）、查询延迟、告警责任和合规要求。 容量可以先按 `会话数 × 每会话事件数 × 保留比例 × 平均事件字节数` 估算，再另算附件、索引、副本和保留期；按 session 抽样与按 event 抽样的统计单位要分别记录。
+我们先把常见误区拆开：DAU（Daily Active Users，日活跃用户数）和团队人数都不适合当作唯一阈值——一天一万用户，如果每次会话产生数百个网络 span（有起止时间的请求记录），数据量可能高过百万 DAU 的低采样 Crash 系统。切换点要看事件率、retention（数据保留期）、查询延迟、告警责任和合规要求。容量可以先按 `会话数 × 每会话事件数 × 保留比例 × 平均事件字节数` 估算，再另算附件、索引、副本和保留期；按 session 抽样与按 event 抽样的统计单位要分别记录。
 
 
 ## 使用建议
 
 存量项目接入旧库前，至少完成以下检查：
 
-- 在目标 AGP、Gradle、JDK、Kotlin、R8 与 configuration cache（复用 Gradle 配置阶段结果的缓存） 组合上构建。
-- 在 Android 8、11、15、16、17 以及主要厂商 ROM（厂商定制系统） 上运行核心用例。
+- 在目标 AGP、Gradle、JDK、Kotlin、R8 与 configuration cache（复用 Gradle 配置阶段结果的缓存）组合上构建。
+- 在 Android 8、11、15、16、17 以及主要厂商 ROM（厂商定制系统）上运行核心用例。
 - 检查 library manifest 合并结果，包括权限、Provider、Receiver、Service 和 `exported` 属性。
 - 测量空闲、正常交互、异常高峰三种场景的 CPU、内存、线程、I/O、网络与包体增量。
 - 验证多进程去重、session 划分、离线缓存上限、失败重试和卸载后数据处理。
 - 对 URL、header、query、网络正文、文件路径、用户名、账号和设备标识做采集前脱敏。
 - 演练远程停用、配置回滚和 SDK 移除，确认关闭后不会留下线程、回调或磁盘任务。
 
-旧项目拿不出现代验证报告时，我们的默认动作是阅读和移植需要的设计，而不是把所有 artifact 一次接入。
+旧项目拿不出现代验证报告时，建议只阅读和移植需要的设计，避免把整套旧 artifact 一次接入工程。
 
 ## 从这些项目提炼最小 APM SDK
 
@@ -444,7 +444,7 @@ Android 从 36.1 开始允许 minor SDK（次版本 SDK）增加 API。`Build.VE
 <!-- gracker-diagram: ch17-05-27-minimal-sdk-data-flow -->
 ![最小SDK的线程与持久化职责](../../assets/diagrams/ch17/ch17-05-27-minimal-sdk-data-flow.png)
 
-图：普通生产者尝试进入有界队列，由后台标准化和持久化；Crash走尺寸受控的直接写入路径。 这是迁移后的建议职责图，对任何旧SDK的已实现状态都不作保证；异常时也别指望异步队列排空。
+图：普通生产者尝试进入有界队列，由后台完成标准化与持久化；Crash 走尺寸受控的直接写入路径。这是迁移后的建议职责图，对任何旧 SDK 的已实现状态都不作保证；发生异常时也别指望异步队列排空。
 
 
 
@@ -488,7 +488,7 @@ AndroidGodEye、Collie 和 Rabbit 都没有一套能直接用到现代平台的�
 }
 ```
 
-事件的时长用 monotonic clock 计算，跨设备检索靠 wall clock（可能被校时的墙上时钟）；两件事各归各的时钟。URL、用户输入、账号这些高风险字段要进通用 attributes（可扩展属性集合），必须先过字段级白名单。 `elapsed_realtime_ns` 只能在同一次启动的时钟域内比较；进程实例、设备与 boot 身份要一起保留，跨设备或重启后的数值要分开处理，直接相减没有意义。
+事件的时长用 monotonic clock 计算，跨设备检索靠 wall clock（可能被校时的墙上时钟）；两件事各归各的时钟。URL、用户输入、账号这些高风险字段要进通用 attributes（可扩展属性集合），必须先过字段级白名单。`elapsed_realtime_ns` 只能在同一次启动的时钟域内比较；进程实例、设备与 boot 身份要一起保留，跨设备或重启后的数值要分开处理，直接相减没有意义。
 
 
 ## 轻量 APM 的线程模型
@@ -514,7 +514,7 @@ Collie 的无界队列提醒我们：把工作移出主线程只解决了调用�
 - **采样规则**：按 stable hash（同输入同输出的哈希）选择用户或设备，再叠加版本、页面、异常类型和时间窗口。
 - **预算限制**：约束单位时间事件数、附件字节数、CPU 时间、磁盘占用和单次上传大小。
 
-配置要有递增的配置发布版本号（回滚旧内容也发布新版本）、签名或可信传输、TTL（配置有效期） 和本地默认值。客户端事件必须携带生效的 `config_version` 、采样单位与 `sample_rate`，否则服务端解释不了版本之间的数量变化。
+配置要有递增的配置发布版本号（回滚旧内容也发布新版本）、签名或可信传输、TTL（配置有效期）和本地默认值。客户端事件必须携带生效的 `config_version`、采样单位与 `sample_rate`，否则服务端解释不了版本之间的数量变化。
 
 对 Crash 和 Android 17 的 ANR warning 来说，等回调到来再去读复杂远程配置就晚了：关键阈值和脱敏规则要提前解析成内存快照（只读配置），异常路径只读这份快照。
 

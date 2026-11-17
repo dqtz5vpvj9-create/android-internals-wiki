@@ -66,10 +66,10 @@ sources:
 - Alarm 设置成功，只表示系统接收了计划；要确认该次 Alarm 已投递，需要看到接收器或 `OnAlarmListener` 开始执行。
 - 定位和扫描请求窗口是应用意图。系统可能返回缓存、批处理结果，也可能因权限、配额或硬件状态拒绝请求。
 - `TrafficStats` 的 UID（系统为应用分配的标识）字节差能确认流量变化；蜂窝 modem（基带）的活跃时长和能耗，要另找证据。
-- Thermal 状态来自系统对设备传感器的汇总。应用活动与状态上升出现在同一时间窗，只能说明两者存在相关关系；要判断因果，还需要对照实验、system trace（系统跟踪） 或大量样本统计来支撑。
+- Thermal 状态来自系统对设备传感器的汇总。应用活动与状态上升出现在同一时间窗，只能说明两者存在相关关系；要判断因果，还需要对照实验、system trace（系统跟踪）或大量样本统计来支撑。
 
 
-Android 的 `BatteryStats` 使用计时器、计数器和功耗模型维护系统侧统计，完整数据留在系统侧。开发阶段我们可以用 `dumpsys batterystats --history`、Perfetto（Android 系统跟踪工具）、Android Studio Power Profiler 和 Macrobenchmark `PowerMetric`（基准测试的功耗指标） 核对应用端事件。
+Android 的 `BatteryStats` 使用计时器、计数器和功耗模型维护系统侧统计，完整数据留在系统侧。开发阶段我们可以用 `dumpsys batterystats --history`、Perfetto（Android 系统跟踪工具）、Android Studio Power Profiler 和 Macrobenchmark `PowerMetric`（基准测试的功耗指标）核对应用端事件。
 
 Battery Historian 仍可读取旧式 batterystats 报告，但官方文档已经注明它不再积极维护，验证时要与其他工具配合使用。
 
@@ -85,19 +85,19 @@ WakeLock 用来请求设备维持指定电源状态，常见的 `PARTIAL_WAKE_LO
 <!-- gracker-diagram: ch17-10-04-wakelock-token -->
 ![WakeLock 对象如何进入服务端](../../assets/diagrams/ch17/ch17-10-04-wakelock-token.png)
 
-图：WakeLock 用私有 token 关联服务端记录，多把有效锁再聚合为电源约束。 tag 不是对象身份；引用计数 acquire 不一定每次都发 IPC。
+图：WakeLock 用私有 token 关联服务端记录，多把有效锁再聚合为电源约束。tag 不是对象身份；引用计数 acquire 不一定每次都发 IPC。
 
 应用侧有几个容易遗漏的语义：
 
 - WakeLock 默认启用引用计数，记录同一对象尚未配对的 acquire 次数：同一对象 acquire 两次，通常需要 release 两次；`setReferenceCounted(false)` 后，一次 release 就能撤销此前的持有。
-- `acquire(timeout)` 通过框架内部 Handler（向指定线程投递任务的机制） 安排 `release(RELEASE_FLAG_TIMEOUT)`，这个内部释放不会经过业务代码里的公开 `release()` 调用点。
+- `acquire(timeout)` 通过框架内部 Handler（向指定线程投递任务的机制）安排 `release(RELEASE_FLAG_TIMEOUT)`，这个内部释放不会经过业务代码里的公开 `release()` 调用点。
 - 框架源码在进入服务端前会递增内部计数，release 次数过多就会触发 under-locked（释放次数超过申请次数）异常。至于非引用计数模式、带 timeout 的多次 acquire，这些状态都塞不进一个布尔值里。
 - `isHeld()` 返回的是客户端对象在 `mToken` 锁下保存的 `mHeld`；服务端的 `mDisabled` 和 CPU 活跃窗口，都在它的视野之外。它适合标记“探针时对象状态”：为 true 时，系统仍可能已经忽略这把锁。
 
 <!-- gracker-diagram: ch17-10-05-object-vs-effective -->
 ![对象 held 与系统生效之间的边界](../../assets/diagrams/ch17/ch17-10-05-object-vs-effective.png)
 
-图：isHeld 读客户端 mHeld，系统另有禁用判断与电源约束汇总。 true 只是对象快照，不证明 CPU 在整个区间持续运行。
+图：isHeld 读客户端 mHeld，系统另有禁用判断与电源约束汇总。true 只是对象快照，不证明 CPU 在整个区间持续运行。
 
 系统 token 是框架私有实现。线上 SDK 里反射读取 `mToken`、`mTag`、`mInternalCount`、`mRefCounted` 这条路径，随时会因隐藏 API 限制、R8（Android 代码压缩与混淆工具）、厂商改动或并发访问而失效；token 本身也没有上传价值。
 
@@ -191,7 +191,7 @@ private fun addUptimeSaturated(base: Long, delta: Long): Long {
 <!-- gracker-diagram: ch17-10-08-uptime-probe -->
 ![超时探针与事件时间线使用两种时钟](../../assets/diagrams/ch17/ch17-10-08-uptime-probe.png)
 
-图：框架超时与探针按 uptime 调度，业务关联另存包含深度休眠的 elapsed 时间。 返回时刻只给保守探针起点，排队和其他 acquire 会改变实际观察。
+图：框架超时与探针按 uptime 调度，业务关联另存包含深度休眠的 elapsed 时间。返回时刻只给保守探针起点，排队和其他 acquire 会改变实际观察。
 
 这段示意代码依赖弱身份注册表、调度器和有限事件记录器。放到生产里，头一条要求是监控失败不改变原调用结果，同时限制每把锁的探针数并合并重复探针；栈采样、记录与注册表也都要避免反向强引用锁。多线程下原调用与返回后 hook 不是一个原子事务，hook 顺序重建不出精确的框架顺序。进程退出、系统禁用/释放和未插桩调用均可能留下缺口，所以报告要保留证据来源与不完整标志。
 
@@ -227,7 +227,7 @@ private fun addUptimeSaturated(base: Long, delta: Long): Long {
 <!-- gracker-diagram: ch17-10-10-alarm-four-stages -->
 ![Alarm 的四阶段事件链](../../assets/diagrams/ch17/ch17-10-10-alarm-four-stages.png)
 
-图：尝试设置、调用结果、取消替换和实际投递分别保存，靠业务 ID 关联后续工作。 设置成功不保证投递，时间接近不能代替父任务关系。
+图：尝试设置、调用结果、取消替换和实际投递分别保存，靠业务 ID 关联后续工作。设置成功不保证投递，时间接近不能代替父任务关系。
 
 ### 3.1 精确 Alarm 的版本差异
 
@@ -244,7 +244,7 @@ Android 12 开始对精确 Alarm 引入 special app access（特殊应用权限�
 
 权限被撤销后，系统会停止应用并取消其后续精确 Alarm。对 `PendingIntent` 精确 Alarm，APM 应在调用前记录 `canScheduleExactAlarms()`，调用后再记录成功或 `SecurityException`，并在收到“已授予”广播后重新核查——撤销时不会发送这条广播。
 
-Android 14+ 的 `OnAlarmListener` 路径要另记 callback 载体与进程生命周期；即便 `canScheduleExactAlarms() == false`，listener（监听器） 调用也未必失败。所有样本都应分别保存 `requested_exact`、`accepted` 和 `delivered`。
+Android 14+ 的 `OnAlarmListener` 路径要另记 callback 载体与进程生命周期；即便 `canScheduleExactAlarms() == false`，listener（监听器）调用也未必失败。所有样本都应分别保存 `requested_exact`、`accepted` 和 `delivered`。
 
 
 ### 3.2 Doze 配额与后台任务
@@ -275,7 +275,7 @@ GNSS（卫星定位系统）、Wi-Fi、蓝牙（扫描表中的 BLE 为 Bluetoot
 
 ### 4.1 网络侧的基带唤醒风险
 
-蜂窝 radio（无线收发部分） 常在数据传输结束后继续保持一段高功耗状态，具体状态转换由 modem（调制解调器，也就是基带）、运营商网络和厂商配置决定。高频小包、失败重试和后台轮询都会推高这类风险；某次传输让基带多保持了多久，仅凭应用侧的 socket 时间线或 UID（Android 为应用或进程分配的用户标识） 字节差还确认不了。
+蜂窝 radio（无线收发部分）常在数据传输结束后继续保持一段高功耗状态，具体状态转换由 modem（调制解调器，也就是基带）、运营商网络和厂商配置决定。高频小包、失败重试和后台轮询都会推高这类风险；某次传输让基带多保持了多久，仅凭应用侧的 socket 时间线或 UID（Android 为应用或进程分配的用户标识）字节差还确认不了。
 
 端侧可以报告：
 
@@ -291,7 +291,7 @@ GNSS（卫星定位系统）、Wi-Fi、蓝牙（扫描表中的 BLE 为 Bluetoot
 <!-- gracker-diagram: ch17-10-15-uid-network -->
 ![UID 字节无法直接推出基带尾部能耗](../../assets/diagrams/ch17/ch17-10-15-uid-network.png)
 
-图：UID 全接口字节、实际请求路径与系统 radio 证据使用各自口径。 默认网络快照不能把跨网络计数归给蜂窝，字节量不能推出 tail time 或 mAh。
+图：UID 全接口字节、实际请求路径与系统 radio 证据使用各自口径。默认网络快照不能把跨网络计数归给蜂窝，字节量不能推出 tail time 或 mAh。
 
 ### 4.2 CPU 时间与墙钟时间
 
@@ -326,14 +326,14 @@ owner 使用开发期配置的低基数标识，不采集用户输入、位置�
 <!-- gracker-diagram: ch17-10-17-owner-cleanup -->
 ![资源 owner 与生命周期的清理边界](../../assets/diagrams/ch17/ch17-10-17-owner-cleanup.png)
 
-图：把请求、回调与结束动作挂到低基数 owner，生命周期结束后检查残留活动。 时间越长并不必然泄漏；跨组件会话需明确谁负责结束。
+图：把请求、回调与结束动作挂到低基数 owner，生命周期结束后检查残留活动。时间越长并不必然泄漏；跨组件会话需明确谁负责结束。
 
 ## 5. `BatteryManager` 的设备侧上下文
 
 做设备侧上下文采集时，我们主要读 `BatteryManager`，它对几项常用属性给出了明确单位：
 
 - `BATTERY_PROPERTY_CURRENT_NOW`：瞬时电流，单位 µA（微安）；正数表示净电流流入电池，负数表示电池放电。
-- `BATTERY_PROPERTY_CURRENT_AVERAGE`：平均电流，单位 µA；平均窗口由 fuel gauge（电量计芯片及其估算算法） 硬件及其配置决定。
+- `BATTERY_PROPERTY_CURRENT_AVERAGE`：平均电流，单位 µA；平均窗口由 fuel gauge（电量计芯片及其估算算法）硬件及其配置决定。
 - `BATTERY_PROPERTY_CHARGE_COUNTER`：剩余电荷量，单位 µAh（微安时）。
 - `BATTERY_PROPERTY_ENERGY_COUNTER`：剩余能量，单位 nWh（纳瓦时）。
 - 电压通常来自 `ACTION_BATTERY_CHANGED` 的 `BatteryManager.EXTRA_VOLTAGE`，单位 mV（毫伏）。
@@ -369,7 +369,7 @@ Android Thermal API 的演进可以分成四步：
 调用节奏上，官方说明指出慢速温度传感器轮询保持在约每秒一次以内即可，过频调用也可能得到 `NaN`；预测需要多个历史样本，开始几秒通常尚不外推，无论 forecastSeconds 为多少都先返回当前 headroom——启动阶段拿到的就是这个当前值，把它当作预测结果属于误读。缺少能力或有效温度时，调用仍可能无结果。
 
 
-headroom listener 适合获知当前值或阈值的显著变化，但它不会只因某个未来预测值变化就持续回调，主动查询仍要保留：需要短期预测的游戏、相机或视频业务，应在受控频率下调用 `getThermalHeadroom(forecastSeconds)`，并处理 `NaN`。阈值由 OEM（Original Equipment Manufacturer，设备制造商） 根据设备散热和硬件配置提供，经验阈值要按机型各自标定。
+headroom listener 适合获知当前值或阈值的显著变化，但它不会只因某个未来预测值变化就持续回调，主动查询仍要保留：需要短期预测的游戏、相机或视频业务，应在受控频率下调用 `getThermalHeadroom(forecastSeconds)`，并处理 `NaN`。阈值由 OEM（Original Equipment Manufacturer，设备制造商）根据设备散热和硬件配置提供，经验阈值要按机型各自标定。
 
 
 ### 6.1 状态与动作的映射
@@ -511,7 +511,7 @@ class ThermalGuard(
 <!-- gracker-diagram: ch17-10-23-thermal-guard -->
 ![温控回调、旧任务与关闭的同步边界](../../assets/diagrams/ch17/ch17-10-23-thermal-guard.png)
 
-图：回调、恢复任务和生命周期共用同步门，以代次拒绝已取消的旧任务。 策略与记录器须有界不抛错；主机验证不替代设备温控验收。
+图：回调、恢复任务和生命周期共用同步门，以代次拒绝已取消的旧任务。策略与记录器须有界不抛错；主机验证不替代设备温控验收。
 
 ### 6.3 发热与性能的反馈回路
 
@@ -522,7 +522,7 @@ class ThermalGuard(
 <!-- gracker-diagram: ch17-10-24-thermal-feedback -->
 ![热节流、重试与减负的反馈回路](../../assets/diagrams/ch17/ch17-10-24-thermal-feedback.png)
 
-图：应用与系统负载共同推高温度，系统节流与应用减负分别反馈到任务执行。 重试可能放大负载，时间线仍需控制变量实验支撑因果判断。
+图：应用与系统负载共同推高温度，系统节流与应用减负分别反馈到任务执行。重试可能放大负载，时间线仍需控制变量实验支撑因果判断。
 
 Thermal HAL 是系统连接温度传感器与上层 Thermal 服务的硬件抽象层。APM 主要看得到系统公开状态、自己的负载与策略动作，其他应用和系统负载通常不完整。所以“业务负载先出现、热状态随后升高、减小负载后状态下降”这套时间线只是因果证据的一部分；要进一步确认因果，我们还需比较版本和设备分组，做其他条件不变、只切换目标功能的对照实验，并检查系统级 trace。
 
@@ -552,7 +552,7 @@ Vitals 来自符合条件的 Google Play 安装和同意共享数据的用户，
 上报环节我们默认在本地聚合资源事件，也就是先在设备上把原始事件合并成次数、持续时间和状态分布，普通会话只上传分钟级摘要。命中异常分位数后，再从受控比例的会话上传少量明细；分位数是样本的相对位置，例如 p95 表示 95% 的样本不高于该值。建议保留：
 
 - `elapsedRealtime`：设备开机后持续递增的单调时间，用于计算进程内持续时间和事件顺序，不受用户修改墙钟影响；
-- wall clock（可对应日历日期的系统时间） 与 boot/session ID（本次开机或应用会话的标识）：用于关联跨进程日志；设备重启后，旧的 elapsed 时间线就断了；
+- wall clock（可对应日历日期的系统时间）与 boot/session ID（本次开机或应用会话的标识）：用于关联跨进程日志；设备重启后，旧的 elapsed 时间线就断了；
 - App 版本、Android 版本、机型分组、进程状态、充电/屏幕/网络类型；
 - 低基数业务 ID、清洗后的 tag 哈希、调用栈指纹和采样原因；
 - `evidence_level=request|callback|system_validation`：分别表示应用发出请求、收到系统回调、经过系统统计或实验验证，防止下游把请求事件写成硬件事实。
@@ -575,7 +575,7 @@ Alarm 测试覆盖：
 - `PendingIntent` 与 `OnAlarmListener`；
 - wakeup 与 non-wakeup type；
 - 精确能力已授予、未授予、撤销；
-- schedule 后 cancel、同身份替换、进程进入 cached（缓存进程：不再承载前台组件，系统可回收或冻结） 状态；
+- schedule 后 cancel、同身份替换、进程进入 cached（缓存进程：不再承载前台组件，系统可回收或冻结）状态；
 - Doze 下普通 Alarm 与允许在 idle 期间执行的 Alarm 的投递时间；
 - callback 内启动 Worker/Job、网络失败与重试。
 

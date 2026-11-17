@@ -109,7 +109,7 @@ dependencies {
 <!-- gracker-diagram: ch17-03-02-provider-install -->
 ![Application 与 Provider 自动安装顺序](../../assets/diagrams/ch17/ch17-03-02-provider-install.png)
 
-图：系统先创建Application，Provider安装watcher，随后调用Application.onCreate。 依赖只进入指定Debug/QA变体；Provider与Startup替代组件按上游约定择一。
+图：系统先创建 `Application`，Provider 安装 watcher，随后调用 `Application.onCreate`。依赖只进入指定的 Debug/QA 变体；Provider 与 Startup 替代组件按上游约定择一使用。
 
 ### 从 watch 到 leak trace（泄漏引用链）
 
@@ -120,19 +120,19 @@ dependencies {
 3. retained 只是候选状态，还不是 heap 分析结论。`HeapDumpTrigger` 在后台线程检查 retained 数量：`GcTrigger.Default` 调用 `Runtime.getRuntime().gc()`，固定休眠 100 ms，再调用 `System.runFinalization()`，随后重新计数。这 100 ms 是上游等待引用处理的启发式延迟，没有提供 GC 或入队完成保证。
 4. 应用可见时，默认要达到 5 个 retained object 才 dump；应用不可见后，会等待一个 `retainedDelayMillis`，随后 1 个 retained object 也足以触发。用户点通知还可以主动请求 dump。
 5. dump 前会再检查开关、调试器状态、最近一次 dump 等条件。默认 `AndroidDebugHeapDumper` 调用公开的 `Debug.dumpHprofData()` 写出 `.hprof` 文件——Hprof 就是 JVM/ART（Android Runtime） heap dump 的文件格式。
-6. Shark 在 heap 中找到带 key 的弱引用对象，计算从 GC Root 到目标对象的最佳强引用路径。`ObjectInspector` 判断路径上对象是否应当泄漏，`ReferenceMatcher` 匹配已知系统或依赖引用模式。Shark 还会估算 retained size（移除该对象后可能释放的内存），再用尚未排除的 suspect reference（可疑引用） 算出 signature，用于同类引用路径归并；升级分析器、matcher 或代码结构后签名可能改变，跨版本比较需要保留这些配置。
+6. Shark 在 heap 中找到带 key 的弱引用对象，计算从 GC Root 到目标对象的最佳强引用路径。`ObjectInspector` 判断路径上对象是否应当泄漏，`ReferenceMatcher` 匹配已知系统或依赖引用模式。Shark 还会估算 retained size（移除该对象后可能释放的内存），再用尚未排除的 suspect reference（可疑引用）算出 signature，用于同类引用路径归并；升级分析器、matcher 或代码结构后签名可能改变，跨版本比较需要保留这些配置。
 
 <!-- gracker-diagram: ch17-03-03-watch-retained-analysis -->
 ![观察记录、retained候选与引用链](../../assets/diagrams/ch17/ch17-03-03-watch-retained-analysis.png)
 
-图：生命周期终点创建弱引用，延迟清理后的记录先成为候选，再由堆分析产生引用路径。 5秒和GC请求都不保证回收或入队完成；retained不是强可达或泄漏的直接证明。
+图：生命周期终点创建弱引用，延迟清理后的记录先成为候选，再由堆分析产生引用路径。5 秒和 GC 请求都不保证回收或入队完成；retained 并非强可达或泄漏的直接证明。
 
 按这个顺序走下来，有两点容易误读。页面退出 1 秒后对象还活着很常见，瞬时存活说明不了泄漏；`retainedObjectCount > 0` 也只是候选信号，要等 dump 中仍存在目标对象并找到保留路径，我们才会得到可供修复的 leak trace。前台 5 个的阈值是为了减少频繁冻结 UI，“少于 5 个就没有泄漏”并不成立。调试时把 App 切到后台，或在测试中调用官方 assertion（断言），都比为了快速出报告长期把前台阈值改成 1 更稳妥。
 
 <!-- gracker-diagram: ch17-03-04-dump-conditions -->
 ![可见、不可见与用户请求的触发条件](../../assets/diagrams/ch17/ch17-03-04-dump-conditions.png)
 
-图：GC复检后的数量、应用可见状态和用户请求共同决定下一步。 前台少于5不证明无泄漏；还需通过开关、调试器、冷却与文件检查。
+图：GC 复检后的数量、应用可见状态和用户请求共同决定下一步。前台少于 5 个不证明无泄漏；还需通过开关、调试器、冷却时间与文件检查。
 
 ### 默认观察对象与依赖条件
 
@@ -145,16 +145,16 @@ dependencies {
 | `RootViewWatcher` | root view 从 WindowManager 脱离 | Activity root 已由 ActivityWatcher 覆盖；PopupWindow root 不观察；Dialog root 默认不观察；Toast、Tooltip 和未知类型会观察 |
 | `ServiceWatcher` | `Service.onDestroy()` 后 system_server 收到 <code>serviceDone<wbr>Executing()</code> | 依赖 framework 私有字段、消息号和 Binder 代理；反射失败会记录日志并放弃 Service 自动观察 |
 
-“默认观察 View”的范围比字面看起来窄：Fragment view 跟着 Fragment 生命周期走，root view 来自 Curtains（LeakCanary 使用的 Window root 监听库） 对 WindowManager root 的监听，普通子 View 没有统一生命周期，业务仍要在明确终点自行观察。
+“默认观察 View”的范围比字面看起来窄：Fragment view 跟着 Fragment 生命周期走，root view 来自 Curtains（LeakCanary 使用的 Window root 监听库）对 WindowManager root 的监听，普通子 View 没有统一生命周期，业务仍要在明确终点自行观察。
 
 
-Service 是高版本验证的重点。2.14 的 `ServiceWatcher` 会反射 `ActivityThread.mH`、`mServices`、`Handler.mCallback` 和 `ActivityManager.IActivityManagerSingleton`，并识别 `STOP_SERVICE = 116`。这些名字和停止流程在 `android-17.0.0_r1` 中仍然存在，但它们都是 framework 内部实现，没有兼容性承诺；OEM（设备厂商） 修改、hidden API（应用 SDK 未公开的接口） 限制或后续平台改动都可能让 watcher 安装失败。我们会在测试包启动后检查 Logcat 是否出现 `Could not watch destroyed services`，关键 Service 可以在 `onDestroy()` 末尾再做业务侧观察。
+Service 是高版本验证的重点。2.14 的 `ServiceWatcher` 会反射 `ActivityThread.mH`、`mServices`、`Handler.mCallback` 和 `ActivityManager.IActivityManagerSingleton`，并识别 `STOP_SERVICE = 116`。这些名字和停止流程在 `android-17.0.0_r1` 中仍然存在，但它们都是 framework 内部实现，没有兼容性承诺；OEM（设备厂商）修改、hidden API（应用 SDK 未公开的接口）限制或后续平台改动都可能让 watcher 安装失败。我们会在测试包启动后检查 Logcat 是否出现 `Could not watch destroyed services`，关键 Service 可以在 `onDestroy()` 末尾再做业务侧观察。
 
 ### 自定义观察的终点
 
-播放器控制器、地图会话、Presenter、Dagger component 和业务 scope（限定对象存活范围的生命周期作用域） 都可能有自己的 `release()` / `close()`。观察调用要放在资源清理完成后：到了这一步，负责持有和释放对象的 owner（负责持有和释放对象的一方） 理应尽快放弃强引用。
+播放器控制器、地图会话、Presenter、Dagger component 和业务 scope（限定对象存活范围的生命周期作用域）都可能有自己的 `release()` / `close()`。观察调用要放在资源清理完成后：到了这一步，负责持有和释放对象的 owner（负责持有和释放对象的一方）理应尽快放弃强引用。
 
-下面的例子用 2.14 推荐的 `expectWeaklyReachable()`，而不是已弃用的 `watch()`：
+下面的例子使用 2.14 推荐的 `expectWeaklyReachable()`，取代已弃用的 `watch()`：
 
 ```kotlin
 class PlayerController {
@@ -183,7 +183,7 @@ ObjectWatcher 2.14 没有为每次观察返回“取消句柄”。取消能力�
 
 - 不观察 Application、全局 cache、进程级 repository 等设计上常驻的对象。
 - description 写“哪个生命周期终点已经发生”，不要只写类名。
-- teardown（解绑回调、释放资源等收尾过程） 有异步完成条件时，在完成回调后观察；谁负责持有和释放要说得清，随意增加 sleep 只会把 ownership（谁负责持有和释放） 不清掩盖过去。
+- teardown（解绑回调、释放资源等收尾过程）有异步完成条件时，在完成回调后观察；谁负责持有和释放要说得清，随意增加 sleep 只会把 ownership（谁负责持有和释放）不清掩盖过去。
 
 ### leak trace 要逐行读
 
@@ -193,7 +193,7 @@ Leak trace 是 GC Root 到 retained object 的强引用路径，读它的时候�
 - `├─` / `╰→` 是路径上的对象；`↓` 是指向下一对象的字段、数组元素或 Java local（Java 局部变量）。
 - `Leaking: NO / YES / UNKNOWN` 来自 Shark 的对象状态推断，分别表示有依据判定该对象不该泄漏、应当泄漏，或暂时还判断不出来。
 - `~~~` 标出尚未被排除的 suspect reference，也就是后续该继续查的引用，并不等于工具已经定位到一行错误代码。
-- `retainedHeapByteSize` 估算移除该泄漏后可回收的字节数，其中还会计入与 Java 对象关联的部分 native 大小，例如 Android Bitmap；通用 native heap（C/C++ 等本地代码申请的堆） 不在其覆盖内，共享对象图和运行时状态也会限制这个数值的解释范围。
+- `retainedHeapByteSize` 估算移除该泄漏后可回收的字节数，其中还会计入与 Java 对象关联的部分 native 大小，例如 Android Bitmap；通用 native heap（C/C++ 等本地代码申请的堆）不在其覆盖内，共享对象图和运行时状态也会限制这个数值的解释范围。
 - signature 由 suspect reference 组合计算，用来把同一原因的多个实例归为一组。
 
 下面是一条经过压缩、但保留 LeakCanary 文本结构的 Fragment view 泄漏：
@@ -229,7 +229,7 @@ Leak trace 是 GC Root 到 retained object 的强引用路径，读它的时候�
 逐行阅读时按下面的顺序收敛：
 
 1. 末尾的 root view 已经过了 `onDestroyView()`，因此“应该回收”的前提成立。
-2. `HomeFragment.binding` 说明 Fragment 在 view 销毁后仍持有 binding；Fragment 留在 back stack（返回栈，保留 Fragment 实例以便返回） 时，这条引用会拖住整棵 view tree。
+2. `HomeFragment.binding` 说明 Fragment 在 view 销毁后仍持有 binding；Fragment 留在 back stack（返回栈，保留 Fragment 实例以便返回）时，这条引用会拖住整棵 view tree。
 3. `callback.this$0` 是匿名内部类对 Fragment 的隐式引用。
 4. 静态 `AnalyticsDispatcher.callbacks` 是长生命周期 owner。集合中的 callback 没有注销，因而 callback、Fragment 和 binding 始终可达。
 5. 修复要落在 `onDestroyView()` 解除 dispatcher 注册并清空 binding，让 owner 与生命周期对齐；只把某个引用改成 WeakReference 解决不了问题。
@@ -239,7 +239,7 @@ GC Root 说明的只是整条链为何始终可达，业务修复点未必在这
 <!-- gracker-diagram: ch17-03-07-strong-reference-path -->
 ![从静态 owner 到已销毁 Fragment view](../../assets/diagrams/ch17/ch17-03-07-strong-reference-path.png)
 
-图：按持有方向追踪静态集合、callback、Fragment和binding，修复生命周期错配的边。 这是压缩示例；~~~是可疑引用，Root类型不是必须修改的位置。
+图：按持有方向追踪静态集合、callback、Fragment 和 binding，修复生命周期错配的边。这是压缩示例；`~~~` 表示可疑引用，Root 类型并非必须修改的位置。
 
 ### 三个能从代码走到 trace 的案例
 
@@ -321,11 +321,11 @@ override fun onDestroyView() {
 <!-- gracker-diagram: ch17-03-09-listener-adapter-lifecycle -->
 ![每轮 view 生命周期重新建立 adapter 注册](../../assets/diagrams/ch17/ch17-03-09-listener-adapter-lifecycle.png)
 
-图：view创建时新建并注册页面adapter，销毁时拆绑定、注销listener并清空实例。 临时detach不一定是永久销毁；dispatcher须遵守主线程回调合同。
+图：view 创建时新建并注册页面 adapter，销毁时拆绑定、注销 listener 并清空实例。临时 detach 不一定是永久销毁；dispatcher 须遵守主线程回调合同。
 
 #### Coroutine / Flow：collector 绑定错生命周期
 
-Fragment 的 `lifecycleScope` 跟 Fragment 实例一起存活，可能跨过 `onDestroyView()`。执行 `collect` / `collectLatest` 的 Flow collector（执行 `collect` / `collectLatest` 的收集逻辑） 若捕获 binding，就会在 view 已销毁后继续保留旧视图。下面我们把收集任务绑定到 `viewLifecycleOwner`：
+Fragment 的 `lifecycleScope` 跟 Fragment 实例一起存活，可能跨过 `onDestroyView()`。执行 `collect` / `collectLatest` 的 Flow collector（收集逻辑）若捕获 binding，就会在 view 已销毁后继续保留旧视图。下面把收集任务绑定到 `viewLifecycleOwner`：
 
 ```kotlin
 viewLifecycleOwner.lifecycleScope.launch {
@@ -378,7 +378,7 @@ WebView 还可能持有 native 资源，LeakCanary 只能分析 Java heap 中通
 
 LeakCanary 使用 `ReferenceMatcher` 识别已知第三方或 Android Framework 引用模式。matcher 只是一条“某条引用在指定版本和设备条件下如何分类”的规则，不会删除 heap 中的对象：
 
-- **Application Leak**：没有命中已知库问题，LeakCanary 按应用泄漏报告；多数 suspect reference 可由应用控制，也可能是尚未收录的系统或依赖问题。默认 CI assertion（自动化测试断言） 会为这类泄漏失败。
+- **Application Leak**：没有命中已知库问题，LeakCanary 按应用泄漏报告；多数 suspect reference 可由应用控制，也可能是尚未收录的系统或依赖问题。默认 CI assertion（自动化测试断言）会为这类泄漏失败。
 - **Library Leak**：命中已知模式，表示应用按正常 API 使用时仍受到系统或依赖 bug 影响。它仍在占内存，只是修复权可能不在应用侧。
 
 处理 Application Leak，就是找到引用的 owner、注册点、预期解绑时刻和遗漏分支，随后补测试；给字段加 `ReferenceMatcher` 把自家问题改名为 Library Leak，只是换了个名字。
@@ -404,7 +404,7 @@ platform 源码也保留了 2.14 `ServiceWatcher` 所依赖的字段和停止消
 - `ActivityManager.IActivityManagerSingleton`
 - `Handler.mCallback`
 
-这验证的只是 AOSP tag（Android 开源代码的一份固定版本快照） 的结构，反射调用依然没有兼容承诺。我们的 API 37 验收至少覆盖 Activity、AndroidX Fragment view、ViewModel、root view、Service、前后台阈值、通知权限、heap dump、Shark 分析和结果页；Service 要单列 watcher 安装日志。
+这验证的只是 AOSP tag（Android 开源代码的一份固定版本快照）的结构，反射调用依然没有兼容承诺。我们的 API 37 验收至少覆盖 Activity、AndroidX Fragment view、ViewModel、root view、Service、前后台阈值、通知权限、heap dump、Shark 分析和结果页；Service 要单列 watcher 安装日志。
 
 本次检查了 2.14 的 `leakcanary-android`、`leakcanary-android-core`、`leakcanary-object-watcher-android-core`、instrumentation AAR，以及 3.0-alpha-9 的 android/core 两个 AAR，这些归档内没有 `.so`。这个结论只覆盖所列产物；顶层 android AAR 很小，要替整个传递依赖图或最终 App 宣告 16 KB 兼容，还得把完整安装包中的所有 native 依赖逐一查过。
 
@@ -433,9 +433,9 @@ platform 源码也保留了 2.14 `ServiceWatcher` 所依赖的字段和停止消
 - 只在后台、熄屏或用户明确同意的诊断流程触发，并允许取消。
 - 使用 app 私有且不备份的临时目录；分析结束或失败后删除 Hprof。
 - 优先上传分析结果，避免上传原始 Hprof；字段使用 allowlist，只允许预先评审过的字段，传输与存储还要设置加密、访问权限和保留期限。
-- 记录 dump/analysis 时长、失败率、文件大小、OOM/ANR（应用无响应） 和电量影响；任一指标超过预设上限就自动停用该能力，这就是此处的“熔断”。
+- 记录 dump/analysis 时长、失败率、文件大小、OOM/ANR（应用无响应）和电量影响；任一指标超过预设上限就自动停用该能力，这就是此处的“熔断”。
 
-大多数团队更合适的走法，是让 KOOM、自研 APM 或 Android Vitals（Google Play 提供的线上质量指标） 给出线上信号，再回到可控的 Debug / QA 包用 LeakCanary 找引用链。生产 heap analysis 是专项能力：官方提供 release artifact，这件事本身说明不了它适合默认常开。
+大多数团队更合适的走法，是让 KOOM、自研 APM 或 Android Vitals（Google Play 提供的线上质量指标）给出线上信号，再回到可控的 Debug / QA 包用 LeakCanary 找引用链。生产 heap analysis 是专项能力：官方提供 release artifact，这件事本身说明不了它适合默认常开。
 
 
 ### 从线上信号回到本地验证
@@ -446,7 +446,7 @@ platform 源码也保留了 2.14 `ServiceWatcher` 所依赖的字段和停止消
 2. 在相同版本与接近的 API / OEM 设备环境构造可重复场景，循环进入、操作、退出页面。
 3. LeakCanary 只负责 Java/Kotlin 生命周期对象：记录 signature、完整 trace、retained size 和观察 description。
 4. 修复 suspect reference 后，用同一脚本重复多轮；确认旧 signature 不再出现，也没有新 signature。
-5. 用 Profiler、Perfetto 或 heap diff（比较两份 heap 快照） 检查对象数与内存曲线，避免“引用链断了，但缓存或 native 内存仍上涨”。
+5. 用 Profiler、Perfetto 或 heap diff（比较两份 heap 快照）检查对象数与内存曲线，避免“引用链断了，但缓存或 native 内存仍上涨”。
 6. 先向少量用户或设备发布修复，再回看原版本维度的 OOM、PSS/RSS 和页面指标。线上指标没有改善，就回到问题分类重新检查；LeakCanary 没有报告，只说明当前观察点没有找到 Java/Kotlin 生命周期泄漏。
 
 这种联动让线上数据回答“影响多大、在哪里发生”，让 LeakCanary 回答“哪条 Java 强引用需要修改”。
@@ -454,14 +454,14 @@ platform 源码也保留了 2.14 `ServiceWatcher` 所依赖的字段和停止消
 
 ### Instrumentation 测试和 CI 失败条件
 
-在 Android Instrumentation UI 测试中，LeakCanary 检测到 JUnit 位于 classpath（运行时可加载的类集合） 后，会关闭日常自动 dump。官方 `leakcanary-android-instrumentation` 会在 assertion 时等待主线程空闲、触发 GC、等待 retained delay，再在有 retained object 时 dump 和分析。
+在 Android Instrumentation UI 测试中，LeakCanary 检测到 JUnit 位于 classpath（运行时可加载的类集合）后，会关闭日常自动 dump。官方 `leakcanary-android-instrumentation` 会在 assertion 时等待主线程空闲、触发 GC、等待 retained delay，再在有 retained object 时 dump 和分析。
 
 这套流程比手写 `sleep(6000) + retainedObjectCount == 0` 少一层时序猜测。
 
 <!-- gracker-diagram: ch17-03-16-instrumentation-sequence -->
 ![Instrumentation 的等待、GC 与分析](../../assets/diagrams/ch17/ch17-03-16-instrumentation-sequence.png)
 
-图：页面先到预期终点，官方assertion再组织空闲检查、GC与等待，有候选才分析。 默认还有两次2秒等待及剩余观察窗口；固定sleep或一次idle都不证明全部异步业务完成。
+图：页面先到预期终点，官方 assertion 再组织空闲检查、GC 与等待，有候选才分析。默认还有两次 2 秒等待及剩余观察窗口；固定 sleep 或一次 idle 都不能证明全部异步业务已经完成。
 
 2.14 的测试依赖必须与 App 侧调试依赖同时存在：
 
@@ -510,12 +510,12 @@ Rule 只在测试主体成功时执行。它和 `ActivityScenarioRule` 的内外
 <!-- gracker-diagram: ch17-03-17-rule-order -->
 ![Activity rule 两侧的检查对象不同](../../assets/diagrams/ch17/ch17-03-17-rule-order.png)
 
-图：规则嵌套决定断言在Activity teardown之前或之后；包装helper可覆盖两侧。 仅成功测试主体触发检查；跨测试清理记录用于隔离，不能代替业务解绑。
+图：规则嵌套决定断言在 Activity teardown 之前或之后执行；包装 helper 可覆盖两侧。仅成功测试主体触发检查；跨测试清理记录用于隔离，不能代替业务解绑。
 
 CI 可以按执行成本分三层；这里既要求符合规则的 Application Leak 让任务失败，也要保留 dump/分析错误的失败状态：
 
 - PR 检查只跑高流量页面、复杂容器和历史高风险路径，减少设备时间与偶发异步噪声。
-- nightly（每天夜间定时执行的测试任务） 扩展页面集合和循环次数，并保存完整 heap analysis 文本。
+- nightly（每天夜间定时执行的测试任务）扩展页面集合和循环次数，并保存完整 heap analysis 文本。
 - 3.0 alpha 的 repeating heap growth（重复执行场景并比较 heap 增长） 能发现“没有明确 lifecycle watch 点、但对象持续增加”的问题；它仍是预览 API，替换不了基于 2.14 的稳定检查。
 
 每条失败至少保存 App commit、依赖锁文件、设备、API、ABI（应用二进制接口/CPU 架构，如 arm64-v8a）、场景 tag（测试场景标签）、leak signature、完整 trace、retained size 和测试次数。只凭 `retainedObjectCount` 没有路径，可靠地去重和定位原因都做不到。
@@ -527,7 +527,7 @@ CI 可以按执行成本分三层；这里既要求符合规则的 Application L
 1. matcher 精确到 class、field、厂商、API 和依赖版本，不用宽泛包名前缀。
 2. description 关联上游 issue、内部 owner、加入日期、影响范围和删除条件。
 3. Application 自己的 singleton、listener、adapter 泄漏不进入 matcher。
-4. 临时跳过测试使用 `@SkipLeakDetection` 时写明 issue 原因，并设到期检查；不要在 suite（整组测试集合） 级整体关闭。
+4. 临时跳过测试使用 `@SkipLeakDetection` 时写明 issue 原因，并设到期检查；不要在 suite（整组测试集合）级整体关闭。
 5. 升级 SDK 或 Android 版本后，重跑一遍不带自定义 matcher 的对照测试，删除不再命中的规则。
 
 一个 Library Leak 不会因为 CI 不失败就停止占用内存。CI 可以暂时容忍团队修不了的问题，但报告和趋势仍要保留。
@@ -552,7 +552,7 @@ CI 可以按执行成本分三层；这里既要求符合规则的 Application L
 
 KOOM 是快手开源的内存专项工具，沿三条路径诊断：Java heap 归 ART 管，native heap 来自 C/C++ 等本地代码的申请，thread 关注线程资源的生命周期；其中 PSS 是按比例分摊共享页后的进程内存，RSS 是进程当前驻留的物理内存。我们先看它适合接手的场景：已经由 OOM、PSS/RSS 或线程数趋势确认的内存问题。启动慢、网络慢或列表卡顿还没有明确的内存线索时，先把原因弄清楚，再决定要不要接 KOOM。
 
-截至 2026-10-26，[Maven Central 元数据](https://repo.maven.apache.org/maven2/com/kuaishou/koom/koom-java-leak/maven-metadata.xml)中的最新正式版本仍是 `2.2.2`，最后更新时间为 2024-04-16；KOOM `master` 的 `VERSION_NAME` 已写为 `2.2.3`，该值尚未发布到 Maven Central。当前 `master` 顶部提交（HEAD）仍是 2026-01-12 的 [`df3b8c33f63ab1f23e814c19792314efb653deaf`](https://github.com/KwaiAppTeam/KOOM/commit/df3b8c33f63ab1f23e814c19792314efb653deaf)，构建配置使用 compileSdk 34、targetSdk 30、AGP（Android Gradle Plugin） 7.1.0。compileSdk 决定编译时可见的 API，targetSdk 决定系统采用哪组兼容行为；把这些配置和上游工程构建成功加在一起，也证明不了 Android 17 运行兼容。
+截至 2026-10-26，[Maven Central 元数据](https://repo.maven.apache.org/maven2/com/kuaishou/koom/koom-java-leak/maven-metadata.xml)中的最新正式版本仍是 `2.2.2`，最后更新时间为 2024-04-16；KOOM `master` 的 `VERSION_NAME` 已写为 `2.2.3`，该值尚未发布到 Maven Central。当前 `master` 顶部提交（HEAD）仍是 2026-01-12 的 [`df3b8c33f63ab1f23e814c19792314efb653deaf`](https://github.com/KwaiAppTeam/KOOM/commit/df3b8c33f63ab1f23e814c19792314efb653deaf)，构建配置使用 compileSdk 34、targetSdk 30、AGP（Android Gradle Plugin）7.1.0。compileSdk 决定编译时可见的 API，targetSdk 决定系统采用哪组兼容行为；把这些配置和上游工程构建成功加在一起，也证明不了 Android 17 运行兼容。
 
 更关键的限制写在源码里：
 
@@ -566,7 +566,7 @@ KOOM 是快手开源的内存专项工具，沿三条路径诊断：Java heap �
 
 ### 三个模块分别看什么
 
-读下表前先统一几个词的说法：FD（file descriptor，文件描述符） 是进程打开文件、socket 等内核对象时使用的整数句柄。Hprof 是 Java/ART 堆快照，Shark 是 LeakCanary 使用的 Hprof 分析引擎。Hook 指把目标函数调用转到监控代理函数，能看到什么取决于实际改写了哪些入口。
+读下表前先统一几个词的说法：FD（file descriptor，文件描述符）是进程打开文件、socket 等内核对象时使用的整数句柄。Hprof 是 Java/ART 堆快照，Shark 是 LeakCanary 使用的 Hprof 分析引擎。Hook 指把目标函数调用转到监控代理函数，能看到什么取决于实际改写了哪些入口。
 
 | 模块 | 观察对象 | 源码中的触发与产物 | 当前边界 |
 |---|---|---|---|
@@ -591,7 +591,7 @@ joinable pthread 是 POSIX 线程，必须由另一个线程调用 `pthread_join
 | <code>FastHugeMemory<wbr>OOMTracker</code> | heap 使用率超过 90%，或已有上次样本时，使用量增长超过 350000 KiB（约 341.8 MiB） | 立即触发 |
 | <code>PhysicalMemory<wbr>OOMTracker</code> | 设备可用内存比例低于 5% 等区间 | 不会；当前实现只写日志，`return true` 已被注释 |
 
-这套触发器里没有“连续 GC 后仍存活”的独立条件，PSS/RSS 阈值也不会直接触发 dump；PSS、RSS 和 VSS（Virtual Set Size） 只是进入运行信息和报告，其中 VSS 表示进程虚拟地址空间总量。我们读报告时，先分清哪些字段只是在记录状态，哪些参与了触发判断。
+这套触发器里没有“连续 GC 后仍存活”的独立条件，PSS/RSS 阈值也不会直接触发 dump；PSS、RSS 和 VSS（Virtual Set Size）只是进入运行信息和报告，其中 VSS 表示进程虚拟地址空间总量。我们读报告时，先分清哪些字段只是在记录状态，哪些参与了触发判断。
 
 
 进程进入后台时，应用生命周期的 `ON_STOP` 事件会停掉轮询，回到前台后才恢复；执行分析的 Android Service 也会等进程回到前台。每个监控进程生命周期最多发起一次自动 dump 尝试，非 debug 构建还配置了“每版本 5 次、首个 15 天内”的分析额度。注意源码是在次数已经 `> 5` 时才拒绝，计数恰好为 5 时仍可能再分析一次。接入方若要求严格上限，需要自己修正这个判断；命中期限或次数限制后，监控循环结束，本次不再生成 Hprof。计数发生在调用分析 Service 之前，与“成功分析份数”是两个概念。
@@ -603,21 +603,21 @@ joinable pthread 是 POSIX 线程，必须由另一个线程调用 `pthread_join
 
 #### fork dump 的停顿与资源开销
 
-KOOM fast dump 的基本顺序是暂停 ART、调用 `fork()`、恢复父进程，再让子进程写 Hprof。`fork()` 出的子进程先与父进程共享内存页，copy-on-write（写时复制） 只在某一方修改页面时复制该页，所以创建子进程的瞬间并不会复制整块堆；但父子进程随后修改的页面仍会增加物理内存，子进程也要消耗 CPU、文件 I/O 和磁盘。可用内存已经很低时，诊断动作本身可能失败，也可能加快进程退出。
+KOOM fast dump 的基本顺序是暂停 ART、调用 `fork()`、恢复父进程，再让子进程写 Hprof。`fork()` 出的子进程先与父进程共享内存页，copy-on-write（写时复制）只在某一方修改页面时复制该页，所以创建子进程的瞬间并不会复制整块堆；但父子进程随后修改的页面仍会增加物理内存，子进程也要消耗 CPU、文件 I/O 和磁盘。可用内存已经很低时，诊断动作本身可能失败，也可能加快进程退出。
 
 <!-- gracker-diagram: ch17-03-22-fork-and-cow -->
 ![父进程恢复与子进程 dump 的资源关系](../../assets/diagrams/ch17/ch17-03-22-fork-and-cow.png)
 
-图：ART暂停后fork，父进程恢复，子进程写Hprof；后续写共享页可能增加物理内存。 COW不代表零内存开销；私有符号、布局与线程状态必须按目标系统验证。
+图：ART 暂停后 fork，父进程恢复，子进程写 Hprof；后续修改共享页仍可能增加物理内存。COW 不代表零内存开销；私有符号、布局与线程状态必须按目标系统验证。
 
-这一实现不属于公开 Android SDK：`koom-fast-dump` 按 mangled name 从 `libart.so` 解析 `art::ScopedSuspendAll`、`art::gc::ScopedGCCriticalSection`、ART 锁和 `art::hprof::DumpHeap` 等私有符号，并用预留字节模拟部分对象布局。固定 A17 的 `DumpHeap` 仍有对应三参数实现，但符号存在并不保证导出、可解析、函数类型、对象布局或线程状态安全。API 37 必须逐项验证；覆盖默认公共配置门只会跳过策略检查。
+这一实现不属于公开 Android SDK：`koom-fast-dump` 按 mangled name 从 `libart.so` 解析 `art::ScopedSuspendAll`、`art::gc::ScopedGCCriticalSection`、ART 锁和 `art::hprof::DumpHeap` 等私有符号，并用预留字节模拟部分对象布局。固定 Android 17 基线的 `DumpHeap` 仍有对应三参数实现，但符号存在并不保证导出、可解析、函数类型、对象布局或线程状态安全。API 37 必须逐项验证；覆盖默认公共配置门只会跳过策略检查。
 
 自动路径还有几处独立的失败点：`mHasDumped = true` 发生在实际 dump 前，调用方忽略 `dump()` 的布尔返回值，之后 `sleep(1000)` 也不是 `fsync()` 或持久化保证。`startAnalysisService()` 会拒绝并删除零长度文件，非零文件能过这一关，却未必是有效 Hprof；native `ResumeAndWait()` 只检查子进程正常退出，退出码 0 要靠接入方验收。接入方应分别验收返回值、退出状态、文件完整性、分析结果与失败后是否允许重试。
 
 <!-- gracker-diagram: ch17-03-23-dump-attempt-results -->
 ![dump 尝试、文件与分析成功不能合并](../../assets/diagrams/ch17/ch17-03-23-dump-attempt-results.png)
 
-图：一次自动尝试还要分别核验返回值、子进程退出、文件完整性和Shark结果。 源码忽略dump布尔值，sleep不是fsync；非零文件也可能损坏。
+图：一次自动尝试还要分别核验返回值、子进程退出、文件完整性和 Shark 结果。源码忽略了 `dump` 布尔返回值，`sleep` 也不是 `fsync`；非零文件同样可能损坏。
 
 还要分清两条 dump 路径：
 
@@ -636,21 +636,21 @@ KOOM fast dump 的基本顺序是暂停 ART、调用 `fork()`、恢复父进程�
 
 ### Native leak：候选来自两份数据的交集
 
-Native 模块先用 xhook 改写目标 `.so` 的 PLT（Procedure Linkage Table，共享库调用外部函数时使用的跳转表），拦截 `malloc`、`realloc`、`calloc`、`memalign`、`posix_memalign` 和 `free`，维护仍未释放的分配记录。检查时再加载 `libmemunreachable.so`（Android 平台内部的 native 不可达内存分析库），解析私有的 `GetUnreachableMemoryString(bool, size_t)` 符号，从文本输出里提取不可达地址；它用 `GetUnreachableMemoryString(false, 1024)` 请求有上限的结果，再匹配起始地址相同、或完整落在不可达区间内的跟踪分配。A17 实现会折叠关联项、排序并限制结果条目，1024 不是“完整扫描全堆只会有 1024 个泄漏”的保证。
+Native 模块先用 xhook 改写目标 `.so` 的 PLT（Procedure Linkage Table，共享库调用外部函数时使用的跳转表），拦截 `malloc`、`realloc`、`calloc`、`memalign`、`posix_memalign` 和 `free`，维护仍未释放的分配记录。检查时再加载 `libmemunreachable.so`（Android 平台内部的 native 不可达内存分析库），解析私有的 `GetUnreachableMemoryString(bool, size_t)` 符号，从文本输出里提取不可达地址；它用 `GetUnreachableMemoryString(false, 1024)` 请求有上限的结果，再匹配起始地址相同、或完整落在不可达区间内的跟踪分配。Android 17 实现会折叠关联项、排序并限制结果条目，1024 并非“完整扫描全堆只会有 1024 个泄漏”的保证。
 
 这套做法有几条限制要记住：
 
 1. PLT Hook 只覆盖实际经过被 Hook 入口的分配；自定义 allocator（内存分配器）、静态绑定、直接 `mmap`（创建内存映射）、GPU/驱动内存和未选中的 `.so` 都在范围外。
 2. 从当前 root 集看已经不可达，比“暂时没有业务引用”更接近泄漏，但扫描时机、库内部缓存和对象生命周期仍可能制造候选；修复结论仍要多轮趋势或可控复现来支撑。
 3. `libmemunreachable` 是平台内部组件，Android 17 对应源码 [`system/memory/libmemunreachable@android-17.0.0_r1`](https://android.googlesource.com/platform/system/memory/libmemunreachable/+/refs/tags/android-17.0.0_r1) 仍包含相关能力；但应用进程自行 `dlopen`（运行时加载共享库）、解析 C++ 符号并依赖输出文本格式，这些都没有 SDK 稳定性保证。
-4. 未开启本地符号化时，KOOM 的栈帧主要提供 `rel_pc`（相对程序计数器地址） 与 `soName`。服务端必须按应用版本、ABI 和 Build ID（标识一次 native 构建的 ID） 保存未执行 strip、仍含调试符号的准确文件——构建对不上，地址就可能被解析到错误函数。
+4. 未开启本地符号化时，KOOM 的栈帧主要提供 `rel_pc`（相对程序计数器地址）与 `soName`。服务端必须按应用版本、ABI 和 Build ID（标识一次 native 构建的 ID）保存未执行 strip、仍含调试符号的准确文件——构建对不上，地址就可能被解析到错误函数。
 
 还要注意候选会被消费：`GetLeakAllocs()` 将匹配项加入结果后立即 `UnregisterAlloc()`，删除的是 KOOM 跟踪记录，没有对真实分配执行 `free()`。所以同一块内存下一轮不再上报，要另行确认是否真的释放；候选数量也只是本轮匹配到的存量。
 
 <!-- gracker-diagram: ch17-03-24-native-intersection-consumption -->
 ![两份候选输入与跟踪记录消费](../../assets/diagrams/ch17/ch17-03-24-native-intersection-consumption.png)
 
-图：系统有界不可达结果与Hook活跃记录匹配，输出候选后移除跟踪项。 输出会折叠与截断；跟踪项删除不是free，报告数量不是完整泄漏存量。
+图：系统有界不可达结果与 Hook 活跃记录匹配，输出候选后移除跟踪项。输出会折叠与截断；跟踪项删除不等于 `free`，报告数量也并非完整泄漏存量。
 
 以“每次播放后 RSS 上升 20 MiB”为假设排查场景，这个数值不是实测结果。限定播放器 `.so` 并准备对应符号后，按创建栈找候选；停止播放、销毁实例并等待回收，再使用独立的分配/释放统计、RSS 分区和新采集批次验证。跟踪项被消费后下一轮不再出现，属正常现象；修复是否成功，看的是独立统计和新批次的结果。
 
@@ -695,7 +695,7 @@ Native 模块先用 xhook 改写目标 `.so` 的 PLT（Procedure Linkage Table�
 <!-- gracker-diagram: ch17-03-29-system-first-triage -->
 ![从退出事实与内存分区选择专项诊断](../../assets/diagrams/ch17/ch17-03-29-system-first-triage.png)
 
-图：先固定退出与趋势证据，再按Java、native和线程/FD选择专项采集。 PSS上升不能单独证明Java泄漏，Native候选减少也不能证明已释放。
+图：先固定退出与趋势证据，再按 Java、native 和线程/FD 选择专项采集。PSS 上升不能单独证明 Java 泄漏，Native 候选减少也不能证明内存已释放。
 
 这条路径把退出事实、内存分区和专项排查分开：Java、native、thread 的修复人和验证工具通常不同，PSS 上升本身也证明不了 Java heap 泄漏。
 
@@ -705,16 +705,16 @@ Android 11 / API 30 起，可以在下次启动后通过 `ActivityManager.getHis
 
 - 先用 `ActivityManager.isLowMemoryKillReportSupported()` 判断设备是否支持 `REASON_LOW_MEMORY`；不支持时，内存压力导致的杀进程可能只显示 `REASON_SIGNALED` 和 `SIGKILL`（不能被应用捕获的强制终止信号）。
 - `getPss()`、`getRss()` 是系统最近一次采样值，可能为 0，也不保证贴近退出瞬间。
-- `getTraceInputStream()` 通常在 ANR（Application Not Responding，应用无响应） 时有 trace；API 31 起，`REASON_CRASH_NATIVE` 还可返回 protobuf 格式的 tombstone（原生崩溃转储）。trace 存在系统全局循环缓冲区中，可能被本应用或其他应用的后续崩溃记录覆盖而返回 `null`。进程从 ANR 恢复后以其他原因退出，也可能保留此前的 ANR trace；这时判定退出原因要以退出记录为准，而不是这份 trace；OOM/LMK（low memory kill，低内存终止） 未必带可读 trace。
+- `getTraceInputStream()` 通常在 ANR（Application Not Responding，应用无响应）时有 trace；API 31 起，`REASON_CRASH_NATIVE` 还可返回 protobuf 格式的 tombstone（原生崩溃转储）。trace 存在系统全局循环缓冲区中，可能被本应用或其他应用的后续崩溃记录覆盖而返回 `null`。进程从 ANR 恢复后以其他原因退出，也可能保留此前的 ANR trace；这时应以退出记录为准来判定退出原因，不要仅凭这份 trace 下结论；OOM/LMK（low memory kill，低内存终止）也未必带有可读 trace。
 
-Android 8～10 没有 `ApplicationExitInfo`，这部分设备要结合 Android Vitals、本地复现、版本级 PSS/RSS 趋势和受控日志判断。现代 Android 的内存回收决策由用户空间的 `lmkd`（low memory killer daemon，低内存终止守护进程） 按内存压力与进程优先级执行，Android 17 对应的平台源码是 [`system/memory/lmkd@android-17.0.0_r1`](https://android.googlesource.com/platform/system/memory/lmkd/+/refs/tags/android-17.0.0_r1)；相关判断并不直接依赖 `android17-6.18-2026-06_r39` 标签下的某段内核代码，API 37 的机制也别再用旧式“内核 lowmemorykiller 日志”来概括。
+Android 8～10 没有 `ApplicationExitInfo`，这部分设备要结合 Android Vitals、本地复现、版本级 PSS/RSS 趋势和受控日志判断。现代 Android 的内存回收决策由用户空间的 `lmkd`（low memory killer daemon，低内存终止守护进程）按内存压力与进程优先级执行，Android 17 对应的平台源码是 [`system/memory/lmkd@android-17.0.0_r1`](https://android.googlesource.com/platform/system/memory/lmkd/+/refs/tags/android-17.0.0_r1)；相关判断并不直接依赖 `android17-6.18-2026-06_r39` 标签下的某段内核代码，API 37 的机制也别再用旧式“内核 lowmemorykiller 日志”来概括。
 
 
 #### `onTrimMemory` 压力信号的变化
 
 `ComponentCallbacks2.onTrimMemory()` 在历史版本上可用于补充进程状态，但 Android 14 起系统只向应用交付 `TRIM_MEMORY_UI_HIDDEN`、`TRIM_MEMORY_BACKGROUND`，其余旧常量已在 Android 15 / API 35 正式废弃。`UI_HIDDEN` 表示 UI 转入不可见，`BACKGROUND` 表示后台进程已成为回收候选，两者都不是“系统将在固定时间内杀进程”的倒计时。我们接入时以自身 heap/RSS/线程趋势和系统退出记录为主，别再等旧压力级别来触发 dump。
 
-PSS 适合在分摊共享页后比较进程总体内存，RSS 表示当前驻留的物理页，Java heap 只覆盖 ART 管理的堆。Java heap 平稳、RSS/PSS 却持续上升时，排查重点可以移向 native、graphics、`mmap` 或线程栈；复现环境里继续用 `dumpsys meminfo` 与 Perfetto memory counters（内存计数轨道） 区分内存去向。
+PSS 适合在分摊共享页后比较进程总体内存，RSS 表示当前驻留的物理页，Java heap 只覆盖 ART 管理的堆。Java heap 平稳、RSS/PSS 却持续上升时，排查重点可以移向 native、graphics、`mmap` 或线程栈；复现环境里继续用 `dumpsys meminfo` 与 Perfetto memory counters（内存计数轨道）区分内存去向。
 
 
 ### 端侧报告的复现与采集边界
@@ -762,13 +762,13 @@ KOOM 原始结构之外，平台通常还需要样本、构建和业务上下文
 
 把 KOOM 带到 API 37，改一处 `SDK_INT` 远远不够。以下验证至少完成，才谈得上从实验依赖转为小比例发布依赖：
 
-1. 从明确的 KOOM commit hash（提交哈希） 构建，不把 Maven `2.2.2` 与 `master` 的 Android 15/16 KB 修改混在同一个版本描述里。
+1. 从明确的 KOOM commit hash（提交哈希）构建，不把 Maven `2.2.2` 与 `master` 的 Android 15/16 KB 修改混在同一个版本描述里。
 2. 审阅 `DefaultInitTask` 对 `CommonConfig.sdkVersionMatch` 的赋值及 dumper 对它的读取；对每个私有 ART 符号做启动时解析、失败降级和真机 dump 测试。
 3. 在 Android 17 / API 37 上测试大堆、并发分配、前后台切换、dump 超时、子进程被杀、磁盘不足和重复启动。
 4. 对 native monitor 验证 `libmemunreachable.so` 加载、符号解析、`ptrace`/进程 dumpable 条件、结果文本解析、xhook 与目标 allocator 覆盖率，以及分配失败、候选消费、主动清零和异步卸载。`ptrace` 和 dumpable 状态共同影响一个进程能否被检查或读取。
 5. 不启用 thread monitor，除非已完成 API 37 适配；上游源码当前会直接拒绝。适配后还要覆盖 create/detach/join/exit、线程复用和 stop/start。
-6. 以当前进程 ISA 与实际打包 ABI 核验 native/thread 模块，其他 ABI 明确禁用，不依赖上游位宽 helper 充当精确白名单；同时统一 `c++_shared` / `c++_static（C++ 运行库动态/静态链接）` 策略，避免 `libc++_shared.so` 冲突。
-7. 使用 NDK（Native Development Kit，本地开发工具包） r28+ 重编所有 native 产物，并对最终 APK/AAB 执行 16 KB ELF 与 ZIP 对齐检查。上游 `master` 升到 NDK `28.2.13676358` 只说明构建配置变了，产物是否已重建、是否满足对齐仍要看实物；r28+ 是常见构建路线，也可按官方指南配置旧版工具链，最终以实际 `.so` 和安装包为准。
+6. 以当前进程 ISA 与实际打包 ABI 核验 native/thread 模块，其他 ABI 明确禁用，不依赖上游位宽 helper 充当精确白名单；同时统一 `c++_shared` / `c++_static`（C++ 运行库动态/静态链接）策略，避免 `libc++_shared.so` 冲突。
+7. 使用 NDK（Native Development Kit，本地开发工具包）r28+ 重编所有 native 产物，并对最终 APK/AAB 执行 16 KB ELF 与 ZIP 对齐检查。上游 `master` 升到 NDK `28.2.13676358` 只说明构建配置变了，产物是否已重建、是否满足对齐仍要看实物；r28+ 是常见构建路线，也可按官方指南配置旧版工具链，最终以实际 `.so` 和安装包为准。
 8. 在 Android 17 的 16 KB 设备或官方模拟环境中，用 `fatal` 模式关闭 page-size 兼容并运行专项用例。API 37 的 4 KB 设备通过只覆盖该设备环境；16 KB 页大小兼容要另在 16 KB 环境确认，API、ISA 与页大小分别记录。
 9. 对比启用组和关闭组的启动时间、帧停顿、ANR、OOM/LMK、PSS 峰值、磁盘写入与电量，确认诊断收益高于监控成本。
 10. 修复后用同一压测脚本复测，并观察至少一个小比例发布周期内的同一问题摘要所覆盖的设备数与退出率；单次 report 消失不算验证完成。

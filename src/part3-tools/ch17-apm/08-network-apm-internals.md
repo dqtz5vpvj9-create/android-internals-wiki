@@ -57,7 +57,7 @@ title: 网络 APM 底层捕获原理
 
 # 网络 APM 底层捕获原理
 
-网络 APM（Application Performance Monitoring，应用性能监控）难在采样这一步。一条请求可能经过业务封装、HTTP 客户端、DNS（域名解析）、socket（网络通信端点）、TLS（传输加密协议）和内核网络栈；缓存命中、连接复用与明文 HTTP 会跳过其中部分阶段；WebView、Cronet（Chromium 提供的网络库） 或 C/C++ SDK 还会绕开应用熟悉的 Java 入口。监控图表上的一条“请求耗时”，要先把这一路上发生的事件正确配对，才有诊断价值。
+网络 APM（Application Performance Monitoring，应用性能监控）难在采样这一步。一条请求可能经过业务封装、HTTP 客户端、DNS（域名解析）、socket（网络通信端点）、TLS（传输加密协议）和内核网络栈；缓存命中、连接复用与明文 HTTP 会跳过其中部分阶段；WebView、Cronet（Chromium 提供的网络库）或 C/C++ SDK 还会绕开应用熟悉的 Java 入口。监控图表上的一条“请求耗时”，要先把这一路上发生的事件正确配对，才有诊断价值。
 
 
 > 源码基线：AOSP `android-17.0.0_r1`（Android 17 / API 37）；内核 `android17-6.18-2026-06_r6`。
@@ -66,7 +66,7 @@ OkHttp、Cronet 和 Android Gradle Plugin（AGP，Android 构建插件）独立�
 
 ## 1. “无侵入”指业务入口免埋点
 
-“无侵入”通常指业务开发者不必在每个接口旁手写计时代码。采集器仍会进入构建过程或请求执行路径，只是入口集中在客户端工厂、字节码插件或 Native（由 C/C++ 编译的本地代码） 代理里。我们先把各层的典型入口和它们各自答不了的问题列出来：
+“无侵入”通常指业务开发者不必在每个接口旁手写计时代码。采集器仍会进入构建过程或请求执行路径，只是入口集中在客户端工厂、字节码插件或 Native（由 C/C++ 编译的本地代码）代理里。我们先把各层的典型入口和它们各自答不了的问题列出来：
 
 | 层级 | 典型入口 | 适合采集 | 无法独立回答的问题 |
 | --- | --- | --- | --- |
@@ -77,15 +77,15 @@ OkHttp、Cronet 和 Android Gradle Plugin（AGP，Android 构建插件）独立�
 | 系统与内核层 | TrafficStats、系统 BPF（在内核中运行受限程序的机制）、受控测试工具 | UID（应用在 Linux 中的身份编号）/socket 流量、RTT（Round-Trip Time，网络往返时延）、重传和内核错误 | TLS 内的 URL、header（请求或响应元数据）和业务请求边界 |
 
 
-这些层看到的对象并不重合：HTTP 请求、DNS 查询、建连尝试和 socket 之间，没有一一对应关系。一次调用可能复用现成连接，也可能解析一次域名后并行尝试多个地址；HTTP/2 和 HTTP/3 还允许不同请求通过各自的 stream（连接内的独立逻辑数据流） 共享连接，HTTP/3 用的 QUIC 则是基于 UDP、内置加密与多路复用的传输协议。
+这些层看到的对象并不重合：HTTP 请求、DNS 查询、建连尝试和 socket 之间，没有一一对应关系。一次调用可能复用现成连接，也可能解析一次域名后并行尝试多个地址；HTTP/2 和 HTTP/3 还允许不同请求通过各自的 stream（连接内的独立逻辑数据流）共享连接，HTTP/3 用的 QUIC 则是基于 UDP、内置加密与多路复用的传输协议。
 
-对应关系这么松，我们设计采集 schema（样本的字段结构） 时就要多留一层结构：只放一个 `attempt` 数组撑不住，重试和多路复用很快会让它失真；trace（跨服务串起同一次请求的调用轨迹） id 也要记清它对应 HTTP 的哪一层。
+对应关系这么松，我们设计采集 schema（样本的字段结构）时就要多留一层结构：只放一个 `attempt` 数组撑不住，重试和多路复用很快会让它失真；trace（跨服务串起同一次请求的调用轨迹）id 也要记清它对应 HTTP 的哪一层。
 
 更稳妥的结构包含四条相互关联的记录：
 
 - `call`：业务发起的一次客户端调用，是最外层生命周期。
 - `dns_span`：一次域名解析区间，可出现零次或多次。
-- `route_attempt`：对某个 IP、端口和 proxy（代理服务器） 的一次连接尝试。
+- `route_attempt`：对某个 IP、端口和 proxy（代理服务器）的一次连接尝试。
 - `exchange`：一轮开始写入 request 的 HTTP 交换尝试。`requestHeadersStart` 不保证数据已发上网络，写入或读取失败时也可能没有 response；重定向、鉴权挑战和部分故障恢复可产生新 exchange。
 
 
@@ -93,7 +93,7 @@ OkHttp、Cronet 和 Android Gradle Plugin（AGP，Android 构建插件）独立�
 
 ## 2. OkHttp：事件时间线与请求语义分开采
 
-OkHttp 主通道上，我们把 `EventListener`（按阶段通知网络事件的监听器） 和两类 `Interceptor` 组合起来用：
+OkHttp 主通道上，我们把 `EventListener`（按阶段通知网络事件的监听器）和两类 `Interceptor` 组合起来用：
 
 - `EventListener` 记录代理选择、DNS、连接、TLS、请求写入、响应读取、缓存与失败事件。
 - 应用拦截器适合读取 request id（请求关联标识）、业务路由和最终响应语义；正常执行到拦截器链的 `Call` 会经过它，缓存命中也会经过它。需要 listener factory 读取的 id 必须在 `newCall()` 前写入原始请求。
@@ -106,15 +106,15 @@ request id 的传递还要更早一步：我们在 `newCall()` 前把 `NetworkRe
 <!-- gracker-diagram: ch17-08-04-listeners-interceptors -->
 ![三种 OkHttp 采集入口的分工](../../assets/diagrams/ch17/ch17-08-04-listeners-interceptors.png)
 
-图：应用语义、网络 exchange 与阶段回调由不同入口采集。 request id 在 newCall 前设置，factory 与拦截器才可读取同一 tag。
+图：应用语义、网络 exchange 与阶段回调由不同入口采集。request id 在 newCall 前设置，factory 与拦截器才可读取同一 tag。
 
 ### 2.1 先读懂事件序列的四个例外
 
 OkHttp 5.3.0 的 `EventListener` 源码把事件顺序写得很明确，我们先把四个例外记牢：
 
 1. 连接复用时，代理选择、DNS 和 connect 事件可能全部缺席。
-2. retry 与 follow-up（重定向、鉴权等后续请求）——前者是连接故障后的再次尝试，后者是重定向、鉴权等触发的后续请求——会重复产生事件序列。`requestFailed`、`responseFailed` 和 `connectFailed` 出现后，整个 `Call` 仍可能继续。
-3. `Expect: 100-continue` 会先等服务端允许再发送 request body，因此 body 事件可能落在 response headers 事件之间；duplex body（请求和响应可同时传输的双工 body） 还允许两边交错传输。
+2. retry 与 follow-up——前者是连接故障后的再次尝试，后者是重定向、鉴权等触发的后续请求——会重复产生事件序列。`requestFailed`、`responseFailed` 和 `connectFailed` 出现后，整个 `Call` 仍可能继续。
+3. `Expect: 100-continue` 会先等服务端允许再发送 request body，因此 body 事件可能落在 response headers 事件之间；duplex body（请求和响应可同时传输的双工 body）还允许两边交错传输。
 4. `canceled` 可以与其他回调并发，甚至晚于 `callEnd`。5.3.0 的 fast fallback 已会错开并发执行 TCP 连接尝试；多个 route 的 connect 回调可能交错到达，先后顺序没有保证。当前实现选出成功的 TCP plan 后再进行 TLS，但公开 TLS 回调不携带地址，采集器别按数组末项补出确定的 route 归属。
 
 
@@ -123,7 +123,7 @@ OkHttp 5.3.0 的 `EventListener` 源码把事件顺序写得很明确，我们�
 <!-- gracker-diagram: ch17-08-06-headers-boundary -->
 ![响应回调在读取 Header block 之后](../../assets/diagrams/ch17/ch17-08-06-headers-boundary.png)
 
-图：本文版本先完成一次 header block 读取，再触发 responseHeadersStart。 首次 block 可能是临时响应；这个回调给不出精确首字节时间。
+图：本文版本先完成一次 header block 读取，再触发 responseHeadersStart。首次 block 可能是临时响应；这个回调给不出精确首字节时间。
 
 ### 2.2 一份不会覆盖 retry/follow-up 的核心实现
 
@@ -529,14 +529,14 @@ private class NetworkMetricEventListener(
 <!-- gracker-diagram: ch17-08-07-collector-state -->
 ![有界采集与终止快照](../../assets/diagrams/ch17/ch17-08-07-collector-state.png)
 
-图：只有 wire headers start 创建 exchange，决策与缓存事件单独保存。 TLS 无地址参数，连接取得也不足以证明最近一次新建连接被采用。
+图：只有 wire headers start 创建 exchange，决策与缓存事件单独保存。TLS 无地址参数，连接取得也不足以证明最近一次新建连接被采用。
 
 状态修改使用 per-call 私有锁，锁内不做 I/O、不打日志、不调 sink。普通事件共用 512 次预算，耗尽后冻结这些字段、累加 `droppedEvents`，终止快照仍可生成；任何统计必须先检查截断标记。`cancelObservedBeforeTerminal` 只表示生成终止快照前观察到取消；晚到的取消不把成功改成失败。`copy()` / `toList()` 隔离 listener 状态，DTO 仍有可变字段，sink 必须遵守入队后不修改的约定。
 
 <!-- gracker-diagram: ch17-08-09-budget-snapshot -->
 ![截断、取消与快照的生命周期](../../assets/diagrams/ch17/ch17-08-09-budget-snapshot.png)
 
-图：普通事件共享有限预算，耗尽后冻结字段，终止仍生成一次快照。 丢弃计数影响统计可信度；已入队 DTO 按约定不再修改。
+图：普通事件共享有限预算，耗尽后冻结字段，终止仍生成一次快照。丢弃计数影响统计可信度；已入队 DTO 按约定不再修改。
 
 `NetworkDimensions` 的方法必须有明确时间上限、无 I/O 与外部副作用；示例把普通异常转为 `unknown`，只挡住了异常返回，耗时预算仍要单独设定。host 采用允许清单，address/proxy 输出合规前缀或有密钥的摘要；这些可能碰撞的维度只作展示，原始配对仍要用回调参数。`NetworkMetricSink.enqueue()` 必须使用有界、非阻塞队列，满时丢弃并计数；示例接口本身不实现队列。
 
@@ -566,7 +566,7 @@ val call = client.newCall(request)
 <!-- gracker-diagram: ch17-08-10-request-id-order -->
 ![Factory 读取 Request tag 的时机](../../assets/diagrams/ch17/ch17-08-10-request-id-order.png)
 
-图：先设置 tag，再 newCall 创建 listener，执行时拦截器读取同一标识。 拦截器临时生成的 tag，到不了已创建的 factory 状态。
+图：先设置 tag，再 newCall 创建 listener，执行时拦截器读取同一标识。拦截器临时生成的 tag，到不了已创建的 factory 状态。
 
 ### 2.3 Interceptor 只做它能证明的事
 
@@ -579,12 +579,12 @@ val call = client.newCall(request)
 
 网络拦截器适合观察每个 wire exchange，拿它读 body 来“顺便采样”则行不通：one-shot（只能发送一次）、duplex 和流式 body 可能没法原样重放，提前 `string()` 或复制整个 buffer 还会改变内存、时序和 backpressure（下游读取速度反过来限制上游发送的机制）。
 
-我们确需统计字节时，用 forwarding sink/source（转发数据的同时计数的包装器） 在转发途中计数；内容采集仍按第 7 节的允许清单执行。`responseBodyEnd(byteCount)` 在本文版本的 `Exchange.ResponseBodySource` 计数，位于 `BridgeInterceptor` 的透明 gzip 解压之前，也受缓冲预读影响；这个数对不上精确的业务已消费字节数，也对不上 IP/TLS 链路总字节数。提前 close 时读到的可能是部分，也可能是全部，样本里照实记录。示例将它命名为 `responseBodyBytesObserved`；业务解压后消费量需要在对应上层另外计数。
+我们确需统计字节时，用 forwarding sink/source（转发数据的同时计数的包装器）在转发途中计数；内容采集仍按第 7 节的允许清单执行。`responseBodyEnd(byteCount)` 在本文版本的 `Exchange.ResponseBodySource` 计数，位于 `BridgeInterceptor` 的透明 gzip 解压之前，也受缓冲预读影响；这个数对不上精确的业务已消费字节数，也对不上 IP/TLS 链路总字节数。提前 close 时读到的可能是部分，也可能是全部，样本里照实记录。示例将它命名为 `responseBodyBytesObserved`；业务解压后消费量需要在对应上层另外计数。
 
 <!-- gracker-diagram: ch17-08-11-body-byte-boundary -->
 ![Gzip、缓冲与应用消费的计数边界](../../assets/diagrams/ch17/ch17-08-11-body-byte-boundary.png)
 
-图：内部 body source 计数在透明 gzip 解压之前，缓冲预读又早于业务逐字节消费。 回调字节对不上 IP/TLS 总字节，也对不上业务已消费量；不要提前读取 body 采样。
+图：内部 body source 计数在透明 gzip 解压之前，缓冲预读又早于业务逐字节消费。回调字节对不上 IP/TLS 总字节，也对不上业务已消费量；不要提前读取 body 采样。
 
 ## 3. 指标模型：先定义计时边界，再计算差值
 
@@ -601,12 +601,12 @@ val call = client.newCall(request)
 
 `attempt_count` 这个名字过于含糊，我们把它拆成 `route_attempt_count`、`exchange_count`、`retry_decision_count` 和 `follow_up_count`。连接复用的请求可以有 exchange，却没有 route attempt；一次 DNS 结果也可能对应多个地址尝试。
 
-`network_type` 同样要按会变化的量来存。蜂窝与 Wi‑Fi 切换、VPN 或 QUIC connection migration（地址或网络改变后继续沿用连接）都可能发生在一次请求期间。至少记录 call 开始和结束时的 network handle/type（Android 网络对象标识与网络类型）；能监听默认网络变化时，再追加 transition（切换事件） 事件。VPN 下看不到底层网络，就写 `unknown`，别靠猜。
+`network_type` 同样要按会变化的量来存。蜂窝与 Wi‑Fi 切换、VPN 或 QUIC connection migration（地址或网络改变后继续沿用连接）都可能发生在一次请求期间。至少记录 call 开始和结束时的 network handle/type（Android 网络对象标识与网络类型）；能监听默认网络变化时，再追加 transition（状态切换）事件。VPN 下看不到底层网络，就写 `unknown`，别靠猜。
 
 
 ### 3.2 OkHttp 阶段差值
 
-TTFB（Time to First Byte）要的是“首字节到达”这个时刻，而 `EventListener` 的响应回调给的是另一个时刻：在 OkHttp 5.3.0 与 5.4.0 的 `CallServerInterceptor` 中，`responseHeadersStart` 在一次 `readResponseHeaders()` 返回后触发，此时 HTTP/1.1 已读完状态行和一个 header block。这次回调对应的可能是 `100 Continue`、`103 Early Hints` 或最终响应，字段命名要体现这一点，直接叫“最终响应 TTFB（Time to First Byte，首字节时间）”会出错。
+TTFB（Time to First Byte，首字节时间）要的是“首字节到达”这个时刻，而 `EventListener` 的响应回调给的是另一个时刻：在 OkHttp 5.3.0 与 5.4.0 的 `CallServerInterceptor` 中，`responseHeadersStart` 在一次 `readResponseHeaders()` 返回后触发，此时 HTTP/1.1 已读完状态行和一个 header block。这次回调对应的可能是 `100 Continue`、`103 Early Hints` 或最终响应，字段命名要体现这一点，直接叫“最终响应 TTFB”会出错。
 
 下表保留回调能证明的区间。`responseHeadersStart` 与 `responseHeadersEnd` 均指采集器收到回调的时刻：
 
@@ -630,7 +630,7 @@ HTTPS 下 `connectEnd` 发生在 `secureConnectEnd` 之后，`connectStart → c
 <!-- gracker-diagram: ch17-08-13-connect-tls-overlap -->
 ![Transport connect 已包含 TLS](../../assets/diagrams/ch17/ch17-08-13-connect-tls-overlap.png)
 
-图：同一条 HTTPS route 的 transport 总区间包含 TLS，代理隧道还会影响 pre-TLS。 仅在事件可唯一配对且确属同一路由时计算；connect 与 TLS 别重复相加。
+图：同一条 HTTPS route 的 transport 总区间包含 TLS，代理隧道还会影响 pre-TLS。仅在事件可唯一配对且确属同一路由时计算；connect 与 TLS 别重复相加。
 
 `sendEnd` 有 body 时取 `requestBodyEnd`，无 body 时取 `requestHeadersEnd`。post-write response wait estimate 要满足三个条件：
 
@@ -653,7 +653,7 @@ body 回调还要单独按内部 source 解释：正常读取时，首个 `read(
 <!-- gracker-diagram: ch17-08-16-body-window -->
 ![Body 完成与业务处理完成是两个边界](../../assets/diagrams/ch17/ch17-08-16-body-window.png)
 
-图：内部回调、上层消费与业务处理有不同完成边界。 正常读取时 start 在首个阻塞 read 返回后触发；零长度或未读关闭也可补发 start，回调差值算不上完整下载时间。
+图：内部回调、上层消费与业务处理有不同完成边界。正常读取时 start 在首个阻塞 read 返回后触发；零长度或未读关闭也可补发 start，回调差值算不上完整下载时间。
 
 ### 3.3 空字段也是结论
 
@@ -666,7 +666,7 @@ body 回调还要单独按内部 source 解释：正常读取时，首个 `read(
 | DNS 为 0 ms | 客户端或系统缓存快速返回 | 保留 0；不要改为空 |
 
 
-持续流、WebSocket upgrade（把 HTTP 连接升级为 WebSocket） 和 duplex RPC（请求与响应可同时传输的远程调用）是另一类：一次性 HTTP 下载模型套不上它们，应改用 stream 生命周期、首消息、消息间隔、backpressure 和关闭原因这类字段。
+持续流、WebSocket upgrade（把 HTTP 连接升级为 WebSocket）和 duplex RPC（请求与响应可同时传输的远程调用）是另一类：一次性 HTTP 下载模型套不上它们，应改用 stream 生命周期、首消息、消息间隔、backpressure 和关闭原因这类字段。
 
 ## 4. 弱网、重试与 follow-up 的识别
 
@@ -679,7 +679,7 @@ body 回调还要单独按内部 source 解释：正常读取时，首个 `read(
 - 多次 `requestHeadersStart` 表示多个 wire exchange，原因还要结合 retry/follow-up 决定和中间状态码。
 - `requestFailed` 与 `responseFailed` 都可能被恢复，见到它们时先别把 call 标成失败。
 
-同一域名的 IPv6 与 IPv4 地址可能被依次尝试，fast fallback（错开启动多条候选连接的竞速策略） 还可能让连接尝试重叠。route 配对要用 address、port、proxy 和事件参数去对，靠数组末项猜会配错；已有 API 定不下唯一配对时，上传原始顺序、`pairing_confidence = low（配对可信度低）` 和有限字段即可。
+同一域名的 IPv6 与 IPv4 地址可能被依次尝试，fast fallback（错开启动多条候选连接的竞速策略）还可能让连接尝试重叠。route 配对要用 address、port、proxy 和事件参数去对，靠数组末项猜会配错；已有 API 定不下唯一配对时，上传原始顺序、`pairing_confidence = low`（配对可信度低）和有限字段即可。
 
 
 看板至少分开展示：
@@ -703,9 +703,9 @@ body 回调还要单独按内部 source 解释：正常读取时，首个 `read(
 
 ## 5. `HttpURLConnection` 与三方 SDK：在调用点插桩
 
-`java.net.URL` 与 `HttpURLConnection` 的 API 定义在 libcore（Android 的 Java 核心库实现）里，又在 boot classpath（系统启动时加载的核心 class 路径） 上，应用改不动它。我们让构建插件改写应用或依赖的 class 字节码，把这些 API 的调用导向采集桥接层。
+`java.net.URL` 与 `HttpURLConnection` 的 API 定义在 libcore（Android 的 Java 核心库实现）里，又在 boot classpath（系统启动时加载的核心 class 路径）上，应用改不动它。我们让构建插件改写应用或依赖的 class 字节码，把这些 API 的调用导向采集桥接层。
 
-AGP 8.0 已移除旧 Transform API。本轮核对的 AGP 官方 API 与迁移路线仍通过 `androidComponents` 下的 Instrumentation API 与 `AsmClassVisitorFactory` 修改或检查字节码。下面的代码按每个 build variant（构建变体，例如 debug 或 release） 注册 ASM visitor：
+AGP 8.0 已移除旧 Transform API。本轮核对的 AGP 官方 API 与迁移路线仍通过 `androidComponents` 下的 Instrumentation API 与 `AsmClassVisitorFactory` 修改或检查字节码。下面的代码按每个 build variant（构建变体，例如 debug 或 release）注册 ASM visitor：
 
 ```kotlin
 androidComponents {
@@ -726,7 +726,7 @@ androidComponents {
 ASM visitor 会逐条访问 class 中的方法指令；AGP 随后为受影响方法重算 stack map frame（JVM 验证字节码时使用的栈与局部变量类型信息）。默认用 `PROJECT`，只处理当前项目的 class。官方 API 限定库模块只能插桩本地项目类；应用与测试模块才可选择 `ALL`，把依赖类纳入范围。启用 `ALL` 时，通过 `isInstrumentable()` 的精确包名前缀排除 APM runtime（采集器运行时代码）、生成代码和不兼容依赖。
 
 
-下面的 visitor 把实例调用替换成静态桥接调用。`URL` receiver（实例方法的接收对象） 原本在 operand stack（执行字节码时暂存操作数的栈） 上，替换后成为静态方法的第一个参数，因此无需额外插入 `DUP` 或局部变量。
+下面的 visitor 把实例调用替换成静态桥接调用。`URL` receiver（实例方法的接收对象）原本在 operand stack（执行字节码时暂存操作数的栈）上，替换后成为静态方法的第一个参数，因此无需额外插入 `DUP` 或局部变量。
 
 ```kotlin
 private val replacements = mapOf(
@@ -768,17 +768,17 @@ override fun visitMethodInsn(
 }
 ```
 
-三个 method descriptor（编码参数与返回类型的方法签名） 必须分别匹配；只 Hook（拦截并转到自定义实现） 无参 `openConnection()` 会漏掉代理重载和 `openStream()`。`ApmUrlHook` 所在包必须从插桩范围排除，否则桥接方法再次调用 `URL.openConnection()` 会递归。
+三个 method descriptor（编码参数与返回类型的方法签名）必须分别匹配；只 Hook（拦截并转到自定义实现）无参 `openConnection()` 会漏掉代理重载和 `openStream()`。`ApmUrlHook` 所在包必须从插桩范围排除，否则桥接方法再次调用 `URL.openConnection()` 会递归。
 
 <!-- gracker-diagram: ch17-08-22-receiver-stack -->
 ![实例 Receiver 变成静态首参数](../../assets/diagrams/ch17/ch17-08-22-receiver-stack.png)
 
-图：把 URL 实例调用重写为带 URL 首参数的静态桥接调用，保持栈中参数顺序。 无参、Proxy 重载和 openStream 分别匹配；桥接包必须排除以防递归。
+图：把 URL 实例调用重写为带 URL 首参数的静态桥接调用，保持栈中参数顺序。无参、Proxy 重载和 openStream 分别匹配；桥接包必须排除以防递归。
 
 桥接层可包装 `URLConnection`、input stream 与 output stream，记录公开 API 能证明的时刻和字节数。`connect()` 返回并不等价于“纯 TCP 完成”，`getInputStream()` 又可能同时触发建连、写请求和读 response header。`HttpURLConnection` 没有 OkHttp 那样的 DNS/TLS 回调，几个 Java 方法的时间点拼不出完整的协议阶段；需要 DNS、TLS 或重试细节时，只能结合实现可用的回调、受控 Native 观测或服务端 trace。
 
 
-依赖 class 能否被 `InstrumentationScope.ALL` 处理，还受打包形式、动态加载、混淆和插件版本影响。构建时要输出“扫描 class 数、命中调用点数、排除原因”，再用 fixture（固定输入的测试样例）覆盖 AAR/JAR（Android/Java 依赖包格式）、Proxy 重载、异常和 R8（Android 代码压缩与优化工具） 构建。
+依赖 class 能否被 `InstrumentationScope.ALL` 处理，还受打包形式、动态加载、混淆和插件版本影响。构建时要输出“扫描 class 数、命中调用点数、排除原因”，再用 fixture（固定输入的测试样例）覆盖 AAR/JAR（Android/Java 依赖包格式）、Proxy 重载、异常和 R8（Android 代码压缩与优化工具）构建。
 
 ## 6. Cronet、PLT Hook 与 eBPF 的能力边界
 
@@ -794,21 +794,21 @@ Cronet 的字段也要按文档解释：
 - QUIC 的 `sslStart/sslEnd` 与 `connectStart/connectEnd` 指同一段时间，分别记录即可，相加会重复计时。
 - socket reuse 为 true 时，DNS、connect 与 SSL 时间为空。
 - metrics 不可用或请求未走到该阶段时，时间为 `null`。
-- `getTtfbMs()` 表示从请求发起到响应 header 首字节的毫秒数；`getTotalTimeMs()` 包括成功、失败或取消前的完整请求时间。Cronet provider（实际提供实现的组件） 没有采集时，两者都可能为 `null`。
+- `getTtfbMs()` 表示从请求发起到响应 header 首字节的毫秒数；`getTotalTimeMs()` 包括成功、失败或取消前的完整请求时间。Cronet provider（实际提供实现的组件）没有采集时，两者都可能为 `null`。
 - `getResponseStart()` 是最终 response headers 收完的时刻，应与 Cronet 自己的 `getTtfbMs()` 区分。OkHttp 的 header 回调又受第 3.2 节所述触发位置的限制，名称相近的字段要先核对采样点再对齐；直接 TTFB 字段为空时，用 header 收完时间算出的值要另起字段名。
-- `getMetrics()` 的总说明称时间和字节覆盖全部 redirect，但 `getReceivedByteCount()` 的字段说明又明确排除先前 redirect，源码也保留了返回完整 metrics 链的 TODO。redirect 字节数是否累计，以实际 Cronet provider/version 的 contract test（用固定输入验证字段行为的契约测试） 结果为准，先测再定。
+- `getMetrics()` 的总说明称时间和字节覆盖全部 redirect，但 `getReceivedByteCount()` 的字段说明又明确排除先前 redirect，源码也保留了返回完整 metrics 链的 TODO。redirect 字节数是否累计，以实际 Cronet provider/version 的 contract test（用固定输入验证字段行为的契约测试）结果为准，先测再定。
 - 单个 `Metrics` 精确还原不了每一跳；每个 redirect 要结合 `onRedirectReceived()` 另存语义事件。
 
-Cronet 的 Google Play services 实现、作为后备的 fallback 与独立发布的 Chromium artifact（发布的依赖包） 之间可能存在 API 或实现差异。统一 schema（结构化数据的字段结构） 要保留 `metric_source = okhttp | cronet`、provider/version 与 `timestamp_semantics`（时间戳代表的事件边界）。上线前用编译依赖对应的 API 和真机契约测试核对空字段、redirect 与字节计算规则；字段名相同，采样点未必相同，跨客户端汇总前先统一定义。
+Cronet 的 Google Play services 实现、作为后备的 fallback 与独立发布的 Chromium artifact（发布的依赖包）之间可能存在 API 或实现差异。统一 schema（结构化数据的字段结构）要保留 `metric_source = okhttp | cronet`、provider/version 与 `timestamp_semantics`（时间戳代表的事件边界）。上线前用编译依赖对应的 API 和真机契约测试核对空字段、redirect 与字节计算规则；字段名相同，采样点未必相同，跨客户端汇总前先统一定义。
 
 <!-- gracker-diagram: ch17-08-24-cronet-metrics -->
 ![Cronet 首字节字段与 Header 完成](../../assets/diagrams/ch17/ch17-08-24-cronet-metrics.png)
 
-图：Cronet 保留自身 provider、版本与时间语义，再映射到共有字段。 TTFB 与 responseStart 边界不同，redirect 字节契约需在实际 provider 上验证。
+图：Cronet 保留自身 provider、版本与时间语义，再映射到共有字段。TTFB 与 responseStart 边界不同，redirect 字节契约需在实际 provider 上验证。
 
 ### 6.2 PLT/GOT Hook 的覆盖范围
 
-PLT（Procedure Linkage Table）和 GOT（Global Offset Table）是 ELF（Android Native 二进制格式） 动态链接过程中定位外部函数的表。我们修改这些入口，把部分函数调用转交给采集代码；它只对确实经过动态符号入口的调用生效。
+PLT（Procedure Linkage Table）和 GOT（Global Offset Table）是 ELF（Android Native 二进制格式）动态链接过程中定位外部函数的表。我们修改这些入口，把部分函数调用转交给采集代码；它只对确实经过动态符号入口的调用生效。
 
 Native 兜底常见目标包括：
 
@@ -819,28 +819,28 @@ Native 兜底常见目标包括：
 
 设计时要把三条限制写清楚：
 
-1. `SSL_write` 的输入长度对应不上链路发送字节：TLS record 分帧、缓冲和重试都会改变数量；`SSL_read` 的输出也可能混着 HTTP/2 frame（协议帧） 等数据，未必就是业务 body。
+1. `SSL_write` 的输入长度对应不上链路发送字节：TLS record 分帧、缓冲和重试都会改变数量；`SSL_read` 的输出也可能混着 HTTP/2 frame（协议帧）等数据，未必就是业务 body。
 2. `send/recv` 看不到 TCP 重传：重传发生在内核 TCP 栈，用户态 QUIC 的重传又属于协议库。socket 调用失败和“发生重传”是两回事。
-3. Cronet 常把 BoringSSL（Chromium 使用的 TLS 实现）与网络栈静态链接，Mars 或自研库也可能隐藏符号、内联调用或直接执行 syscall（系统调用）。这时 PLT Hook 对 `SSL_*` 或 libc wrapper（封装函数） 的覆盖率可能很低。
+3. Cronet 常把 BoringSSL（Chromium 使用的 TLS 实现）与网络栈静态链接，Mars 或自研库也可能隐藏符号、内联调用或直接执行 syscall（系统调用）。这时 PLT Hook 对 `SSL_*` 或 libc wrapper（封装函数）的覆盖率可能很低。
 
 
-Bionic（Android 的 C 标准库）的 `socket()` 仍通过 `NetdClientDispatch` 分派，dynamic linker（动态链接器） 负责 ELF 装载与符号解析。这个源码事实只说明存在潜在调用路径，离“所有网络请求都能 Hook 到”还差得远。Hook 实现还要处理线程局部的递归调用保护、原始函数解析、`errno` 保存恢复、fork（从当前进程创建子进程） 与动态加载、ABI（Application Binary Interface，应用二进制接口） 和 16 KiB page size（内存页大小） 兼容，并在故障时自动关闭采集。
+Bionic（Android 的 C 标准库）的 `socket()` 仍通过 `NetdClientDispatch` 分派，dynamic linker（动态链接器）负责 ELF 装载与符号解析。这个源码事实只说明存在潜在调用路径，离“所有网络请求都能 Hook 到”还差得远。Hook 实现还要处理线程局部的递归调用保护、原始函数解析、`errno` 保存恢复、fork（从当前进程创建子进程）与动态加载、ABI（Application Binary Interface，应用二进制接口）和 16 KiB page size（内存页大小）兼容，并在故障时自动关闭采集。
 
 <!-- gracker-diagram: ch17-08-26-hook-guard -->
 ![Native 代理的故障隔离](../../assets/diagrams/ch17/ch17-08-26-hook-guard.png)
 
-图：Native 代理需要递归保护、原函数调用与错误状态保护，并在异常时关闭采集。 源码里存在分派路径，还证明不了全覆盖；ABI 与16KiB页兼容需在目标产物和设备验证。
+图：Native 代理需要递归保护、原函数调用与错误状态保护，并在异常时关闭采集。源码里存在分派路径，还证明不了全覆盖；ABI 与 16 KiB 页兼容需在目标产物和设备验证。
 
 只要网络库提供稳定回调，就优先接回调；PLT Hook 更适合当作覆盖范围已验证、先向少量设备开放并随时可撤回的后备观测，补回调盖不到的部分。
 
 ### 6.3 eBPF 适用于系统或受控设备
 
-eBPF（extended Berkeley Packet Filter）允许受验证的小程序在内核事件上运行。`platform/system/bpf` 仍由系统 loader（加载器） 管理 BPF 程序，量产三方应用通常拿不到加载、pin（在 BPF 文件系统中保留对象引用） 并 attach（绑定到事件） BPF 程序所需的 Linux capability（细分的特权权限）、SELinux（Android 强制访问控制机制） 安全域与文件访问权限。我们能用的场景主要是：
+eBPF（extended Berkeley Packet Filter）允许受验证的小程序在内核事件上运行。`platform/system/bpf` 仍由系统 loader（加载器）管理 BPF 程序，量产三方应用通常拿不到加载、pin（在 BPF 文件系统中保留对象引用）并 attach（绑定到事件）BPF 程序所需的 Linux capability（细分的特权权限）、SELinux（Android 强制访问控制机制）安全域与文件访问权限。我们能用的场景主要是：
 
-- ROM（设备系统镜像） 或系统组件。
+- ROM（设备系统镜像）或系统组件。
 - 具有所需系统特权的企业专管设备或设备代理；设备管理权限或用户授权本身不授予 BPF 加载权限。
 - root（取得系统最高权限）/工程机上的诊断工具。
-- CI（持续集成） 实验室或线下复现环境。
+- CI（持续集成）实验室或线下复现环境。
 
 
 在这些环境中，先按实际设备的内核、配置和可用探针核对支持范围：本文以 `android17-6.18-2026-06_r6` 为源码锚点，它只代表这一条内核线，设备实际运行的内核未必是 6.18。可借 BPF、tracepoint（内核跟踪点）或 socket 统计观察 UID 流量、TCP RTT、重传和连接错误。但它看到的仍是密文与字节数：URL、header、HTTP/2 stream 或 QUIC stream 都恢复不出来，UID 字节数也没法直接摊到单个业务请求上。
@@ -850,7 +850,7 @@ eBPF（extended Berkeley Packet Filter）允许受验证的小程序在内核事
 <!-- gracker-diagram: ch17-08-28-tcp-quic-boundary -->
 ![内核 TCP 与用户态 QUIC 的边界](../../assets/diagrams/ch17/ch17-08-28-tcp-quic-boundary.png)
 
-图：TCP 重传来自内核 TCP 栈，QUIC 协议重传要由用户态协议库提供。 加密和多路复用下，UID/socket 字节没法直接恢复或均摊单个 HTTP 请求。
+图：TCP 重传来自内核 TCP 栈，QUIC 协议重传要由用户态协议库提供。加密和多路复用下，UID/socket 字节没法直接恢复或均摊单个 HTTP 请求。
 
 ## 7. 隐私与安全：原始数据不要进入样本
 
@@ -862,7 +862,7 @@ eBPF（extended Berkeley Packet Filter）允许受验证的小程序在内核事
 - `/user/12345/order/888` 可归一为 `/user/:userId/order/:orderId`。
 - 未命中的 path 只上报允许的 host 与 path 段数等有限信息；已有受控模板才可记录模板 hash，不对未知原始 path 直接做摘要后上报。
 - Query（URL 中 `?` 后的参数），value 默认全部丢弃；key 也可能带业务含义，只保留允许清单中的名称。
-- Fragment（URL 中 `#` 后的片段） 本就不发给 HTTP 服务端，APM 也不采集。
+- Fragment（URL 中 `#` 后的片段）本就不发给 HTTP 服务端，APM 也不采集。
 
 
 ### 7.2 Header
@@ -874,14 +874,14 @@ eBPF（extended Berkeley Packet Filter）允许受验证的小程序在内核事
 
 ### 7.3 Body 与文件
 
-任意文本 body 的“前 N 字节”并不安全，token 和手机号常出现在开头。默认策略是不采内容，只记录经过校验的长度、MIME（内容类型标识） 和编码。业务确有诊断需求时，走下面的流程：
+任意文本 body 的“前 N 字节”并不安全，token 和手机号常出现在开头。默认策略是不采内容，只记录经过校验的长度、MIME（内容类型标识）和编码。业务确有诊断需求时，走下面的流程：
 
 1. endpoint 与 schema 同时命中允许清单。
 2. 在结构化对象阶段按字段名删除或替换敏感值。
 3. 对脱敏结果设置很小的字节上限。
 4. 经过采样、用户授权、保留期和访问审计后再上报。
 
-满足这些条件后才可以截取 body。对未知文本、二进制、multipart（一个 body 中容纳多个部分的格式） 和文件上传，只记录类型、长度区间和成功/失败；文件名与本地路径留在样本之外。
+满足这些条件后才可以截取 body。对未知文本、二进制、multipart（一个 body 中容纳多个部分的格式）和文件上传，只记录类型、长度区间和成功/失败；文件名与本地路径留在样本之外。
 
 
 ### 7.4 标识符与删除
@@ -894,7 +894,7 @@ eBPF（extended Berkeley Packet Filter）允许受验证的小程序在内核事
 EventListener 回调在请求的关键路径上，我们要给采集器定性能预算——每次回调允许占用的时间、内存和流量上限——超出时能自动减量或关闭：
 
 - 回调只读取时间、枚举和计数，写入固定大小结构或有界 ring buffer（写满后按既定策略处理的环形缓冲区）。
-- `System.nanoTime()` 只在同一进程内算时长，持久化后拿去和 wall clock（表示日期时间的系统时钟） 比较会出错。
+- `System.nanoTime()` 只在同一进程内算时长，持久化后拿去和 wall clock（表示日期时间的系统时钟）比较会出错。
 - URL 归一化要避免正则表达式出现灾难性回溯，也要避免复制大字符串；规则在后台预编译。
 - 不在回调中序列化 JSON、写文件、查数据库、打印日志或发请求。
 - body 内容默认关闭；字节计数用 forwarding source/sink，不复制整包。
@@ -902,7 +902,7 @@ EventListener 回调在请求的关键路径上，我们要给采集器定性能
 - 大量故障同时出现时，要设置每分钟上限、按 route 或错误类型分组的 reservoir sampling（蓄水池采样）和丢弃计数，防止错误期进一步推高 CPU、磁盘和上报流量。
 - 采集队列满时丢弃 APM 样本，不阻塞业务请求；上报端排除自己的网络请求，避免递归采集。
 
-对象池不一定比小型 DTO（Data Transfer Object，只承载字段的数据对象） 更省：池本身会带来锁、生命周期和残留数据风险，先用基准测试证明对象分配真是瓶颈再上池。采集器至少自报 callback p50/p95/p99（第 50、95、99 百分位回调耗时），以及分配量、队列深度、丢弃率和上报字节。超出预算时依次停 body 采集、降成功样本率、再降失败样本率，让诊断价值更高的失败样本留得更久。
+对象池不一定比小型 DTO（Data Transfer Object，只承载字段的数据对象）更省：池本身会带来锁、生命周期和残留数据风险，先用基准测试证明对象分配真是瓶颈再上池。采集器至少自报 callback p50/p95/p99（第 50、95、99 百分位回调耗时），以及分配量、队列深度、丢弃率和上报字节。超出预算时依次停 body 采集、降成功样本率、再降失败样本率，让诊断价值更高的失败样本留得更久。
 
 
 ## 9. HTTP/3 / QUIC 的字段要显式区分
@@ -932,12 +932,12 @@ QUIC 基于 UDP，传输握手与 TLS 1.3 紧密结合，支持连接复用、0-
 2. 建立 call、DNS、route、exchange 四条时间线，先在线下验证缓存、连接复用、重定向、401、失败恢复、`Expect: 100-continue` 和 duplex。
 3. 对仍在使用 `HttpURLConnection` 的自有代码启用 `InstrumentationScope.PROJECT`，用构建报告确认调用点覆盖。
 4. 只对明确列出的少量三方 Java SDK 做 `ALL` 范围实验；Native SDK 优先接官方 callback。
-5. Cronet 用 annotation（创建请求时附加、完成后原样取回的对象）关联 `RequestFinishedInfo`并保留其字段语义与 redirect 累计规则。
+5. Cronet 用 annotation（创建请求时附加、完成后原样取回的对象）关联 `RequestFinishedInfo` 并保留其字段语义与 redirect 累计规则。
 6. PLT Hook 与 eBPF 只在权限、覆盖率和回滚条件明确的环境启用；回滚指关闭采集并恢复到上一套已验证配置。
 7. 端侧在样本生成前执行 route、header、body 和标识符规则，后台只接收已裁剪结构。
 8. 用可控 DNS 延迟、代理故障、TLS 失败、限速/丢包和 HTTP/3 测试服务校验每个字段；事件证明不了的字段保留为空。
 
-扩展到 WebView、gRPC（基于 RPC 与 HTTP/2 等协议的调用框架） 或自研 RPC 时，不必把它们伪装成 OkHttp：各客户端先保留原生事件，再映射到共有的 call、route 和 exchange 概念；对不齐的阶段用 `metric_source` 和 `timestamp_semantics` 明示差异。
+扩展到 WebView、gRPC（基于 RPC 与 HTTP/2 等协议的调用框架）或自研 RPC 时，不必把它们伪装成 OkHttp：各客户端先保留原生事件，再映射到共有的 call、route 和 exchange 概念；对不齐的阶段用 `metric_source` 和 `timestamp_semantics` 明示差异。
 
 
 ## 11. 源码锚点与参考资料

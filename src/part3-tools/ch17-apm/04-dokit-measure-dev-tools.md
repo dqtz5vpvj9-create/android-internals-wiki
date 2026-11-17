@@ -134,7 +134,7 @@ DoKit 对 API 37 没有官方兼容承诺。本次核对的是固定源码、指
 审阅第三方调试 SDK 时，我们固定收齐四样材料：
 
 - Maven POM：确认传递依赖，也就是该库还会自动带进哪些库。
-- AAR（Android 库归档）与合并后的 manifest（Android 清单）：确认权限、组件、资源和 native（C/C++ 原生） 库。
+- AAR（Android 库归档）与合并后的 manifest（Android 清单）：确认权限、组件、资源和 native（C/C++ 原生）库。
 - 同版本 source JAR（源码归档）：确认发布版本的运行语义。
 - 最终 APK/AAB（安装包/应用商店包）：确认正式构建中实际留下了什么。
 
@@ -226,7 +226,7 @@ DoKit.Builder(this)
 - 统计任务也在主线程。主线程阻塞时，“一秒窗口”可能延后执行，但代码没有按真实经过时间归一化。
 - 内置“健康体检”的保存路径还会把帧率上限压到 60。90 Hz、120 Hz 设备上的高刷新率信息会丢失。
 
-所以浮窗 FPS 能提示“这次滑动明显异常”；慢帧出在应用、RenderThread（渲染线程） 还是系统合成阶段，要交给专项数据回答：用 FrameTimeline（帧各阶段时间线）看慢在哪个阶段，用 JankStats（关联 App 状态与慢帧的库）把慢帧和它发生时的页面状态关联起来。
+所以浮窗 FPS 能提示“这次滑动明显异常”；慢帧究竟出在应用、RenderThread（渲染线程）还是系统合成阶段，要交给专项数据回答：用 FrameTimeline（帧各阶段时间线）看慢在哪个阶段，用 JankStats（关联 App 状态与慢帧的库）把慢帧和它发生时的页面状态关联起来。
 
 #### CPU
 
@@ -247,7 +247,7 @@ PSS（Proportional Set Size）是进程在采样时刻的驻留内存：私有�
 
 3.7.11 插件为 OkHttp / HttpURLConnection 路径安装代理或采集逻辑，覆盖面取决于实际注入与使用路径，按“系统 UID 全流量”预期它会高估；现代 AGP 项目不加载该插件时，覆盖面还会进一步缩小。健康体检和 Mock 模板保存都存在 `peekBody(Long.MAX_VALUE)` 路径，大响应可能被完整缓冲或复制，干扰内存与网络测试。
 
-网络面板适合确认“哪个请求、哪类 Body（请求或响应内容）值得查”。若要分别测量 DNS 解析、TCP connect、TLS 握手、请求发送和响应读取，应使用 OkHttp `EventListener`、服务端 trace（一次调用链） 或系统 trace。
+网络面板适合确认“哪个请求、哪类 Body（请求或响应内容）值得查”。若要分别测量 DNS 解析、TCP connect、TLS 握手、请求发送和响应读取，应使用 OkHttp `EventListener`、服务端 trace（一次调用链）或系统 trace。
 
 
 #### 启动、函数耗时与卡顿
@@ -267,7 +267,7 @@ Android 17 的 `Looper` 仍只有一个 `mLogging` 字段，`setMessageLogging()
 <!-- gracker-diagram: ch17-04-07-block-sampling -->
 ![卡顿阈值、延迟采样与单个Looper logger](../../assets/diagrams/ch17/ch17-04-07-block-sampling.png)
 
-图：超过200ms仍要有区间内堆栈才报告，首次采样延迟300ms会产生盲区。 调度可能继续延后；logger只有一个，停止置null也不会恢复其他监控器。
+图：超过 200 ms 仍要有区间内堆栈才会上报，首次采样延迟 300 ms 会产生盲区。线程调度可能继续延后采样；logger 只有一个，停止时置为 `null` 也不会恢复其他监控器。
 
 ### Android 17 上的运行时兼容性
 
@@ -286,7 +286,7 @@ Android 17 的 `Looper` 仍只有一个 `mLogging` 字段，`setMessageLogging()
 <!-- gracker-diagram: ch17-04-08-reflection-fallback -->
 ![主线程Handler代理与隐藏API回退](../../assets/diagrams/ch17/ch17-04-08-reflection-fallback.png)
 
-图：主进程先尝试隐藏API豁免，再代理ActivityThread主Handler的callback。 忽略unseal返回值时豁免未必成功；私有字段与动态dex均须按系统策略验证。
+图：主进程先尝试隐藏 API 豁免，再代理 `ActivityThread` 主 Handler 的 callback。忽略 `unseal` 返回值时豁免未必成功；私有字段与动态 dex 均须按系统策略验证。
 
 #### Manifest、权限与前台服务
 
@@ -327,7 +327,7 @@ AAR 还声明了未导出的 `FileProvider`，authority（ContentProvider 的唯
 | <span style="white-space:nowrap">超时</span> | 先 sleep 配置时长，再执行真实请求；真实请求成功后构造 HTTP 400 | 页面延迟一段时间后收到错误码 | <code>Socket<wbr>Timeout<wbr>Exception</code>、连接超时、读取超时 |
 | <span style="white-space:nowrap">限速</span> | 包装请求/响应 Body，按 KB 窗口 sleep | 大 Body 慢速读写时的 UI 表现 | DNS、TCP、TLS、丢包、切网、无线电状态 |
 
-如果底层真实请求本身抛出异常，异常会向上返回，这一轮轮不到 DoKit 生成 HTTP 400。所谓“断网”和“超时”在真实请求成功后才改成 400，因此仍可能产生服务端副作用；上游这两条分支还没有关闭被替换的原响应 Body。支付、下单、创建、删除、上传等状态修改接口的失败验证要走别的路；拿它们做重试，还可能重复提交；“收到了 400”在网络异常的语义之外。
+如果底层真实请求本身抛出异常，异常会向上返回，这一轮轮不到 DoKit 生成 HTTP 400。所谓“断网”和“超时”是在真实请求成功后才改写成 400，因此仍可能产生服务端副作用；上游这两条分支也还没有关闭被替换的原响应 Body。支付、下单、创建、删除、上传等会修改状态的接口，其失败验证应采用其他方式；如果拿它们做重试，还可能重复提交；此外，“收到了 400”也不在网络异常的语义覆盖范围内。
 
 要验证 `IOException`、`UnknownHostException`、`SocketTimeoutException` 分支，可使用受控测试服务器、MockWebServer、网络代理或系统级网络条件，按目标异常构造真实失败。DoKit 弱网只适合安全、幂等的接口，幂等表示同一请求重复执行不会产生额外业务结果；它也可用于观察慢 Body 对页面状态的影响。
 
@@ -347,7 +347,7 @@ AAR 还声明了未导出的 `FileProvider`，authority（ContentProvider 的唯
 <!-- gracker-diagram: ch17-04-12-mock-replacement -->
 ![原请求、规则、第二请求与回退](../../assets/diagrams/ch17/ch17-04-12-mock-replacement.png)
 
-图：Mock在原请求返回后判规则，满足场景才关闭旧响应并请求Mock平台。 原proceed可能缓存命中；平台失败回退可返回已关闭旧响应，不保证透明回退。
+图：Mock 在原请求返回后判断规则，满足场景才关闭旧响应并请求 Mock 平台。原 `proceed` 可能命中缓存；平台失败回退时可能返回已关闭的旧响应，并不保证透明回退。
 
 ### 一个可复现的网络测试场景
 
@@ -449,7 +449,7 @@ Release 隔离最终要验收签名后的 APK/AAB，Gradle 文件里的依赖声
 <!-- gracker-diagram: ch17-04-15-release-verification -->
 ![CI任务执行、依赖检查与成品验收](../../assets/diagrams/ch17/ch17-04-15-release-verification.png)
 
-图：CI实际执行check或校验任务，再从解析依赖追到签名后的代码、清单和行为。 只调用assembleRelease不运行示例check依赖；group规则不覆盖本地重打包。
+图：CI 实际执行 `check` 或校验任务，再从解析依赖追到签名后的代码、清单和行为。只调用 `assembleRelease` 不会运行示例中的 `check` 依赖；group 规则也覆盖不到本地重打包产物。
 
 ### 团队如何使用 DoKit
 
@@ -480,7 +480,7 @@ DoKit 负责研发现场的调试入口；到了 Release 环境，持续采集�
 
 ### 产品定位与版本现状
 
-Measure 是一套面向移动端的 APM 与问题诊断平台。项目提供 Android、iOS、Flutter、React Native SDK，官网还提供 KMP（Kotlin Multiplatform）薄封装，让共享 Kotlin 代码调用 Android、iOS 原生 SDK。它的核心是把 Crash（未捕获崩溃）、ANR、启动、HTTP、CPU、内存、点击、页面导航、业务 span 和 bug report（用户主动提交的问题报告） 放进同一套 session（一次连续使用会话） 模型。
+Measure 是一套面向移动端的 APM 与问题诊断平台。项目提供 Android、iOS、Flutter、React Native SDK，官网还提供 KMP（Kotlin Multiplatform）薄封装，让共享 Kotlin 代码调用 Android、iOS 原生 SDK。它的核心是把 Crash（未捕获崩溃）、ANR、启动、HTTP、CPU、内存、点击、页面导航、业务 span 和 bug report（用户主动提交的问题报告）放进同一套 session（一次连续使用会话）模型。
 
 Matrix、KOOM 更偏向在设备内完成专项采集与诊断；Measure 还提供事件入库、检索、聚合、告警、附件保存和团队协作。它们解决的问题有交集，部署层次与运维范围不同，可以同时使用。
 
@@ -499,16 +499,14 @@ Matrix、KOOM 更偏向在设备内完成专项采集与诊断；Measure 还提�
 
 ### 平台数据怎样流动
 
-我们把 Measure 的数据流分成端侧采集、支持重试的上传、服务端处理和查询四段。下面这张图只画影响容量与故障处理的主要部件。
-
-数据分成端侧事件与附件、服务端处理、构建符号上传三类。本图先画事件主路径，符号链路在后文单独说明；箭头只保留主要依赖。
+Measure 的数据流可以分为端侧采集、支持重试的上传、服务端处理和查询四段，按内容则分成端侧事件与附件、服务端处理、构建符号上传三类。下图聚焦影响容量与故障处理的事件主路径，箭头只保留主要依赖；符号链路将在后文单独说明。
 
 事件经过 Ingest API、Apache Iggy 与 Ingest Worker，再写入供查询的 ClickHouse；团队、应用和构建配置等元数据在 PostgreSQL，附件与符号对象在 self-host 的 MinIO，Valkey 处理缓存。Gradle 插件先调用构建 API 获取上传描述，再按预签名地址上传 mapping；Ingest Worker 的符号化流程按构建身份选取 mapping 并调用 Symbolicator。`Symboloader` 的系统符号同步是另一条职责，与 Android mapping 的接收入口是两回事。
 
 <!-- gracker-diagram: ch17-04-17-measure-data-flow -->
 ![本地持久化、流式缓冲与查询](../../assets/diagrams/ch17/ch17-04-17-measure-data-flow.png)
 
-图：端侧先持久化再上传，服务端经Iggy与worker写入事件存储，查询层组合元数据。 附件和构建符号另有上传路径；图省略副本、重试与安全组件。
+图：端侧先持久化再上传，服务端经 Iggy 与 worker 写入事件存储，查询层组合元数据。附件和构建符号另有上传路径；图省略了副本、重试与安全组件。
 
 SDK 先把 event 与 span 写入本地 SQLite 数据库，再按批上传；附件走独立上传路径。默认本地空间上限为 50 MB，可配置在 20～1500 MB，达到上限后会先清理旧数据。离线、服务不可达或附件偏大时，本地容量决定故障现场能保留多久，网络重试次数只是其中一个因素。
 
@@ -625,14 +623,14 @@ Span 表示一段持续时间，单独保存；核心字段是 `trace_id`、`spa
 <!-- gracker-diagram: ch17-04-21-anr-api-branches -->
 ![ANR两条路径与被丢弃的历史现场](../../assets/diagrams/ch17/ch17-04-21-anr-api-branches.png)
 
-图：API30+从历史退出记录还原，较低API才拦截SIGQUIT并现取Java栈。 最多读3条且按PID合并；缺session或有效主线程frame会丢弃，pre30栈也有遍历上限。
+图：API 30+ 从历史退出记录还原，较低 API 才拦截 `SIGQUIT` 并现取 Java 栈。最多读 3 条且按 PID 合并；缺 session 或有效主线程 frame 会丢弃，pre-30 栈也有遍历上限。
 
 插件 0.14.0 已把 Navigation Compose 上限从旧 0.13.0 的 2.9.7 提升到 2.9.8。其版本 map 只遍历根组件的直接依赖，直接声明动态版本时还可能先采用 requested version；因此 Retrofit 只传递引入 OkHttp 的工程应直接固定 OkHttp，或显式安装采集器，并在发布变体验证。
 
 <!-- gracker-diagram: ch17-04-22-http-instrumentation -->
 ![直接依赖识别、版本范围与网络插桩](../../assets/diagrams/ch17/ch17-04-22-http-instrumentation.png)
 
-图：插件按变体识别依赖版本，在支持范围内插入网络与导航采集代码。 版本map只遍历根的直接依赖；代码存在只是一半，发布变体的实际采集要另外验证。
+图：插件按变体识别依赖版本，在支持范围内插入网络与导航采集代码。版本 map 只遍历根的直接依赖；代码存在只是一半，发布变体的实际采集仍需另外验证。
 
 #### Android 17 / API 37 的新增机会
 
@@ -655,7 +653,7 @@ Android 17 为 `ProfilingTrigger` 新增了九种类型。与性能和内存最�
 <!-- gracker-diagram: ch17-04-25-profile-artifact-pipeline -->
 ![平台结果、采样、session关联与独立上传](../../assets/diagrams/ch17/ch17-04-25-profile-artifact-pipeline.png)
 
-图：平台产物先过SDK有效性与采样检查，再按时间关联session，由独立worker上传附件。 SDK请求每类至少1小时并有系统限额；触发、注册或扩展名识别都不保证结果产出。
+图：平台产物先过 SDK 有效性与采样检查，再按时间关联 session，由独立 worker 上传附件。SDK 请求每类至少间隔 1 小时并受系统限额约束；触发、注册或扩展名识别都不保证结果产出。
 
 ### 接入还包括平台侧工作
 
@@ -739,7 +737,7 @@ try {
 <!-- gracker-diagram: ch17-04-27-span-exception-close -->
 ![父子span在成功与失败路径都收尾](../../assets/diagrams/ch17/ch17-04-27-span-exception-close.png)
 
-图：令牌化子span和支付父span分别设置状态，各自finally结束，异常继续交还业务层。 nullable builder或采样可能没有数据；父span的结束替代不了子span收尾。
+图：令牌化子 span 和支付父 span 分别设置状态，各自在 `finally` 结束，异常继续交还业务层。nullable builder 或采样可能导致没有数据；父 span 的结束替代不了子 span 收尾。
 
 #### 与 OpenTelemetry 的关系
 
@@ -792,7 +790,7 @@ Android R8/ProGuard mapping 由插件在 assemble / bundle 之后的 build uploa
 <!-- gracker-diagram: ch17-04-29-mapping-symbolication -->
 ![Android mapping经构建API上传与处理](../../assets/diagrams/ch17/ch17-04-29-mapping-symbolication.png)
 
-图：构建信息获取mapping上传描述，对象上传后由事件符号化路径按构建身份查询。 Symboloader不是Android mapping入口；它有系统符号同步职责，服务存在不证明SDK native覆盖。
+图：构建信息获取 mapping 上传描述，对象上传后由事件符号化路径按构建身份查询。`Symboloader` 并非 Android mapping 入口；它承担系统符号同步职责，服务存在不证明 SDK 覆盖 native 崩溃。
 
 #### 保留期、附件与备份
 
@@ -826,7 +824,7 @@ Measure 把远端采集配置称为 Adaptive Capture：可以在 Dashboard 修�
 <!-- gracker-diagram: ch17-04-32-adaptive-capture-cache -->
 ![远端配置的下载与下次启动应用](../../assets/diagrams/ch17/ch17-04-32-adaptive-capture-cache.png)
 
-图：启动先应用磁盘缓存，再按缓存期限向服务端获取新配置并写盘，后续启动才应用。 两次启动不是时限保证；缓存未过期、离线或请求失败都会推迟生效。
+图：启动先应用磁盘缓存，再按缓存期限向服务端获取新配置并写盘，留待后续启动应用。两次启动并非时限保证；缓存未过期、离线或请求失败都会推迟生效。
 
 | 采集内容 | 当前默认或控制点 | 建议 |
 |---|---|---|

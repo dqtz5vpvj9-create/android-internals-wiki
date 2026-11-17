@@ -80,14 +80,14 @@ Microbenchmark 测量可重复的局部工作，Macrobenchmark 从外部进程�
 
 ### Benchmark 给优化结论提供可重复实验
 
-Jetpack Benchmark 回答的是一个受约束的问题：同一场景、同一设备、同一编译状态下，candidate（待评估版本） 相对 baseline 是变快了还是变慢了。它替我们管理测量循环、采集指标、保存结果；真实用户那边的分布，交给线上 APM（Application Performance Monitoring，应用性能监控）、Android Vitals、JankStats 和故障样本去回答。
+Jetpack Benchmark 回答的是一个受约束的问题：同一场景、同一设备、同一编译状态下，candidate（待评估版本）相对 baseline 是变快了还是变慢了。它替我们管理测量循环、采集指标、保存结果；真实用户那边的分布，交给线上 APM（Application Performance Monitoring，应用性能监控）、Android Vitals、JankStats 和故障样本去回答。
 
 线上和实验室这两条线可以互相接续：
 
 1. 线上数据定位到受影响的机型、页面和业务阶段。
 2. 团队把该阶段压缩成可重复的本地数据与交互脚本。
 3. Benchmark 对基线提交和候选提交执行同一实验。
-4. 数字发生变化时，打开随迭代生成的 Perfetto trace（系统执行时间线） 解释原因。
+4. 数字发生变化时，打开随迭代生成的 Perfetto trace（系统执行时间线）解释原因。
 5. 修复上线后，再由线上指标确认真实用户分布是否改善。
 
 线上看 P95（95% 的观测值不超过该数值），实验室看 median（中位数）。两边的样本来源、设备分布和负载都不同，能放在一起比较的是它们指向的业务阶段和变化方向；数值门槛要各自维护。
@@ -131,7 +131,7 @@ Jetpack Benchmark 回答的是一个受约束的问题：同一场景、同一�
 
 #### Warmup、JIT 与 AOT 要写进实验说明
 
-`BenchmarkRule` 自己会执行 warmup（预热，先重复运行以稳定运行时状态） 和测量阶段，我们不要再在 `measureRepeated` 里套手工次数循环。实验采用哪种编译状态，取决于工程配置：
+`BenchmarkRule` 自己会执行 warmup（预热，先重复运行以稳定运行时状态）和测量阶段，我们不要再在 `measureRepeated` 里套手工次数循环。实验采用哪种编译状态，取决于工程配置：
 
 - 使用 Benchmark `1.3.0-beta01+`、Android Gradle Plugin（AGP）`8.4.0+` 并应用 `androidx.benchmark` Gradle 插件时，Microbenchmark APK 默认 full AOT，目标是减少 JIT 稳定时间和结果波动。
 - 在 Gradle 属性中设置 `androidx.benchmark.forceaotcompilation=false` 会关闭插件的强制 AOT 配置；它本身不保证卸载旧 APK、清除既有编译产物或恢复某种特定 JIT 状态。1.5.0 还需显式处理默认的 `requireAot` 检查。
@@ -194,7 +194,7 @@ benchmarkRule.measureRepeated {
 }
 ```
 
-固定 1.4.1 推荐使用 `runWithMeasurementDisabled()`；旧名 `runWithTimingDisabled()` 已弃用，因为它暂停的是整个 measurement（测量指标），计时只是其中一部分。暂停区也会反复执行，里面仍应保持轻量和确定性。 该方法是泛型并返回 block 的值，所以上例可以直接取得数组副本；暂停指标不会撤销分配、GC、缓存和热状态对后续排序的影响。
+固定 1.4.1 推荐使用 `runWithMeasurementDisabled()`；旧名 `runWithTimingDisabled()` 已弃用，因为它暂停的是整个 measurement（测量指标），计时只是其中一部分。暂停区也会反复执行，里面仍应保持轻量和确定性。该方法是泛型并返回 block 的值，所以上例可以直接取得数组副本；暂停指标不会撤销分配、GC、缓存和热状态对后续排序的影响。
 
 
 #### 常见测错方式
@@ -214,7 +214,7 @@ Java 仍可通过 `BenchmarkRule.getState()` 和 `while (state.keepRunning())` �
 
 ### Macrobenchmark：从外部进程测完整用户路径
 
-要测启动、滚动、转场、动画和关键用户旅程这类完整路径时，我们用 Macrobenchmark：它通过单独安装的 test APK（只包含测试与控制代码的应用包） 控制目标应用。它的控制流可以概括为：
+要测启动、滚动、转场、动画和关键用户旅程这类完整路径时，我们用 Macrobenchmark：它通过单独安装的 test APK（只包含测试与控制代码的应用包）控制目标应用。它的控制流可以概括为：
 
 ```text
 按 CompilationMode 决定是否重置编译状态
@@ -227,12 +227,12 @@ Java 仍可通过 `BenchmarkRule.getState()` 和 `while (state.keepRunning())` �
      }
 ```
 
-`setupBlock` 决定每轮起点是否一致，本身不计入指标；`measureBlock` 里任何等待都会进入 trace 的测量窗口，而某项 metric 是否计入这段等待，由它自己的定义决定。 `Partial` 的 warmup 和 `WARM` / `HOT` 的首次非计量预热也可能执行这些 block，所以脚本必须可重复、可恢复，不能把调用次数当作 measured iteration 数。
+`setupBlock` 决定每轮起点是否一致，本身不计入指标；`measureBlock` 里任何等待都会进入 trace 的测量窗口，而某项 metric 是否计入这段等待，由它自己的定义决定。`Partial` 的 warmup 和 `WARM` / `HOT` 的首次非计量预热也可能执行这些 block，所以脚本必须可重复、可恢复，不能把调用次数当作 measured iteration 数。
 
 <!-- gracker-diagram: ch17-06-08-macro-window -->
 ![Macrobenchmark的迭代窗口](../../assets/diagrams/ch17/ch17-06-08-macro-window.png)
 
-图：编译阶段之后，每轮先准备，再采集并执行 measureBlock，最后提取指标。 编译或启动预热可额外执行用户block；等待是否计入数值由metric定义。
+图：编译阶段之后，每轮先准备，再采集并执行 `measureBlock`，最后提取指标。编译或启动预热可能会额外执行用户 block；等待是否计入数值由 metric 定义决定。
 
 #### `StartupMode` 只描述进程和 Activity 起点
 
@@ -248,7 +248,7 @@ Java 仍可通过 `BenchmarkRule.getState()` 和 `while (state.keepRunning())` �
 <!-- gracker-diagram: ch17-06-10-cold-cache-order -->
 ![COLD每轮的真实准备顺序](../../assets/diagrams/ch17/ch17-06-10-cold-cache-order.png)
 
-图：用户 setup 后依次清 shader、杀进程、清页缓存并检查进程状态，才开始测启动。 旧版非 root 页缓存清理可能失败；登录态与数据库不会自动清除。
+图：用户 setup 后依次清 shader、杀进程、清页缓存并检查进程状态，才开始测启动。旧版非 root 页缓存清理可能失败；登录态与数据库不会自动清除。
 
 #### `CompilationMode` 决定代码处于什么编译状态
 
@@ -263,7 +263,7 @@ Java 仍可通过 `BenchmarkRule.getState()` 和 `while (state.keepRunning())` �
 | <code>Full(<wbr>)</code> | 请求 <code>speed</code> 编译方法 | AOT 对照；不能预设性能上限，也不代表现代用户设备常态 |
 | <code>Ignore(<wbr>)</code> | 跳过编译重置和主动编译 | 外部脚本控制编译；仍有测试进程管理和 ProfileInstaller skip-file 操作 |
 
-API 23 只有 `Full()`，而 `Full()` 也未必更快：已编译代码变大后，磁盘读取和 instruction cache（CPU 存放近期执行指令的缓存） 的压力都可能跟着上来。验证 Baseline Profile 时，我们用 `Partial(BaselineProfileMode.Require)` 与 `None()` 成对比较；`DEFAULT` 留给模拟默认体验，严格的收益验证要靠这一对。
+API 23 只有 `Full()`，而 `Full()` 也未必更快：已编译代码变大后，磁盘读取和 instruction cache（CPU 存放近期执行指令的缓存）的压力都可能跟着上来。验证 Baseline Profile 时，我们用 `Partial(BaselineProfileMode.Require)` 与 `None()` 成对比较；`DEFAULT` 留给模拟默认体验，严格的收益验证要靠这一对。
 
 
 重置能否保留应用数据取决于版本和权限。API 34+ 使用新的 profile reset 路径；API 34 前非 root 环境通常靠卸载重装重置，因此会丢失应用数据，rooted 环境则可走 `cmd package compile --reset`。预置账号或数据库要在可能重装后重新准备；外部脚本也可配合 `Ignore()` 管理编译。不要把“Android 14 之前”一律等同“必须重装”。
@@ -271,7 +271,7 @@ API 23 只有 `Full()`，而 `Full()` 也未必更快：已编译代码变大后
 <!-- gracker-diagram: ch17-06-12-reset-data-branches -->
 ![重置编译时是否保留数据](../../assets/diagrams/ch17/ch17-06-12-reset-data-branches.png)
 
-图：按 API 与 shell root 权限选择实际重置分支，重装场景需重建应用数据。 Ignore跳过编译重置，但仍有测试进程管理与skip-file操作。
+图：按 API 与 shell root 权限选择实际重置分支，重装场景需重建应用数据。`Ignore` 跳过编译重置，但仍有测试进程管理与 skip-file 操作。
 
 ### 工程结构：把测量代码与目标应用隔开
 
@@ -412,7 +412,7 @@ dependencies {
 }
 ```
 
-插件会配置 benchmark 输出复制、AOT 默认行为和 rooted（已获得系统 root 权限） 设备的 `lockClocks` task；`lockClocks` 用来固定 CPU 时钟，减少频率变化带来的噪声。被测代码宜放到 `:benchmarkable`，避免为调用应用内部实现而把整个 debug app 拉进测试。
+插件会配置 benchmark 输出复制、AOT 默认行为和 rooted（已获得系统 root 权限）设备的 `lockClocks` task；`lockClocks` 用来固定 CPU 时钟，减少频率变化带来的噪声。被测代码宜放到 `:benchmarkable`，避免为调用应用内部实现而把整个 debug app 拉进测试。
 
 
 ### 示例一：可判定失败的 cold startup
@@ -471,9 +471,9 @@ class StartupBenchmark {
 <!-- gracker-diagram: ch17-06-16-startup-readiness -->
 ![冷启动、业务就绪与缺样检查](../../assets/diagrams/ch17/ch17-06-16-startup-readiness.png)
 
-图：启动窗口同时等待业务就绪，随后还需核对每项指标的 runs 与逐轮 trace。 home_ready超时能失败，但不能保证每轮TTID/TTFD完整。
+图：启动窗口同时等待业务就绪，随后还需核对每项指标的 `runs` 与逐轮 trace。`home_ready` 超时会让测试失败，但不能保证每轮 TTID/TTFD 完整。
 
-`startActivityAndWait()` 只保证启动 Activity 并等待平台可观察的启动完成；下一轮会不会在异步数据还没加载完时就开始，要靠额外的 `home_ready` 检查来防住。TTFD 是否正确，仍取决于应用报告 fully drawn（应用报告完整内容已显示） 的时机。
+`startActivityAndWait()` 只保证启动 Activity 并等待平台可观察的启动完成；下一轮会不会在异步数据还没加载完时就开始，要靠额外的 `home_ready` 检查来防住。TTFD 是否正确，仍取决于应用报告 fully drawn（应用报告完整内容已显示）的时机。
 
 ### 示例二：只把列表滚动放进测量窗口
 
@@ -551,7 +551,7 @@ class FeedScrollBenchmark {
 <!-- gracker-diagram: ch17-06-17-fling-done -->
 ![列表手势与明确完成条件](../../assets/diagrams/ch17/ch17-06-17-fling-done.png)
 
-图：每轮回到顶部并清旧标记，手势后等待已移动且 idle 的新标记。 fling返回能否继续滚动；accessibility idle不证明渲染已结束。
+图：每轮回到顶部并清除旧标记，手势后等待已移动且 idle 的新标记。`fling` 返回能否继续滚动；accessibility idle 不证明渲染已结束。
 
 在这个回归测试里，网络要作为受控输入。需要覆盖网络解析时，应使用本地 mock server（按预设响应请求的测试服务器）、固定响应、固定延迟策略，并把“网络实验”和“渲染实验”分成不同场景。
 
@@ -613,7 +613,7 @@ TTID 低只说明用户较快看到第一帧。若首屏仍是骨架屏或不可
 
 还要固定这些实验条件：
 
-- 性能门禁用物理设备。模拟器可以跑 smoke test（只验证流程可运行的快速检查） 验证流程，但数字受宿主机影响。
+- 性能门禁用物理设备。模拟器可以跑 smoke test（只验证流程可运行的快速检查）验证流程，但数字受宿主机影响。
 - 同一对比优先在同一台物理设备交错运行 baseline 与 candidate，并固定 fingerprint 和刷新率；跨设备先分别建立基线，不能只凭型号相同直接混合数值。
 - 关闭省电模式，避免后台同步与系统更新，控制设备散热。
 - Microbenchmark 可在 rooted 设备使用 `lockClocks`；官方 CI 指南说锁频只对 microbenchmarks 有必要，并没有禁止其他实验使用。锁频会改变运行条件，报告必须标明，不能把它当真实用户功耗状态。
@@ -646,7 +646,7 @@ Benchmark 结果是连续数值，一次 pass/fail 判断不了回归；门禁�
 <!-- gracker-diagram: ch17-06-24-ci-regression-gate -->
 ![从噪声带到回归门禁](../../assets/diagrams/ch17/ch17-06-24-ci-regression-gate.png)
 
-图：先建立每台设备的自然波动，再用业务预算与噪声上界判断配对差值。 重跑方向一致可以触发复核，但本身不是统计显著性证明。
+图：先建立每台设备的自然波动，再用业务预算与噪声上界判断配对差值。重跑方向一致可以触发复核，但本身不是统计显著性证明。
 
 样本数同样决定能看哪些统计量：
 
@@ -657,7 +657,7 @@ Benchmark 结果是连续数值，一次 pass/fail 判断不了回归；门禁�
 <!-- gracker-diagram: ch17-06-25-sample-pooling -->
 ![启动样本与逐帧样本的不同权重](../../assets/diagrams/ch17/ch17-06-25-sample-pooling.png)
 
-图：启动每轮取单值，帧指标则汇集各轮的全部帧后计算分位数。 多帧轮权重更大；10次启动的P95接近极值。
+图：启动每轮取单值，帧指标则汇集各轮的全部帧后计算分位数。多帧轮的权重更大；10 次启动的 P95 接近极值。
 
 官方 Gradle 运行会把 JSON 和 trace 复制到 `build/outputs/connected_android_test_additional_output/...`。Macrobenchmark 每个 measured iteration（计入指标的一轮）生成一份 Perfetto trace；Microbenchmark 每个测试通常生成一份覆盖全部迭代的 trace。控制台摘要不够用，CI 应按 commit、设备和场景归档原始 JSON 与 trace。
 
@@ -682,12 +682,12 @@ Benchmark 结果是连续数值，一次 pass/fail 判断不了回归；门禁�
 
 ### Baseline Profiles：生成与验证是两项任务
 
-Baseline Profile 是随 APK 发布的热点方法和类清单，ART 可据此提前编译常用路径。producer（生成方） 负责生成，通常复用 `:macrobenchmark`，或使用独立 `:baselineprofile` 的 `com.android.test` module；consumer（消费方） 是把 profile 打进 APK 的目标 `:app`。AGP 8.2+ 可直接使用 Android Studio 的 Baseline Profile Generator 模板，减少 variant 与文件复制配置。
+Baseline Profile 是随 APK 发布的热点方法和类清单，ART 可据此提前编译常用路径。producer（生成方）负责生成，通常复用 `:macrobenchmark`，或使用独立 `:baselineprofile` 的 `com.android.test` module；consumer（消费方）是把 profile 打进 APK 的目标 `:app`。AGP 8.2+ 可直接使用 Android Studio 的 Baseline Profile Generator 模板，减少 variant 与文件复制配置。
 
 <!-- gracker-diagram: ch17-06-28-profile-producer-consumer -->
 ![Profile生成、打包与测量](../../assets/diagrams/ch17/ch17-06-28-profile-producer-consumer.png)
 
-图：producer 收集受控旅程规则，consumer 把规则用于当前发布 APK，收益验证独立进行。 规则文件存在不等于安装、编译或收益已得到证明。
+图：producer 收集受控旅程规则，consumer 把规则用于当前发布 APK，收益验证独立进行。规则文件存在不等于安装、编译或收益已得到证明。
 
 下面的测试生成启动旅程规则。`includeInStartupProfile=true` 让这次完整受控旅程的规则以 Startup Profile 输入文件（`startup-prof`）输出，并不会在 `reportFullyDrawn()` 处自动截断采集；收集范围由 `collect` block 实际执行的路径决定。启动旅程应停在业务就绪处，滚动与二级页面另建 `collect()`，保持该参数为 false，避免把非启动代码也纳入启动布局规则。
 
@@ -733,7 +733,7 @@ class BaselineProfileGenerator {
 <!-- gracker-diagram: ch17-06-30-profile-stability -->
 ![规则集合稳定与性能收益分开](../../assets/diagrams/ch17/ch17-06-30-profile-stability.png)
 
-图：最多15轮中要求过滤前规则集合连续3轮一致，严格模式不满足就失败。 集合稳定不证明场景覆盖、过滤后非空或性能改善。
+图：最多 15 轮中要求过滤前规则集合连续 3 轮一致，严格模式不满足就失败。集合稳定不证明场景覆盖、过滤后非空或性能改善。
 
 生成环境要求非 root 设备 API 33+，或 rooted 设备 API 28+；这只是 profile 收集的门槛。收益验证要回到实际发布的设备段，并至少成对运行：
 
