@@ -1647,12 +1647,12 @@ ORDER BY c.ts;
 
 读数时注意：
 
-- `HasDesiredMode` 为 1：存在尚未消费的目标请求；归零表示请求已被取走或清除，不能据此确认 HWC 已接受请求。[已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::takeDesiredModeIfMatches、clearDesiredMode @ android-17.0.0_r1]
-- `PendingModeFps` 写入目标 VSYNC 频率：`initiateModeChange()` 返回 `Changed`，说明设置模式的调用已成功；它不表示切换仍在等待完成。[已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::initiateModeChange @ android-17.0.0_r1]
+- `HasDesiredMode` 为 1：存在尚未消费的目标请求；归零表示请求已被取走或清除，不能据此确认 HWC 已接受请求。[^source-audit-note-1]
+- `PendingModeFps` 写入目标 VSYNC 频率：`initiateModeChange()` 返回 `Changed`，说明设置模式的调用已成功；它不表示切换仍在等待完成。[^source-audit-note-2]
 - `ActiveModeFps` 变化：SurfaceFlinger 已完成模式状态更新；
 - 只有 `RenderRateFps` 变化：可能只是调度节奏变化，没有发生物理 modeset。
 
-Android 17 的 `clearPendingMode()` 和 `finalizeModeChange()` 不会把 `PendingModeFps` 清零。该计数器保留的非零值不能用作 pending 状态开关；切换完成时刻需要结合 `finalizeDisplayModeChange` 区间、`ActiveModeFps` 和相关显示提交的 present fence 判断。DisplayCommand 的成功路径还可能立即完成平台状态更新，无须等待额外刷新帧。[已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::clearPendingMode、finalizeModeChange; SurfaceFlinger.cpp::initiateDisplayModeChanges @ android-17.0.0_r1]
+Android 17 的 `clearPendingMode()` 和 `finalizeModeChange()` 不会把 `PendingModeFps` 清零。该计数器保留的非零值不能用作 pending 状态开关；切换完成时刻需要结合 `finalizeDisplayModeChange` 区间、`ActiveModeFps` 和相关显示提交的 present fence 判断。DisplayCommand 的成功路径还可能立即完成平台状态更新，无须等待额外刷新帧。[^source-audit-note-3]
 
 计数器名字包含 physical display ID（物理显示标识）。在折叠屏、外接屏或虚拟显示场景中，应先确认分析目标对应的物理显示 ID。
 
@@ -1664,7 +1664,7 @@ SurfaceFlinger 的 trace 中可见 `Refresh Rate Selection` 一类选择区间�
 
 1. 找到用户可见的 jank 帧；
 2. 查看相邻时间内的 `HasDesiredMode` 和选择事件；
-3. 按物理显示 ID 和目标模式，对照 `initiateDisplayModeChanges`、`finalizeDisplayModeChange` 区间与模式计数器；`PendingModeFps` 的非零区间不等于切换等待区间。[已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::initiateModeChange; SurfaceFlinger.cpp::initiateDisplayModeChanges、finalizeDisplayModeChange @ android-17.0.0_r1]
+3. 按物理显示 ID 和目标模式，对照 `initiateDisplayModeChanges`、`finalizeDisplayModeChange` 区间与模式计数器；`PendingModeFps` 的非零区间不等于切换等待区间。[^source-audit-note-4]
 4. 对齐 SurfaceFlinger commit、present fence 和 FrameTimeline；
 5. 回到应用、RenderThread、GPU/HWC 路径确定最长阶段。
 
@@ -1757,7 +1757,7 @@ Android 17 把多类投票转成候选模式分数。复现模式选择时，需
 
 以下分析只陈述可由源码确认的行为；面板切换耗时、显示驱动跟踪点和功耗收益仍由具体设备实现决定。
 
-源码层面主要涉及三组组件：`DisplayModeController` 判断目标模式无需处理、只需更新渲染节拍、可以合并到待处理请求，还是必须切换物理模式；SurfaceFlinger 的帧调度器 Scheduler 通过 `RefreshRateSelector` 同时接收图层投票、全局信号与 DisplayManager 策略；`FrameRateOverrideMappings` 维护按 UID 生效的帧率覆盖，其中内部接口直接写入的覆盖值优先于根据内容计算的覆盖值。[来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp, Scheduler/RefreshRateSelector.cpp, Scheduler/FrameRateOverrideMappings.cpp @ android-17.0.0_r1]
+源码层面主要涉及三组组件：`DisplayModeController` 判断目标模式无需处理、只需更新渲染节拍、可以合并到待处理请求，还是必须切换物理模式；SurfaceFlinger 的帧调度器 Scheduler 通过 `RefreshRateSelector` 同时接收图层投票、全局信号与 DisplayManager 策略；`FrameRateOverrideMappings` 维护按 UID 生效的帧率覆盖，其中内部接口直接写入的覆盖值优先于根据内容计算的覆盖值。[^source-audit-note-5]
 
 ### 1. Android 17 的选择链路
 
@@ -1772,7 +1772,7 @@ Android 17 的决策路径可以压缩为以下顺序：
 
 在这条路径中，DisplayManager 策略划定允许范围，图层投票（vote）表达内容偏好，Scheduler 负责排列候选顺序，`DisplayModeController` 负责执行。`DisplayModeRequest` 是 SurfaceFlinger 内部请求，应用提交不了这个接口。
 
-排障时可以按照“策略边界 → 图层需求 → 评分排名 → 执行动作”拆分日志：策略决定候选集合，`LayerHistory` 决定每个可见图层的投票，`getRankedFrameRatesLocked()` 再把投票、触摸、空闲、点亮等全局信号和并列裁决规则（tie-break）合成排序结果。最终是否调用 HWC 设置物理模式，还要看 `DisplayModeController::setDesiredMode()` 返回的动作。[来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.cpp, Display/DisplayModeController.cpp @ android-17.0.0_r1]
+排障时可以按照“策略边界 → 图层需求 → 评分排名 → 执行动作”拆分日志：策略决定候选集合，`LayerHistory` 决定每个可见图层的投票，`getRankedFrameRatesLocked()` 再把投票、触摸、空闲、点亮等全局信号和并列裁决规则（tie-break）合成排序结果。最终是否调用 HWC 设置物理模式，还要看 `DisplayModeController::setDesiredMode()` 返回的动作。[^source-audit-note-6]
 
 #### 1.1 策略包含两层范围
 
@@ -1870,7 +1870,7 @@ Java 公共常量 `FRAME_RATE_COMPATIBILITY_AT_LEAST` 进入原生图层后，�
 
 早期资料常将 `RefreshRateSelector` 简化为计算目标值与候选值的距离并累加所有图层分数，而 Android 17 会按照投票类型进入不同分支，距离分仅适用于其中一部分。
 
-在分析源码时，连续数值评分并非唯一途径。Android 17 确实在多个分支使用距离或比例分数，但 `ExplicitCategory`、`ExplicitExact`、`ExplicitDefault`、触摸后的延迟升频、空闲状态的提前返回，以及分数相同后的高低帧率偏好，都会改变最终顺序。因此，单次选择结果只能结合具体投票类型和当时的全局信号解释，单凭“目标帧率越近、得分越高”难以概括。[来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.cpp @ android-17.0.0_r1]
+在分析源码时，连续数值评分并非唯一途径。Android 17 确实在多个分支使用距离或比例分数，但 `ExplicitCategory`、`ExplicitExact`、`ExplicitDefault`、触摸后的延迟升频、空闲状态的提前返回，以及分数相同后的高低帧率偏好，都会改变最终顺序。因此，单次选择结果只能结合具体投票类型和当时的全局信号解释，单凭“目标帧率越近、得分越高”难以概括。[^source-audit-note-7]
 
 #### 4.1 距离分的含义
 
@@ -1963,9 +1963,9 @@ Scheduler 会为多个物理显示器生成选择结果。节奏基准显示器�
 
 源码中的“立即”只描述 SurfaceFlinger 在 DisplayCommand 成功分支中的状态处理，外推不到“面板像素会在固定帧数内完成响应”。另一条路径的时间线由厂商 HAL 提供，AOSP 同样没有统一规定 1～3 帧的切换延迟。
 
-`initiateModeChange()` 的结果还决定后续是否进入完成路径：`OK` 返回 `Changed`，`FAILED_TRANSACTION` 返回 `Rejected`，其他错误返回 `Aborted`。HAL 调用失败时，启用 `modeset_state_machine` 的分支会清除 `pendingModeOpt`；旧分支则把 `isModeSetPending` 设为 `false`。[来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md §2; 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::initiateModeChange @ android-17.0.0_r1]
+`initiateModeChange()` 的结果还决定后续是否进入完成路径：`OK` 返回 `Changed`，`FAILED_TRANSACTION` 返回 `Rejected`，其他错误返回 `Aborted`。HAL 调用失败时，启用 `modeset_state_machine` 的分支会清除 `pendingModeOpt`；旧分支则把 `isModeSetPending` 设为 `false`。[^source-audit-note-8]
 
-SurfaceFlinger 只在结果为 `Changed` 时把切换时间线交给 Scheduler，再根据 `refreshRequired` 选择立即完成或等待刷新帧。返回 `Rejected` 或 `Aborted` 时，它会清除 Scheduler 的模式切换待处理标记；`Rejected` 还会通知 `onDisplayModeRejected()`。排查目标模式没有变成 active 的问题时，应先核对 Composer 返回码和这三个结果，再判断是否需要沿 present fence 等待路径继续检查。[已验证: frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp::initiateDisplayModeChanges @ android-17.0.0_r1]
+SurfaceFlinger 只在结果为 `Changed` 时把切换时间线交给 Scheduler，再根据 `refreshRequired` 选择立即完成或等待刷新帧。返回 `Rejected` 或 `Aborted` 时，它会清除 Scheduler 的模式切换待处理标记；`Rejected` 还会通知 `onDisplayModeRejected()`。排查目标模式没有变成 active 的问题时，应先核对 Composer 返回码和这三个结果，再判断是否需要沿 present fence 等待路径继续检查。[^source-audit-note-9]
 
 #### 6.3 完成模式切换的边界
 
@@ -2000,7 +2000,7 @@ Perfetto 的 `FrameRateOverride <uid>` 计数器由 `RefreshRateSelector::getFra
 
 图：游戏干预先进入 LayerHistory 改变投票；内容计算结果才可更新按 UID 的内容覆盖表。内部接口直接写入的覆盖表是另一条路径，查询时优先。120 Hz 显示配合 60 fps 应用回调只是可能结果，还需满足覆盖能力与内容条件。
 
-排查“应用请求了 60 fps，但 UID 覆盖值未取 60”的问题时，应先区分这两个映射表：直接写入表按 UID 设置并优先返回，内容表则由选择器根据当前内容需求整体刷新。[来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Scheduler/FrameRateOverrideMappings.cpp, Scheduler/LayerHistory.cpp @ android-17.0.0_r1]
+排查“应用请求了 60 fps，但 UID 覆盖值未取 60”的问题时，应先区分这两个映射表：直接写入表按 UID 设置并优先返回，内容表则由选择器根据当前内容需求整体刷新。[^source-audit-note-10]
 
 ### 8. 内核空闲计时器的平台边界
 
@@ -2115,7 +2115,7 @@ Perfetto 中至少关联这些证据：
 | 缓冲区时间戳、获取栅栏、锁存 | 生产者是否按时交付且内容可读 |
 | 显示送显栅栏 | 本轮显示在 Android 用户态可观察的送显边界何时完成 |
 
-表中 `HasDesiredMode` 与 `PendingModeFps` 的读数分别对应目标请求是否待消费、成功调用设置模式时写入的频率；`PendingModeFps` 在完成切换时不清零。判断切换起止应结合 Composer 结果和 `finalizeDisplayModeChange` 区间，详见前文[模式计数器的读数限制](#61-先看-android-17-的四组显示计数器)。[已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::takeDesiredModeIfMatches、initiateModeChange、finalizeModeChange; SurfaceFlinger.cpp::finalizeDisplayModeChange @ android-17.0.0_r1]
+表中 `HasDesiredMode` 与 `PendingModeFps` 的读数分别对应目标请求是否待消费、成功调用设置模式时写入的频率；`PendingModeFps` 在完成切换时不清零。判断切换起止应结合 Composer 结果和 `finalizeDisplayModeChange` 区间，详见前文[模式计数器的读数限制](#61-先看-android-17-的四组显示计数器)。[^source-audit-note-11]
 
 `ActiveModeFps` 不变而 `RenderRateFps` 改变，通常表示系统在同一个物理模式内调整了渲染节拍。切忌把成功设置模式时的计数器写入时刻当作面板的光学响应时刻。送显栅栏是 Android 显示栈中较靠后的时间参照，也不等同于像素已经完成扫描或人眼已经看到画面。
 
@@ -2271,3 +2271,15 @@ Android 17 的帧率协作分为四层：应用通过 View、Compose 或 Surface
 - [`android17-6.18-2026-06_r6`：DRM VBlank](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/gpu/drm/drm_vblank.c)
 - [`android17-6.18-2026-06_r6`：DRM atomic helper](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/gpu/drm/drm_atomic_helper.c)
 - [`android17-6.18-2026-06_r6`：DMA fence](https://android.googlesource.com/kernel/common/+/refs/tags/android17-6.18-2026-06_r6/drivers/dma-buf/dma-fence.c)
+
+[^source-audit-note-1]: 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::takeDesiredModeIfMatches、clearDesiredMode @ android-17.0.0_r1
+[^source-audit-note-2]: 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::initiateModeChange @ android-17.0.0_r1
+[^source-audit-note-3]: 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::clearPendingMode、finalizeModeChange; SurfaceFlinger.cpp::initiateDisplayModeChanges @ android-17.0.0_r1
+[^source-audit-note-4]: 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::initiateModeChange; SurfaceFlinger.cpp::initiateDisplayModeChanges、finalizeDisplayModeChange @ android-17.0.0_r1
+[^source-audit-note-5]: 来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp, Scheduler/RefreshRateSelector.cpp, Scheduler/FrameRateOverrideMappings.cpp @ android-17.0.0_r1
+[^source-audit-note-6]: 来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.cpp, Display/DisplayModeController.cpp @ android-17.0.0_r1
+[^source-audit-note-7]: 来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Scheduler/RefreshRateSelector.cpp @ android-17.0.0_r1
+[^source-audit-note-8]: 来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md §2; 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::initiateModeChange @ android-17.0.0_r1
+[^source-audit-note-9]: 已验证: frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp::initiateDisplayModeChanges @ android-17.0.0_r1
+[^source-audit-note-10]: 来源: DeepResearch/2026-07-17-android17-displaymode-refreshrateselector-sourcecode.md; 已验证: frameworks/native/services/surfaceflinger/Scheduler/FrameRateOverrideMappings.cpp, Scheduler/LayerHistory.cpp @ android-17.0.0_r1
+[^source-audit-note-11]: 已验证: frameworks/native/services/surfaceflinger/Display/DisplayModeController.cpp::takeDesiredModeIfMatches、initiateModeChange、finalizeModeChange; SurfaceFlinger.cpp::finalizeDisplayModeChange @ android-17.0.0_r1
