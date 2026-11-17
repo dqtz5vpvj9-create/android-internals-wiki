@@ -364,7 +364,7 @@ DeliQueue 的 producer（消息生产者）通过 `MessageStack` 的 CAS（Compa
 
 #### RenderThread CPU 工作
 
-复杂 Path 的细分、阴影与模糊、文字 glyph（字形）准备、DisplayList（绘制指令列表）处理、纹理上传准备和离屏 layer，都会推高 RenderThread 的 CPU 时间。`Canvas.saveLayer()` 通常引入中间渲染目标和额外 pass（渲染遍次），具体成本取决于裁剪范围、像素格式、效果与图形后端；把所有 clip（裁剪）或圆角 API 一概等同于 `saveLayer()`，容易高估离屏渲染开销。
+复杂 Path 的细分、阴影与模糊、文字 glyph（字形）准备、DisplayList（绘制指令列表）处理、纹理上传准备和离屏 layer，都可能推高 RenderThread 的 CPU 时间。`Canvas.saveLayer()` 通常引入中间渲染目标和额外 pass（渲染遍次），具体成本取决于裁剪范围、像素格式、效果与图形后端；把所有 clip（裁剪）或圆角 API 一概等同于 `saveLayer()`，容易高估离屏渲染开销。
 
 首次显示大 Bitmap 时，应把后台 decode（解码）、MainThread 状态更新、RenderThread texture upload（纹理上传）和 GPU 采样拆开观察，待 trace 或 GPU 工具明确哪一段变长后，再决定调整解码尺寸、缓存、预热还是绘制方式。
 

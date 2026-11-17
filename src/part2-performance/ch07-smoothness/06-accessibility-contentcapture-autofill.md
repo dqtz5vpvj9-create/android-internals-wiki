@@ -211,7 +211,7 @@ flowchart LR
 
 因此，一次 `getRootInActiveWindow()` 查询的实际负载，要结合缓存命中情况与 prefetch 实际放行的节点数来确认。排查时建议同步记录请求 API、prefetch flags、缓存是否命中、虚拟节点 provider 以及实际返回的节点数。
 
-在耗时分布上，服务侧先通过同步的 `IAccessibilityServiceConnection` 方法完成系统路由，再进入 `AccessibilityInteractionClient` 等待结果；后一阶段的超时常量为 5000 ms，发生在发起查询的服务线程上。它既不代表整个 API 的统一耗时上限，也不会在超时瞬间取消已在目标应用上运行的节点回调。对于目标应用而言，更大的风险在于 ViewRoot looper 被节点创建任务占满，导致同一线程上的输入分发、traversal（测量、布局与绘制）或帧回调被迫延后。
+在耗时分布上，服务侧先通过同步的 `IAccessibilityServiceConnection` 方法完成系统路由，再进入 `AccessibilityInteractionClient` 等待结果；后一阶段的超时常量为 5000 ms，发生在发起查询的服务线程上。它既不代表整个 API 的统一耗时上限，也不会在超时瞬间取消已在目标应用上运行的节点回调。对于目标应用，ViewRoot looper 上增加的节点创建任务可能推迟同一线程上的输入分发、traversal（测量、布局与绘制）或帧回调。
 
 
 ### 成本应按四个进程位置拆开
