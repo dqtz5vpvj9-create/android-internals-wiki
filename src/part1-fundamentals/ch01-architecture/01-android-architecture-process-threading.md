@@ -487,6 +487,8 @@ Perfetto 的各个数据源按采集维度切分，与五层架构之间是交�
 - 保留缓存进程有助于加快用户再次切回时的恢复速度，却会持续占用物理内存，系统需要在切换流畅度与前台可用内存之间权衡；
 - 只要进程中缺少系统认可的活跃组件，即使应用自建的工作线程仍在运行，进程依然可能转入缓存态（cached）并遭到冻结或终止。
 
+普通线程、线程池和协程本身不会提高进程重要性。需要可靠完成的任务应使用系统能够识别和调度的组件。
+
 ### 应用进程从哪里来
 
 默认情况下，每个应用拥有独立的 Linux 用户 ID（UID）和默认进程，Activity、Service、BroadcastReceiver 与 ContentProvider 都运行在这个进程中。在 Zygote 执行 `fork()` 的瞬间，子进程只保留发起 `fork` 的那一条线程；而在普通应用进入 `ActivityThread.main()` 之前，`ZygoteInit.zygoteInit()` 已经通过 `nativeZygoteInit()` 拉起了 Binder 线程池。这意味着应用进程从业务入口开始就不止主线程一条线程：生命周期回调通常由主线程分发，而跨进程的远程 Binder 方法和来自其他进程的 ContentProvider 请求则默认落在 Binder 线程池中，相关实现需要保证线程安全。
