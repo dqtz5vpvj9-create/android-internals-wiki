@@ -535,7 +535,7 @@ public static final String FEATURE_NEURAL_PROCESSING_UNIT =
 
 大多数同时提供 CPU / GPU 路径的应用应使用 `required="false"`：既保留了 NPU 声明，让 Android 17 能识别应用请求 NPU 能力，又避免 Google Play 仅因缺少 NPU 而过滤设备，使产品可以改用 CPU 或 GPU。只有核心功能在其他后端上跑不起来时，才适合使用 `required="true"`。
 
-Android 17 源码也体现了这一区别。`packages/modules/NpuManager` 中的 `PriorityManager.doesPackageUseNpuFeature()` 遍历 `PackageInfo.reqFeatures`（应用请求的 feature 列表），检查名称是否等于 `FEATURE_NEURAL_PROCESSING_UNIT`；直接访问资格与 `required` 标志无关，`required` 影响的是分发渠道的设备兼容性过滤，而非这段直接访问检查。
+Android 17 源码也体现了这一区别。`packages/modules/NpuManager` 中的 `PriorityManager.doesPackageUseNpuFeature()` 遍历 `PackageInfo.reqFeatures`（应用请求的 feature 列表），检查名称是否等于 `FEATURE_NEURAL_PROCESSING_UNIT`；直接访问资格与 `required` 标志无关，`required` 影响的是分发渠道的设备兼容性过滤，不会改变这段直接访问检查的结果。
 
 <!-- gracker-diagram: ch05-05-feature-dimensions -->
 ![NPU 声明、渠道过滤与模型能力](../../assets/diagrams/ch05/ch05-05-feature-dimensions.png)
@@ -757,7 +757,7 @@ Google Play 交付不覆盖所有渠道。没有 GMS 的设备或其他应用商
 1. 设备是否声明 `android.hardware.npu`；
 2. LiteRT compatibility checker 是否接受该设备；
 3. AI Pack 是否已交付适配相应 Tensor 代际的模型产物；
-4. 运行时是否成功加载 NPU 调度分发库（dispatch library） / 运行时（dispatch / runtime），并按预期执行或回退。
+4. 运行时是否成功加载 NPU 调度分发库（dispatch library）与运行时（runtime），并按预期执行或回退。
 
 芯片名称、营销材料和 `hasSystemFeature()` 都顶替不了这四项检查。AICore 或其他系统托管模型服务也有独立的设备、地区、模型与更新条件，与应用内嵌 LiteRT 的 NPU 后端并不是一回事。
 
@@ -827,7 +827,7 @@ LiteRT 官方 NPU 路径支持将未被 NPU 接收的子图交给 CPU / GPU。�
 - NPU、GPU、CPU 各自执行的子图或算子数；
 - 编译警告与不支持的算子；
 - 中间 buffer 大小和复制次数；
-- 端到端延迟，而非单个 NPU 子图时间；
+- 端到端延迟，不要只统计单个 NPU 子图时间；
 - fallback 发生率和触发原因；
 - 结果精度与确定性。
 
@@ -1271,7 +1271,7 @@ Prompt API 当前要求输入少于 4000 token，并建议避免生成超过 4K 
 App 应为状态检查、下载、预热、推理请求、首分片和结束点增加自定义 trace 标记。Perfetto 可以用这些标记对齐：
 
 - App 主线程、工作线程和 RenderThread 调度；
-- 帧时间、CPU 频率、设备支持时的 GPU counter（设备支持时）；
+- 帧时间、CPU 频率、GPU counter（设备支持时）；
 - 内存计数器、PSI、lmkd 和 thermal 事件；
 - 可见的 Binder 与系统服务活动。
 

@@ -108,7 +108,7 @@ last_consolidated_at: '2026-08-24'
 
 ## 异构 CPU 的容量、拓扑与能效
 
-拿到一台异构 SoC 设备，我们要先弄清它的核心怎样分档、每档能力差多少，然后才谈得上解释任务为什么落在这一颗而不是那一颗。这一节先把容量、拓扑与能效的对应关系理清楚，再看任务在什么条件下迁移 CPU（migration）、换一次的代价怎么估。
+拿到一台异构 SoC 设备，得先弄清它的核心怎样分档、每档能力差多少，然后才能解释任务为什么会调度到特定核心上。这一节先把容量、拓扑与能效的对应关系理清楚，再看任务在什么条件下迁移 CPU（migration）、换一次的代价怎么估。
 
 ### 先区分四个容易混用的概念
 
@@ -136,9 +136,9 @@ Arm big.LITTLE 把侧重单线程性能的 CPU 与侧重能效的 CPU 放进同�
 2. **内核切换器（In-kernel switcher）**：把一颗高性能 CPU 与一颗高能效 CPU 配成逻辑对，任一时刻只启用其中一颗。
 3. **全局任务调度（Global Task Scheduling）与 HMP（Heterogeneous Multi-Processing，异构多处理）**：所有 CPU 对内核可见，调度器按任务需求选择 CPU，也允许不同类型 CPU 采用不对称数量。
 
-这些模型用来理解历史演进就够了。当前的公共调度路径以 capacity 感知调度（按 CPU 相对算力选择和均衡任务）、EAS、cpuset（限制任务可用 CPU 集合） 和利用率钳制（Utilization Clamping，UClamp）为主，早期“一次切换整个簇”的运行图已经不再适用。
+这些模型主要反映历史演进。当前的公共调度路径以 capacity 感知调度（按 CPU 相对算力选择和均衡任务）、EAS、cpuset（限制任务可用 CPU 集合）和利用率钳制（Utilization Clamping，UClamp）为主，早期“一次切换整个簇”的模型已经不再适用。
 
-历史资料常给迁移标注固定的微秒数，我们读的时候要记住一点：某个平台测得的数值只属于那个平台。迁移成本实际会随互连、缓存层级（cache hierarchy）、工作集、源 CPU 与目标 CPU 是否共享末级缓存（Last-Level Cache，LLC）、频率状态和内核路径变化。
+一些资料会给迁移标注固定的微秒数，但特定平台测得的数值只属于那个平台。实际的迁移成本会随互连、缓存层级（cache hierarchy）、工作集、源 CPU 与目标 CPU 是否共享末级缓存（Last-Level Cache，LLC）、频率状态和内核路径而变化。
 
 #### DynamIQ 改变了 cluster 内组织方式
 
@@ -150,7 +150,7 @@ DynamIQ 允许不同 CPU 微架构在同一个 DynamIQ 簇中协作，并通过 
 - DynamIQ 具备每 CPU 动态电压与频率调节（Dynamic Voltage and Frequency Scaling，DVFS）的硬件能力，某款 SoC 实现到什么程度，要看它的 cpufreq policy；
 - DSU 型号、缓存容量和互连拓扑由 SoC 决定，某款 Arm IP 的能力上限只描述那款 IP；
 
-16 KB 页大小主要改变地址转换缓存（Translation Lookaside Buffer，TLB）的覆盖范围（TLB reach）、页表层级行为和内存管理成本。公开的通用 DSU 接口没有把“16 KB 页会降低监听过滤器（snoop filter）探测频率”定义为平台保证，互连层面的收益也就推导不出来，要靠目标设备实测。
+16 KB 页大小主要改变地址转换缓存（Translation Lookaside Buffer，TLB）的覆盖范围（TLB reach）、页表层级行为和内存管理成本。公开的通用 DSU 接口没有把“16 KB 页会降低监听过滤器（snoop filter）探测频率”定义为平台保证，因此互连层面的收益无法从中推导出来，需要靠目标设备实测。
 
 #### 当代 SoC 不止“大”和“小”
 
@@ -163,7 +163,7 @@ DynamIQ 允许不同 CPU 微架构在同一个 DynamIQ 簇中协作，并通过 
 
 这些名称适合描述产品，不适合作为调度器输入。Linux 关心的是每颗 CPU 的 capacity、允许范围、当前压力、性能域和能量模型（Energy Model，EM）。即使两类 CPU 的 capacity 很接近，功耗成本仍可能不同；反过来也一样。
 
-“某 CPU 的 `capacity=837`”这类数字，公开规格里推不出来；要做精确分析，就读目标设备的 capacity 数据或对应内核代码树。
+像“某 CPU 的 `capacity=837`”这类具体数字，无法从公开规格里推算出来；做精确分析时，应直接读取目标设备的 capacity 数据或对应内核代码树。
 
 ### Linux 怎样表达 CPU capacity
 
@@ -254,7 +254,7 @@ adb shell 'for p in /sys/devices/system/cpu/cpufreq/policy*; do
 done'
 ```
 
-命令会逐个读取 CPU 的 capacity、最高频率与共享 policy，并列出各 policy 的可选频率、驱动和调频策略（governor）。有些量产设备会隐藏 `cpu_capacity`、可用频点或 governor 节点；读不到时转向设备内核配置、厂商源码或具备权限的调试接口，拿最高频率冒充 capacity 会引入误差。
+命令会逐个读取 CPU 的 capacity、最高频率与共享 policy，并列出各 policy 的可选频率、驱动和调频策略（governor）。有些量产设备会隐藏 `cpu_capacity`、可用频点或 governor 节点；读不到时可以转向设备内核配置、厂商源码或具备权限的调试接口，不要拿最高频率替代 capacity，否则会引入误差。
 
 Perfetto 标准库（stdlib）可以汇总 trace 期间观测到的频率。下面的查询用来查看各 CPU 的频率变化范围和采集覆盖时长：
 
@@ -429,7 +429,7 @@ Linux 6.18 针对带有 `SCHED_CPUFREQ_IOWAIT` 标志的唤醒维护 I/O-wait bo
 
 #### RT、DL、UClamp 与 sched_ext
 
-`effective_cpu_util()` 合并 CFS、RT、DL 与 IRQ 的影响，并向 schedutil 返回性能上下界。RT 或 DL 任务出现后频率怎么走，还要看截止时间带宽（deadline bandwidth）、默认 RT UClamp 和设备配置，“只要出现就永久锁定最高频率”是把机制简化了。
+`effective_cpu_util()` 合并 CFS、RT、DL 与 IRQ 的影响，并向 schedutil 返回性能上下界。RT 或 DL 任务出现后频率怎么走，还要看截止时间带宽（deadline bandwidth）、默认 RT UClamp 和设备配置，把它看成“只要出现就永久锁定最高频率”过于简化了实际机制。
 
 Android 公共内核的 schedutil 还接受 `scx_cpuperf_target()`。只有 sched_ext 实际管理 CPU 或提供性能目标（perf target）时，这项输入才有意义；源码里有这个接口，和量产设备默认启用 sched_ext 调度器是两回事。
 
@@ -705,7 +705,7 @@ Android framework 的 `android.os.Process` 定义了一组常用线程优先级�
 
 这些常量描述请求值，不表示任意应用都能把线程设置为所有负 nice 值。内核权限、Android 服务端检查和 SELinux 策略仍会限制调用。
 
-进程进入后台时，系统可能同时改变 cpuset、CPU cgroup、UClamp、定时器松弛时间（timer slack）、I/O 优先级和 `oom_score_adj`。把这些变化概括成“系统一定把进程 nice 调高”是误读，CPU 调度优先级和低内存终止优先级也是两套独立的状态。
+进程进入后台时，系统可能同时改变 cpuset、CPU cgroup、UClamp、定时器松弛时间（timer slack）、I/O 优先级和 `oom_score_adj`。把这些变化概括成“系统一定把进程 nice 调高”并不准确，CPU 调度优先级和低内存终止优先级本来也是两套独立的状态。
 
 ### Android 的 CPU 约束与任务配置文件
 
@@ -1205,13 +1205,13 @@ Perfetto 不会直接标明“这次由 `find_energy_efficient_cpu()` 选核”�
 
 **1. CPU 频率轨道（CPU Frequency Track）**
 
-CPU 频率轨道记录 cpufreq 变化。频率请求可能来自 schedutil 对 PELT 和 UClamp 的计算，也可能受 cpufreq policy 的共享范围、Power HAL、温控上限和硬件自治调频影响，每次变化都归因于 EAS 就过头了。
+CPU 频率轨道记录 cpufreq 变化。频率请求可能来自 schedutil 对 PELT 和 UClamp 的计算，也可能受 cpufreq policy 的共享范围、Power HAL、温控上限和硬件自治调频影响，把每次变化都归因于 EAS 并不准确。
 
 重点关注：
 
 - 频率上限是否突然降低，例如 `scaling_max_freq` 被调低；这可能来自温控、省电或其他频率上限策略，需要结合设备状态确认，详见 5.2 节；
 - 同簇 CPU 的频率是否同步变化；移动 SoC 通常以簇为单位调频；
-- 任务运行期间的频率是否合理。如果高负载任务运行时频率被限制在低位，性能瓶颈可能来自系统策略，而非任务代码。
+- 任务运行期间的频率是否合理。如果高负载任务运行时频率被限制在低位，性能瓶颈往往来自系统策略，需要结合策略状态排查，不要只盯着任务代码。
 
 **2. CPU 调度轨道（CPU Scheduling Track，`sched_switch`）**
 

@@ -54,9 +54,9 @@ last_idle_audit_at: '2026-08-22T18:35:18+08:00'
 
 端侧 LLM 推理会同时占用 CPU、GPU 或 NPU 与内存带宽，还要消耗设备的散热余量。计算方式随阶段变化：prefill 一次处理输入上下文，decode 持续生成输出；模型加载、后端编译、采样（sampling）和 KV cache 管理又会在这两段计算之外引入额外开销。
 
-只看平均 CPU 利用率或某一次 tokens/s，通常解释不了用户感受到的等待、速度波动和发热。本文围绕四个工程问题展开：
-
 > 源码基线：平台 `android-17.0.0_r1`（Android 17 / API 37），内核 `android17-6.18-2026-06_r6`。设备可能使用其他内核分支。
+
+只看平均 CPU 利用率或某一次 tokens/s，通常解释不了用户感受到的等待、速度波动和发热。本文围绕四个工程问题展开：
 
 1. 首个 token 等待时间（Time to First Token，TTFT）、每个输出 token 的平均时间（Time per Output Token，TPOT）与单 token 能耗（energy per token）应该如何定义和测量；
 2. EAS、CPUFreq、GPU / 内存 DVFS、ADPF（Android Dynamic Performance Framework）和温控分别负责什么；
@@ -302,8 +302,8 @@ try {
 - `updateTargetWorkDuration(long)`：目标发生变化时更新期限；
 - `reportActualWorkDuration(long)`：每个周期报告实际时长；
 - `setThreads(int[])`：长期 worker 集合变化时更新线程；
-- `setPreferPowerEfficiency(boolean)`：在相应的 flagged API（功能开关（flag）控制可用性）可用时表达能效偏好；
-- `reportActualWorkDuration(WorkDuration)`：在相应 flagged API（由平台功能开关控制是否可用的 API） 可用时报告总时长及 CPU / GPU 时长；
+- `setPreferPowerEfficiency(boolean)`：在相应的 flagged API（由平台功能开关 flag 控制可用性的 API）可用时表达能效偏好；
+- `reportActualWorkDuration(WorkDuration)`：在相应的 flagged API 可用时报告总时长及 CPU / GPU 时长；
 - `close()`：工作结束后释放 session。
 
 LLM decode 具有周期性，可以把一个稳定的 token 生成过程或一组 token 作为工作周期，但要满足三个条件：

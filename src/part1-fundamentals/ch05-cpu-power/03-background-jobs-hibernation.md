@@ -1268,7 +1268,7 @@ PermissionController 会排除多类包，其中包括：
 
 #### 全局 hibernation
 
-只有当一个包在所有用户范围内都超过未使用阈值 unused threshold（未使用时长阈值），`HibernationController` 才会设置全局休眠。资源配置 `config_hibernationDeletesOatArtifactsEnabled` 开启时，`hibernatePackageGlobally()` 会调用 `deleteOatArtifactsOfPackage()`，最终由 ART service 删除 dexopt/OAT artifacts（优化后的应用代码产物）。AOSP 的资源默认值为 `true`，OEM 可以覆盖。
+只有当一个包在所有用户范围内都超过未使用时长阈值（unused threshold），`HibernationController` 才会设置全局休眠。资源配置 `config_hibernationDeletesOatArtifactsEnabled` 开启时，`hibernatePackageGlobally()` 会调用 `deleteOatArtifactsOfPackage()`，最终由 ART service 删除 dexopt/OAT artifacts（优化后的应用代码产物）。AOSP 的资源默认值为 `true`，OEM 可以覆盖。
 
 全局动作影响的是该包共享的编译产物，恢复后的启动差异可能比只清用户缓存更明显。但固定延迟是预设不出来的：它取决于 DEX 布局、Baseline Profile、系统是否重新 dexopt、设备 I/O、代码路径，以及启动阶段有没有触发 JIT（即时编译）。
 
@@ -1379,7 +1379,7 @@ Hibernation 后没有原进程可以复用，所以再次打开至少会经历�
 
 每组都应记录：
 
-- AndroidX Macrobenchmark 测得的 TTID（首帧显示时间） / TTFD（完全显示时间） 分布，而非单次值；
+- AndroidX Macrobenchmark 测得的 TTID（首帧显示时间） / TTFD（完全显示时间）分布，不要只看单次测量结果；
 - Perfetto 中的主线程、Binder、I/O、page fault（缺页）、DEX/JIT 和首帧；
 - hibernation 前后的 cache bytes 与 hibernation saved bytes；
 - `ApplicationStartInfo.wasForceStopped()`（API 35+）；
@@ -1549,7 +1549,7 @@ future.addListener(
 | Android 15 / API 35 | stopped package 只因用户动作解除；Force stop 取消 PendingIntent、暂时禁用 widget；新增 `ApplicationStartInfo.wasForceStopped()`；加入操作系统级 App Archiving API |
 | Android 17 / API 37 | 策略仍由 PermissionController 驱动，system_server 维护用户级/全局级状态 |
 
-“Android 15 不再把通知交互算使用”“Android 17 只接受 `MOVE_TO_FOREGROUND`”这两种说法都找不到对应源码，也和 `USER_INTERACTION`、`ACTIVITY_RESUMED`、`APP_COMPONENT_USED` 的监听以及官方文档相冲突。
+在 `android-17.0.0_r1` 源码与官方文档中，“Android 15 不再把通知交互算使用”与“Android 17 只接受 `MOVE_TO_FOREGROUND`”都找不到依据，且与 `USER_INTERACTION`、`ACTIVITY_RESUMED`、`APP_COMPONENT_USED` 的监听逻辑相冲突。
 
 ## 小结
 

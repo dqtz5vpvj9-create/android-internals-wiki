@@ -86,7 +86,7 @@ last_idle_audit_at: '2026-11-10T22:39:40+08:00'
 
 ### 先分清两个问题：完成得多快，以及消耗多少能量
 
-动手分析时，我们先分清两个问题：这件事完成得多快，以及它消耗多少能量。调度器决定任务何时运行、跑在哪个 CPU 上；动态电压与频率调节（DVFS）决定一个共享电压和频率的硬件域用哪个性能档位。DVFS 的全称是 Dynamic Voltage and Frequency Scaling。这两件事互相影响：
+动手分析时，我们先分清两个问题：这件事完成得多快，以及它消耗多少能量。调度器决定任务何时运行、跑在哪个 CPU 上；动态电压与频率调节（Dynamic Voltage and Frequency Scaling，DVFS）决定一个共享电压和频率的硬件域用哪个性能档位。这两件事互相影响：
 
 - 同一段 CPU 指令在高频下通常更早完成，但瞬时功率往往更高。
 - 任务更早完成后，CPU 可能更早进入空闲态，整段工作的能量未必更高。
@@ -125,7 +125,7 @@ CMOS（Complementary Metal-Oxide-Semiconductor，互补金属氧化物半导体�
 
 #### 为什么频率与电压通常一起变化
 
-时钟频率越高，组合逻辑完成一次传播的时间就越短；信号要在时钟边沿前稳定下来，还得在目标温度和芯片个体差异下留够时序裕量（让信号能在时钟边沿前稳定下来），所以较高频率通常需要较高电压。SoC 厂商会表征芯片，为每个性能域给出一组经过验证的频率—电压组合。
+时钟频率越高，组合逻辑完成一次传播的时间就越短；信号要在时钟边沿前稳定下来，还得在目标温度和芯片个体差异下留够时序裕量，所以较高频率通常需要较高电压。SoC 厂商会表征芯片，为每个性能域给出一组经过验证的频率—电压组合。
 
 把频率和电压放在一起看，可以得到三条更严谨的判断：
 
@@ -973,7 +973,7 @@ PMS 还会用 `Mode.INTERACTIVE` 向 AIDL Power HAL 通知交互状态。这个�
 
 #### CPUIdle 与 schedutil 分别处理空闲和运行需求
 
-cpuidle governor（空闲状态选择策略）只在 CPU 没有 runnable 任务、准备进入 idle 时选择空闲状态；schedutil 则在 CPU 执行或负载变化时，把利用率需求映射成 CPUFreq 请求。PMS 能通过交互状态、suspend blocker 与 Power HAL mode 改变外部条件，替内核逐 CPU 选 idle state 或频率的工作它不做。
+cpuidle governor（空闲状态选择策略）只在 CPU 没有 runnable 任务、准备进入 idle 时选择空闲状态；schedutil 则在 CPU 执行或负载变化时，把利用率需求映射成 CPUFreq 请求。PMS 能通过交互状态、suspend blocker 与 Power HAL mode 改变外部条件，至于替内核逐 CPU 选 idle state 或选频率，PMS 并不负责。
 
 一次唤醒中常会同时出现退出 idle、任务进入 runnable、升频和 Framework 交互提示；这些事件时间上挨着，未必构成一条固定的 PMS → cpuidle → schedutil 调用链。
 

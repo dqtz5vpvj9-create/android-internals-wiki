@@ -102,7 +102,7 @@ Android common kernel `android17-6.18-2026-06_r6` 的 arm64 `arch/arm64/include/
 这个内核基线按 64 字节 L1 cache line 构建。同一文件还从 `CTR_EL0.CWG` 读取 cache 写回粒度，并把 arm64 的 `ARCH_DMA_MINALIGN` 设为 128 字节。也就是说，CPU L1 cache line、DMA 安全对齐、跨 CPU 避免互相干扰所需的间隔，是三件不同的事，各有各的常量。
 
 
-应用代码可以把 64 字节当作当前常见设备的实验起点；至于 Armv8/Armv9 规范保证，它给不了。涉及共享库、DMA 或多代设备时，我们还要结合目标 ABI、设备资料和测量来决定布局。
+应用代码可以把 64 字节当作当前常见设备的实验起点，但 Armv8/Armv9 规范本身并不保证所有硬件都采用这一宽度。涉及共享库、DMA 或多代设备时，我们还要结合目标 ABI、设备资料和测量来决定布局。
 
 ### 线程迁移对 cache 的影响
 
@@ -151,7 +151,7 @@ inline cache 的影响是间接的：它可能让编译器生成更直接的调�
 
 图：对象引用连续不代表对象本体连续。改用基本类型数组的收益还可能来自减少装箱与分配；不能把全部差异算成 cache miss。
 
-把热循环从装箱集合改成 primitive（基本类型）array（基本类型数组），收益可能同时来自减少装箱、减少分配和改善局部性。写报告时我们要把这几个因素都列出来，别把全部收益都归给 cache。
+把热循环从装箱集合改成基本类型数组（primitive array），收益可能同时来自减少装箱、减少分配和改善局部性。写报告时我们要把这几个因素都列出来，别把全部收益都归给 cache。
 
 ### 时间局部性
 
@@ -291,7 +291,7 @@ struct RenderItemCold {
 `std::vector` 和 Binder `Parcel` 使用连续缓冲区，顺序读写的空间局部性很好，但容量增长可能触发重新分配和复制。已知大小时合理调用 `reserve()` 可以减少扩容，过度预留会扩大容器保留容量，并可能增加实际触页后的 RSS（常驻内存）；容量、已初始化元素数与驻留页数不能直接画等号。
 
 
-`frameworks/native/libs/binder/Parcel.cpp` 中，`mData`、`mDataSize`、`mDataCapacity` 和 `mDataPos` 管理连续数据区，写入按 4 字节 padding，增长路径使用 `realloc` 或分配并复制。Parcel 另有对象偏移数组，读取时也可以调整 data position，所以“Parcel 只能从头顺序读”这个说法并不成立。Parcel 字段与增长路径的完整说明见本章「Binder Parcel：连续数据与独立对象表」。
+`frameworks/native/libs/binder/Parcel.cpp` 中，`mData`、`mDataSize`、`mDataCapacity` 和 `mDataPos` 管理连续数据区，写入按 4 字节 padding，增长路径使用 `realloc` 或分配并复制。Parcel 另有对象偏移数组，读取时也可以调整 data position，所以“Parcel 只能从头顺序读”这个说法并不成立。Parcel 字段与增长路径的完整说明见后文「Binder Parcel：连续数据与独立对象表」。
 
 Parcel 的布局主要服务于 Binder 传输格式（wire format）、安全检查和对象管理，cache 局部性只是连续数据区顺带带来的性质。要回答“Parcel 是不是总比 JSON 快”，得把序列化格式、数据规模、解析器和 IPC（Inter-Process Communication，进程间通信）拷贝都放进比较。
 
@@ -374,7 +374,7 @@ Startup Profile 应覆盖 launcher、常见 deep link（直接打开应用内指
 
 图：DEX 布局优化从 AGP 8.1 可用，8.1–8.2 需启用，8.3 起默认启用；release 还须开启 R8 优化。r8.json 的 startup 状态要与对应 DEX 校验和一起核对，端到端收益不能全部归因于 I-cache miss。
 
-与当前应用、构建链无关的 Redex 百分比，引用来当预期收益没有意义；官方给出的经验范围只够用来决定要不要实验，发布结论应来自我们自己的 A/B 数据。
+脱离当前应用与构建链去引用其他项目的 Redex 优化百分比，无法当作本项目的预期收益；官方给出的经验范围只够用来决定要不要实验，发布结论应来自我们自己的 A/B 数据。
 
 ## Simpleperf：从症状到证据
 

@@ -145,7 +145,7 @@ LC3（Low Complexity Communication Codec）是 LE Audio 基础音频配置要求
 
 LC3 常见帧时长为 7.5 ms 和 10 ms。帧时长只是预算中的一项 Codec 参数，算法总延迟和端到端延迟都要另算。讨论码率时，要把采样率、每帧字节数、每个 SDU 的帧块数和声道数一起给出，只列一个“LC3 固定范围”，读者还原对应的码率配置就难了。
 
-LC3 与 SBC 的 CPU 占用、主观音质 MOS（Mean Opinion Score，主观音质评分） 或耗电量对比，同样依赖实现、配置和测试方法：在 Host（主机侧软件栈） 软件栈上用软件运行、交给音频 DSP、Controller 或 vendor offloader（厂商卸载模块），可能得到不同结果。跨设备对比表里那些看似精确的数字，背后要有目标芯片、编译选项、音频配置和功耗仪器来支撑。
+LC3 与 SBC 的 CPU 占用、主观音质 MOS（Mean Opinion Score，主观音质评分）或耗电量对比，同样依赖实现、配置和测试方法：在 Host（主机侧软件栈）上用软件运行、交给音频 DSP、Controller 或 vendor offloader（厂商卸载模块），可能得到不同结果。跨设备对比表里那些看似精确的数字，背后要有目标芯片、编译选项、音频配置和功耗仪器来支撑。
 
 
 ## 延迟要按测量对象拆开
@@ -283,7 +283,7 @@ val broadcastSourceSupported =
     adapter.isLeAudioBroadcastSourceSupported == BluetoothStatusCodes.FEATURE_SUPPORTED
 ```
 
-这两个方法返回状态码而非布尔值，蓝牙关闭时还可能返回错误码。手机报告支持只是第一步：当前耳机、通信双方的 Profile、区域配置和产品 UI 是否满足目标场景，还要单独确认，应用仍要处理功能不可用与路由变化。
+这两个方法返回状态码，不返回布尔值；蓝牙关闭时还可能返回错误码。手机报告支持只是第一步：当前耳机、通信双方的 Profile、区域配置和产品 UI 是否满足目标场景，还要单独确认，应用仍要处理功能不可用与路由变化。
 
 <!-- gracker-diagram: ch05-09-app-capability-and-communication-route -->
 ![应用能力检查与通信路由请求](../../assets/diagrams/ch05/ch05-09-app-capability-and-communication-route.png)

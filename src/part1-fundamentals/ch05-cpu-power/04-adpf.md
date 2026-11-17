@@ -44,7 +44,7 @@ last_idle_audit_at: '2026-08-08T18:35:19+08:00'
 
 # ADPF 自适应性能框架
 
-Android 动态性能框架（Android Dynamic Performance Framework，ADPF）是一套应用与系统之间的反馈接口：应用上报周期性工作的目标和实际耗时，读出设备的热状态和容量余量，据此驱动降级策略，再用帧时间、能耗与温升复测系统是否做出了更合适的调度。对应用来说，它是一条表达需求的通道，而非固定升频开关。
+Android 动态性能框架（Android Dynamic Performance Framework，ADPF）是一套应用与系统之间的反馈接口：应用上报周期性工作的目标和实际耗时，读出设备的热状态和容量余量，据此驱动降级策略，再用帧时间、能耗与温升复测系统是否做出了更合适的调度。对应用来说，它是一条表达需求的通道，并不充当固定升频开关。
 
 ## 为什么需要 ADPF
 
@@ -261,7 +261,7 @@ thermalWorker.scheduleWithFixedDelay(() -> {
 }, 0, 10, TimeUnit.SECONDS);
 ```
 
-`applyThermalPolicy()` 必须始终处理当前 status，把 `NaN` 预测当作未知而不是正常或零值；策略动作应提交到相应的渲染或 UI 线程。它还需实现滞回、冷却时间和设备标定，场景结束时关闭 executor，避免遗留轮询。
+`applyThermalPolicy()` 必须始终处理当前 status，把 `NaN` 预测当作未知，不要把它当成正常值或零值；策略动作应提交到相应的渲染或 UI 线程。它还需实现滞回、冷却时间和设备标定，场景结束时关闭 executor，避免遗留轮询。
 
 <!-- gracker-diagram: ch05-04-thermal-status-valid-forecast-and-hysteresis -->
 ![预测无效时仍看当前状态，恢复时使用更低门槛](../../assets/diagrams/ch05/ch05-04-thermal-status-valid-forecast-and-hysteresis.png)

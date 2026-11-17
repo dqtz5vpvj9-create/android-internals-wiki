@@ -15,7 +15,7 @@
 | 温控（Thermal） | 温度压力如何限制 CPU/GPU 与系统工作 | 温度、严重级别、冷却状态、频率上限 |
 | 后台政策 | 应用何时可以在后台继续工作 | Doze、待机分组、任务原因/配额、前台服务（FGS）、低功耗待机（LPS）、应用休眠 |
 
-这些控制面不是固定的串行调用链。调度器选择任务；schedutil 可以根据 PELT 负载跟踪和 UClamp 利用率约束请求频率；Power HAL 可能改变厂商策略；温控机制还能压低可用上限。CPUIdle 处理没有可运行任务的时段，DVFS（动态电压频率调节）则调整运行时的电压与频率，二者不能混为一个“省电开关”。
+这些控制面并不构成固定的串行调用链：调度器选择任务；schedutil 可以根据 PELT 负载跟踪和 UClamp 利用率约束请求频率；Power HAL 可能改变厂商策略；温控机制还能压低可用上限。CPUIdle 处理没有可运行任务的时段，DVFS（动态电压频率调节）则调整运行时的电压与频率，二者不能混为一个“省电开关”。
 
 <!-- gracker-diagram: ch05-readme-control-planes-and-evidence -->
 ![CPU 与功耗的六类控制面](../../assets/diagrams/ch05/ch05-readme-control-planes-and-evidence.png)

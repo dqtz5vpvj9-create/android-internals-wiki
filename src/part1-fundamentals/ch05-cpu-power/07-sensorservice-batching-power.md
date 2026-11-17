@@ -51,7 +51,7 @@ SensorService 的功耗问题常被简化为“采样频率越低越省电”，
 
 本文按照 Android 17 / API 37 / `android-17.0.0_r1` 核对源码，分析采样周期、批量延迟、唤醒（wake-up）属性、多客户端请求聚合和 AP 挂起（suspend）之间的关系。
 
-版本沿革只保留理解当前行为所需的节点：Android 4.4 引入标准化的批处理（batching），API 26 增加 Sensor Direct Channel，Android 12 对部分运动 / 姿态传感器增加高采样率限制；Android 17 继续保留这些机制，并增加由功能开关（flag）控制的冻结进程（frozen-PID）处理路径。
+关键的版本节点包括：Android 4.4 引入标准化的批处理（batching），API 26 增加 Sensor Direct Channel，Android 12 对部分运动 / 姿态传感器增加高采样率限制；Android 17 继续保留这些机制，并增加由功能开关（flag）控制的冻结进程（frozen-PID）处理路径。
 
 ## 传感器耗电来自三个位置
 
@@ -315,7 +315,7 @@ Android 17 的 `SensorService::enable()` 还有一项避免事件混入新连接
 
 公开 SDK 文档要求应用声明权限，并提示高频请求可能抛出 `SecurityException`。Android 17 源码还包含兼容模式（compatibility）、可调试构建（debuggable）和服务端不抛异常而直接限制采样率的分支。
 
-应用不应依赖某一种失败表现，而应声明权限、检查注册结果，并根据实际事件时间戳（event timestamp）验证最终采样率。
+应用不要依赖单一的失败表现，应当声明权限、检查注册结果，并根据实际事件时间戳（event timestamp）验证最终采样率。
 
 
 ## Sensor Direct Channel 的适用边界
